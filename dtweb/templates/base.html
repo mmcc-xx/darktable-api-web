@@ -10,6 +10,7 @@
   <header class="top">
     <a href="/" class="brand" id="brand">darktable-api</a>
     {% block top %}{% endblock %}
+    {% if lib.server == 'gui' %}<a id="darkroom" href="{{ '/photo/%d' % lib.darkroom_imgid if lib.darkroom_imgid else '#' }}"{% if not lib.darkroom_imgid %} hidden{% endif %} title="the photo open in darktable's darkroom">darkroom: photo {{ lib.darkroom_imgid }}</a>{% endif %}
     <span class="lib" id="lib" data-state="{{ lib.state }}">
       <span id="lib-text">
         {% if lib.state == 'owned' and lib.server == 'gui' %}library served by darktable's window: {{ lib.library }}
@@ -28,6 +29,17 @@
   <main>{% block main %}{% endblock %}</main>
   <script>
     try { const q = sessionStorage.getItem('lib:query'); if (q !== null) document.getElementById('brand').href = '/?' + q; } catch (e) {}
+    // follow the photo open in darktable's darkroom
+    const dr = document.getElementById('darkroom');
+    if (dr) try {
+      new EventSource('/api/events').onmessage = (m) => {
+        const ev = JSON.parse(m.data);
+        if (ev.type !== 'darkroom') return;
+        dr.hidden = !ev.imgid;
+        dr.href = ev.imgid ? '/photo/' + ev.imgid : '#';
+        dr.textContent = 'darkroom: photo ' + ev.imgid;
+      };
+    } catch (e) {}
     document.querySelectorAll('[data-lib]').forEach((b) => b.onclick = async () => {
       const action = b.dataset.lib;
       if (action === 'takeover' && !confirm('Quit darktable (it saves its edits), then take the library back?')) return;

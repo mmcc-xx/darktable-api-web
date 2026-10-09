@@ -65,3 +65,4 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .history .current { font-weight: 700; color: var(--accent); }
 .history .undone { opacity: .45; }
 .buttons { display: flex; gap: .4rem; flex-wrap: wrap; }
+#darkroom { font-size: .8rem; }

@@ -91,6 +91,12 @@ authenticates, before exposing it to a network.
 Tested on macOS. On Linux, *quit darktable and take back* uses darktable's
 D-Bus `Quit` method (untested).
 
+## See also
+
+[darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp): an MCP
+server on the same engine, for AI assistants. Give it its own library copy:
+one engine per library.
+
 ## License
 
 GPL-3.0, like darktable.

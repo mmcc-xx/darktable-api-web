@@ -55,10 +55,26 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
     python -m venv .venv && .venv/bin/pip install -r requirements.txt
     .venv/bin/python make_library_copy.py          # ~/.config/darktable -> ./library-copy
     DTAPI_BIN=/path/to/darktable/build/bin/darktable-api \
-        .venv/bin/uvicorn dtweb.main:app --port 8020
+        .venv/bin/uvicorn dtweb.main:app --port 8020 --timeout-graceful-shutdown 3
 
-Then open http://127.0.0.1:8020. The engine starts on first use (a few
-seconds) and stops after 10 minutes without requests.
+Then open http://127.0.0.1:8020. (`--timeout-graceful-shutdown` lets the
+server stop while a browser keeps its live-update connection open.)
+
+## One engine, several apps
+
+The web app doesn't run darktable itself: it connects to a darktable-api
+engine on a unix socket next to the library copy, and starts one if none is
+running. [darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp)
+pointed at the same library copy connects to the same engine, so an AI
+assistant and the browser work on the same photos at the same time:
+
+- a photo open in both is one shared edit: sliders in the browser and the
+  AI's changes land in the same history, and whoever saves saves both;
+- the page updates live when the AI (or another browser on another web app
+  instance) edits the photo shown, rates it or changes its labels;
+- the engine keeps up to 3 photos open (`DTAPI_MAX_SESSIONS`) and stops 10
+  minutes after the last app disconnected (`DTAPI_IDLE_EXIT`), unless
+  something is unsaved.
 
 `make_library_copy.py` copies `library.db`, `data.db` and `darktablerc`
 (safe while darktable is running) and sets `write_sidecar_files=never` in the
@@ -70,6 +86,8 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_BIN` | `darktable-api` on the PATH | the engine |
 | `DTAPI_CONFIGDIR` | `library-copy/config` | the darktable config dir (library) the engine uses |
 | `DTAPI_CACHEDIR` | `library-copy/cache` | the engine's darktable cache |
+| `DTAPI_SOCKET` | `library-copy/darktable-api.sock` (or `/tmp/darktable-api-<uid>-<hash>.sock` if that path is too long) | where the engine listens; every app using the library must use the same one |
+| `DTAPI_MAX_SESSIONS`, `DTAPI_IDLE_EXIT` | 3, 600 | used when this app starts the engine |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
 To open the copy in darktable's GUI: *release to darktable*, then
@@ -83,19 +101,13 @@ authenticates, before exposing it to a network.
 
 | | |
 |---|---|
-| `dtweb/engine.py` | runs darktable-api and talks JSON-RPC to it: one request at a time, edits before thumbnails, latest preview wins, restart on crash, the library hand-off |
-| `dtweb/main.py` | FastAPI routes: library, thumbnails (cached by edit state), ratings/labels, photo editing, library hand-off |
+| `dtweb/engine.py` | connects to the darktable-api engine (starting it if needed) and talks JSON-RPC to it: edits before thumbnails, latest preview wins, events from other apps, the library hand-off |
+| `dtweb/main.py` | FastAPI routes: library, thumbnails (cached by edit state), ratings/labels, photo editing, live updates (server-sent events), library hand-off |
 | `dtweb/templates`, `dtweb/static` | pages (plain HTML and JavaScript, no framework) |
 | `make_library_copy.py` | makes the library copy |
 
 Tested on macOS. On Linux, *quit darktable and take back* uses darktable's
 D-Bus `Quit` method (untested).
-
-## See also
-
-[darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp): an MCP
-server on the same engine, for AI assistants. Give it its own library copy:
-one engine per library.
 
 ## License
 

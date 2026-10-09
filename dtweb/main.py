@@ -12,8 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import asyncio
+import json
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -232,14 +235,15 @@ def _bad(exc: EngineError, code: int = 400) -> HTTPException:
 
 @app.post("/api/photo/{image_id}/open")
 async def photo_open(image_id: int, fresh: bool = False):
-    """Open the photo for editing. An edit session already open on it is kept
-    (with its unsaved changes, e.g. a draft restored after taking the library
-    back) unless fresh: then the photo is reopened as saved."""
+    """Open the photo for editing. If the engine has it open already (another
+    client editing it, or a draft restored after taking the library back),
+    this joins that edit, unsaved changes included, unless fresh: then the
+    photo is reloaded as saved, for every client."""
     try:
-        if fresh or engine.image_id != image_id:
-            await engine.open(image_id)
+        r = await engine.open(image_id, fresh)
         s = await _state(image_id)
-        s["unsaved"] = bool((await engine.library("library_status")).get("unsaved"))
+        s["unsaved"] = bool(r.get("unsaved"))
+        s["joined"] = bool(r.get("joined"))
         return s
     except EngineError as exc:
         raise _bad(exc, 502)
@@ -318,6 +322,51 @@ async def photo_preview(image_id: int, w: int = 1200, h: int = 1200):
         "Cache-Control": "no-store",
         "X-Render-Ms": str(timing.get("process_ms", "")),
         "X-Total-Ms": str(timing.get("total_ms", ""))})
+
+
+@app.get("/tile/{image_id}", response_class=HTMLResponse)
+async def tile(request: Request, image_id: int):
+    try:
+        r = await engine.call("image_info", imgid=image_id)
+    except EngineError as exc:
+        raise HTTPException(404, str(exc))
+    return _tile(request, r["image"])
+
+
+# ── events: what other clients (the MCP server, ...) change ──────────────────
+
+@app.get("/api/events")
+async def events(request: Request):
+    """Server-sent events: the engine's notifications about changes made by
+    other clients, e.g. an AI editing the photo shown in the browser."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+
+    def listener(ev: dict) -> None:
+        try:
+            queue.put_nowait(ev)
+        except asyncio.QueueFull:
+            pass
+
+    try:
+        await engine.call("ping")          # connected, so events arrive
+    except EngineError:
+        pass
+    engine.add_listener(listener)
+
+    async def stream():
+        try:
+            yield "retry: 3000\n\n"
+            while not await request.is_disconnected():
+                try:
+                    ev = await asyncio.wait_for(queue.get(), 15)
+                    yield f"data: {json.dumps(ev)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            engine.remove_listener(listener)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 # ── the library lock ─────────────────────────────────────────────────────────

@@ -106,6 +106,24 @@
     else if (/^F[1-5]$/.test(e.key)) { e.preventDefault(); label(current, parseInt(e.key.slice(1)) - 1); }
   });
 
+  // another client (the MCP server, another browser) rated, labelled or
+  // edited a photo: refresh its tile; the library changed hands: reload
+  try {
+    const es = new EventSource('/api/events');
+    es.onmessage = async (m) => {
+      const ev = JSON.parse(m.data);
+      if (ev.type === 'library_released' || ev.type === 'library_acquired') return location.reload();
+      if (!['image', 'saved', 'reset'].includes(ev.type)) return;
+      const t = document.getElementById('t' + ev.imgid);
+      if (!t) return;
+      const r = await fetch(`/tile/${ev.imgid}?${query}`);
+      if (!r.ok) return;
+      const was = t === current;
+      t.outerHTML = await r.text();
+      if (was) setCurrent(document.getElementById('t' + ev.imgid), false);
+    };
+  } catch (e) {}
+
   // coming back from a photo: load as many tiles as before, then scroll back
   (async () => {
     let saved = null;

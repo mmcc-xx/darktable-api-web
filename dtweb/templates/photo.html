@@ -161,6 +161,28 @@
     if (a) { e.preventDefault(); a.click(); }
   });
 
+  // another client (the MCP server, another browser) changed this photo:
+  // show its edit, which this page shares
+  let refreshTimer = null;
+  try {
+    const es = new EventSource('/api/events');
+    es.onmessage = (m) => {
+      const ev = JSON.parse(m.data);
+      if (ev.type === 'library_released') return location.reload();
+      if (ev.imgid !== ID || !['edit', 'saved', 'reset', 'reopened', 'closed'].includes(ev.type)) return;
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(async () => {
+        const r = await api('open', {});
+        if (!r.ok) return;
+        const s = await r.json();
+        dirty = !!s.unsaved;
+        show(s);
+        preview({edit: 'changed by another client,', saved: 'saved by another client,', reset: 'started over by another client,',
+                 reopened: 'reloaded by another client,', closed: 'reopened after another client closed it,'}[ev.type]);
+      }, 250);
+    };
+  } catch (e) {}
+
   async function open(fresh) {
     const t = performance.now();
     const r = await api('open' + (fresh ? '?fresh=true' : ''), {});
@@ -168,7 +190,7 @@
     const s = await r.json();
     dirty = !!s.unsaved;
     show(s);
-    await preview(`opened in ${Math.round(performance.now() - t)} ms,`);
+    await preview(`opened in ${Math.round(performance.now() - t)} ms${s.joined ? ', shared with another client' : ''},`);
     const note = sessionStorage.getItem('draft-note');
     if (note) { status('after taking the library back: ' + note); sessionStorage.removeItem('draft-note'); }
   }

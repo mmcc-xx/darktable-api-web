@@ -17,11 +17,67 @@
 <div class="editor">
   <div class="view">
     <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
+    <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
     <p id="status" class="status">opening…</p>
   </div>
   <div class="side">
+    <section class="module" id="geo">
+      <div class="head">crop &amp; rotate</div>
+      <p class="buttons">
+        <button data-rotate="-90" title="rotate 90° left">⟲ 90°</button>
+        <button data-rotate="90" title="rotate 90° right">⟳ 90°</button>
+        <button data-flip="horizontal" title="mirror left to right">⇋ mirror</button>
+      </p>
+      <div class="field">
+        <span id="angle-lab" title="double-click: 0">angle</span>
+        <button class="link val" id="angle-val" title="type a value"></button>
+        <input type="range" id="angle" min="-10" max="10" step="0.05" value="0">
+      </div>
+      <p class="buttons">
+        <select id="aspect" title="aspect ratio of the crop">
+          <option value="free">free</option><option value="original">original</option>
+          <option value="1:1">square</option><option value="3:2">3:2</option><option value="4:3">4:3</option>
+          <option value="5:4">5:4</option><option value="7:5">7:5</option><option value="16:9">16:9</option>
+          <option value="1.91:1">1.91:1</option><option value="2:1">2:1</option><option value="65:24">65:24</option>
+        </select>
+        <button id="aspect-swap" title="portrait / landscape">⤾</button>
+        <button id="crop-edit" title="draw the crop on the whole photo">crop…</button>
+        <button id="crop-reset" class="secondary" title="remove the crop">no crop</button>
+      </p>
+      <p class="buttons" id="crop-done" hidden>
+        <button id="crop-apply">apply crop</button>
+        <button id="crop-cancel" class="secondary">cancel</button>
+      </p>
+    </section>
+    <p id="geo-missing" class="status" hidden></p>
     <div id="panels"></div>
-    <h4>history</h4>
+    <section class="module" id="export">
+      <div class="head">export</div>
+      <p class="buttons">
+        <select id="ex-format" title="file format">
+          <option value="">darktable's format</option><option value="jpeg">JPEG</option>
+          <option value="tiff">TIFF</option><option value="png">PNG</option>
+          <option value="webp">WebP</option><option value="jpegxl">JPEG XL</option>
+        </select>
+        <select id="ex-size" title="longest side">
+          <option value="">darktable's size</option><option value="0">full size</option>
+          <option value="3840">3840 px</option><option value="2560">2560 px</option>
+          <option value="2048">2048 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option>
+        </select>
+      </p>
+      <p class="buttons">
+        <label title="JPEG/WebP/JPEG XL quality">quality <input id="ex-quality" type="number" min="1" max="100" placeholder="—" class="num"></label>
+        <label title="process at full resolution, then scale (slower, sharper)"><input id="ex-hq" type="checkbox"> high quality</label>
+        <button id="ex-go">export</button>
+      </p>
+      <p id="ex-result" class="status"></p>
+    </section>
+    <h4 class="history-head">history
+      <span class="undo-redo">
+        <button id="undo" class="secondary" title="undo (⌘Z / Ctrl+Z)">↶</button>
+        <button id="redo" class="secondary" title="redo (⇧⌘Z / Ctrl+Y)">↷</button>
+      </span>
+    </h4>
     <ol id="history" class="history"></ol>
     <p class="buttons">
       <button id="save">save</button>
@@ -45,17 +101,36 @@
     const img = $('#pv');
     const w = Math.min(2048, Math.round((img.parentElement.clientWidth || 800) * (window.devicePixelRatio || 1)));
     const t = performance.now();
-    const r = await fetch(`/api/photo/${ID}/preview.jpg?w=${w}&h=${w}`);
+    const r = await fetch(`/api/photo/${ID}/preview.jpg?w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`);
     if (r.status === 204) return;
     if (!r.ok) { status('preview failed: ' + (await r.text())); return; }
     const blob = await r.blob();
     if (url) URL.revokeObjectURL(url);
     url = URL.createObjectURL(blob);
     img.src = url;
+    if (cropping) img.decode().then(drawBox, drawBox);
     status(`${note || ''} render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
   }
 
+  // undo/redo move history_end by a step, as darktable's ctrl+z/ctrl+y do;
+  // endTarget is where the steps queued so far will leave it
+  let hist = null, endTarget = null;
+  function step(d) {
+    if (!hist) return;
+    const base = endTarget ?? hist.history_end;
+    const end = Math.max(0, Math.min(hist.items.length, base + d));
+    if (end === base) { status(d < 0 ? 'nothing to undo' : 'nothing to redo'); return; }
+    goTo(end);
+  }
+  function goTo(end) {
+    endTarget = end;
+    enqueue('history_end', {end});
+  }
+
   function renderHistory(h) {
+    hist = h;
+    $('#undo').disabled = h.history_end === 0;
+    $('#redo').disabled = h.history_end >= h.items.length;
     const ol = $('#history');
     ol.innerHTML = '';
     [{num: -1, operation: 'original', applied: true}, ...h.items].forEach((it) => {
@@ -63,10 +138,7 @@
       const b = document.createElement('button');
       b.className = 'link' + (it.num + 1 === h.history_end ? ' current' : '') + (it.applied ? '' : ' undone');
       b.textContent = `${it.num + 1} ${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}${it.enabled === false ? ' (off)' : ''}`;
-      b.onclick = async () => {
-        const r = await api('history_end', {end: it.num + 1});
-        if (r.ok) { dirty = true; show(await r.json()); preview('undo/redo:'); }
-      };
+      b.onclick = () => goTo(it.num + 1);
       li.appendChild(b);
       ol.appendChild(li);
     });
@@ -113,30 +185,230 @@
       box.appendChild(sec);
     });
     renderHistory(s.history);
+    if (s.geometry) showGeo(s.geometry);
   }
 
+  // ── crop & rotate ──────────────────────────────────────────────────────
+  // geo: the engine's geometry_get. while cropping, the preview shows the
+  // whole photo (uncropped) and box is the crop being drawn, in fractions
+  let geo = null, cropping = false, box = null;
+  const fmtAngle = (v) => (+v).toFixed(2) + '°';
+  const swapAspect = (a) => a.includes(':') ? a.split(':').reverse().join(':') : a;
+
+  function showGeo(g) {
+    $('#geo').hidden = !!g.missing;
+    if (g.missing) { $('#geo-missing').hidden = false; $('#geo-missing').textContent = 'crop & rotate needs a newer darktable-api: ' + g.missing; return; }
+    $('#geo-missing').hidden = true;
+    geo = g;
+    $('#angle').value = g.angle;
+    $('#angle-val').textContent = fmtAngle(g.angle);
+    const sel = $('#aspect');
+    let a = g.aspect;
+    const known = (v) => [...sel.options].some((o) => o.value === v);
+    // the list holds landscape ratios; a portrait one shows as its swap
+    const shown = known(a) ? a : known(swapAspect(a)) ? swapAspect(a) : a;
+    if (!known(shown)) sel.add(new Option(a, a));
+    sel.value = shown;
+    sel.dataset.portrait = shown !== a ? '1' : '';
+    if (cropping) { box = {...g.crop}; drawBox(); }
+  }
+
+  function aspect() {
+    const v = $('#aspect').value;
+    return $('#aspect').dataset.portrait ? swapAspect(v) : v;
+  }
+
+  // the box's width:height in the photo's pixels, or 0 for free
+  function ratio() {
+    const a = aspect();
+    if (a === 'free') return 0;
+    if (a === 'original') {
+      const long = Math.max(geo.frame_width, geo.frame_height), short = Math.min(geo.frame_width, geo.frame_height);
+      return geo.frame_width >= geo.frame_height ? long / short : short / long;
+    }
+    const [w, h] = a.split(':').map(parseFloat);
+    return w / h;
+  }
+
+  // where the photo is drawn inside the <img> (object-fit: contain)
+  function imgRect() {
+    const img = $('#pv');
+    const W = img.clientWidth, H = img.clientHeight, nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+    const k = Math.min(W / nw, H / nh);
+    return {x: img.offsetLeft + (W - nw * k) / 2, y: img.offsetTop + (H - nh * k) / 2, w: nw * k, h: nh * k};
+  }
+
+  function drawBox() {
+    if (!cropping || !box) return;
+    const r = imgRect(), f = $('#cropframe'), b = $('#cropbox');
+    Object.assign(f.style, {left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px'});
+    Object.assign(b.style, {left: box.left * r.w + 'px', top: box.top * r.h + 'px',
+                            width: (box.right - box.left) * r.w + 'px', height: (box.bottom - box.top) * r.h + 'px'});
+  }
+
+  // the largest box of the chosen ratio inside b, centered on it
+  function fitRatio(b, keep) {
+    const q = ratio();
+    if (!q) return b;
+    const fw = geo.frame_width, fh = geo.frame_height;
+    let w = (b.right - b.left) * fw, h = (b.bottom - b.top) * fh;
+    if (keep === 'w') h = w / q; else if (keep === 'h') w = h * q; else if (w / h > q) w = h * q; else h = w / q;
+    const cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
+    const out = {left: cx - w / fw / 2, right: cx + w / fw / 2, top: cy - h / fh / 2, bottom: cy + h / fh / 2};
+    if (keep && out.left >= 0 && out.top >= 0 && out.right <= 1 && out.bottom <= 1) return out;
+    return keep ? fitRatio(b) : out;
+  }
+
+  // drag inside the box to move it, near an edge or corner to resize
+  let drag = null;
+  $('#cropframe').addEventListener('pointerdown', (e) => {
+    const r = imgRect(), x = (e.clientX - $('#cropframe').getBoundingClientRect().left) / r.w,
+          y = (e.clientY - $('#cropframe').getBoundingClientRect().top) / r.h;
+    const tol = 14 / r.w, toly = 14 / r.h;
+    const near = (a, b, t) => Math.abs(a - b) < t;
+    const inY = y > box.top - toly && y < box.bottom + toly, inX = x > box.left - tol && x < box.right + tol;
+    const edges = {left: inY && near(x, box.left, tol), right: inY && near(x, box.right, tol),
+                   top: inX && near(y, box.top, toly), bottom: inX && near(y, box.bottom, toly)};
+    const inside = x > box.left && x < box.right && y > box.top && y < box.bottom;
+    if (!Object.values(edges).some(Boolean) && !inside) return;
+    drag = {x, y, start: {...box}, edges, move: !Object.values(edges).some(Boolean)};
+    $('#cropframe').setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  $('#cropframe').addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const r = imgRect(), fr = $('#cropframe').getBoundingClientRect();
+    const dx = (e.clientX - fr.left) / r.w - drag.x, dy = (e.clientY - fr.top) / r.h - drag.y;
+    const s = drag.start, min = 0.02;
+    let b = {...s};
+    if (drag.move) {
+      const mx = Math.max(-s.left, Math.min(1 - s.right, dx)), my = Math.max(-s.top, Math.min(1 - s.bottom, dy));
+      b = {left: s.left + mx, right: s.right + mx, top: s.top + my, bottom: s.bottom + my};
+    } else {
+      const E = drag.edges;
+      if (E.left) b.left = Math.max(0, Math.min(s.right - min, s.left + dx));
+      if (E.right) b.right = Math.min(1, Math.max(s.left + min, s.right + dx));
+      if (E.top) b.top = Math.max(0, Math.min(s.bottom - min, s.top + dy));
+      if (E.bottom) b.bottom = Math.min(1, Math.max(s.top + min, s.bottom + dy));
+      if (ratio()) {
+        // keep the dragged side and the opposite corner or edge in place
+        const horiz = E.left || E.right, vert = E.top || E.bottom;
+        const f = fitRatio(b, horiz ? 'w' : 'h');
+        if (horiz && vert) {
+          if (E.top) { f.top = b.bottom - (f.bottom - f.top); f.bottom = b.bottom; } else { f.bottom = b.top + (f.bottom - f.top); f.top = b.top; }
+          if (E.left) { f.left = b.right - (f.right - f.left); f.right = b.right; } else { f.right = b.left + (f.right - f.left); f.left = b.left; }
+          if (f.left < 0 || f.top < 0 || f.right > 1 || f.bottom > 1) return;
+        }
+        b = f;
+      }
+    }
+    box = b;
+    drawBox();
+  });
+  const endDrag = () => { drag = null; };
+  $('#cropframe').addEventListener('pointerup', endDrag);
+  $('#cropframe').addEventListener('pointercancel', endDrag);
+
+  function setCropping(on) {
+    cropping = on;
+    $('#cropframe').hidden = !on;
+    $('#crop-done').hidden = !on;
+    $('#crop-edit').hidden = on;
+    if (on) { box = fitRatio({...geo.crop}); drawBox(); }
+    preview(on ? 'drag the box, then apply;' : '');
+  }
+  $('#crop-edit').onclick = () => setCropping(true);
+  $('#crop-cancel').onclick = () => setCropping(false);
+  $('#crop-apply').onclick = () => {
+    const a = aspect();
+    queueGeo({crop: box, ...(a !== 'free' ? {aspect: a} : {})});
+    setCropping(false);
+  };
+  $('#crop-reset').onclick = () => queueGeo({crop: null});
+  document.querySelectorAll('#geo [data-rotate]').forEach((b) => b.onclick = () => queueGeo({rotate: +b.dataset.rotate}));
+  document.querySelectorAll('#geo [data-flip]').forEach((b) => b.onclick = () => queueGeo({flip: b.dataset.flip}));
+  $('#angle').oninput = () => { $('#angle-val').textContent = fmtAngle($('#angle').value); queueGeo({angle: +$('#angle').value}); };
+  $('#angle-lab').ondblclick = () => { $('#angle').value = 0; $('#angle').oninput(); };
+  $('#angle-val').onclick = () => {
+    const t = prompt('angle (degrees, -180 to 180)', (+$('#angle').value).toFixed(2));
+    if (t !== null && !isNaN(parseFloat(t))) { $('#angle').value = t; queueGeo({angle: parseFloat(t)}); }
+  };
+  // a new aspect reshapes the box being drawn, else the photo's crop
+  const aspectChanged = () => {
+    if (cropping) { box = fitRatio(box); drawBox(); }
+    else if (geo.crop.left > 0 || geo.crop.top > 0 || geo.crop.right < 1 || geo.crop.bottom < 1) queueGeo({aspect: aspect()});
+  };
+  $('#aspect').onchange = () => { $('#aspect').dataset.portrait = ''; aspectChanged(); };
+  $('#aspect-swap').onclick = () => { $('#aspect').dataset.portrait = $('#aspect').dataset.portrait ? '' : '1'; aspectChanged(); };
+  addEventListener('resize', drawBox);
+
   // one change in flight; newer slider values replace the waiting one
-  function queue(op, name, v) {
-    pending = {operation: op, values: {[name]: v}};
+  // (only a change of the same kind: a rotation isn't dropped for a slider)
+  let waiting = [];
+  const DONE = {set: 'set', geometry: 'crop/rotate', history_end: 'undo/redo'};
+  function queue(op, name, v) { enqueue('set', {operation: op, values: {[name]: v}}); }
+  function queueGeo(body) { enqueue('geometry', body); }
+  function enqueue(path, body) {
+    const key = path === 'set' ? 'set ' + body.operation + ' ' + Object.keys(body.values)
+              : path === 'geometry' ? 'geometry ' + Object.keys(body).sort() : 'history';
+    waiting = waiting.filter((w) => w.key !== key);
+    waiting.push({key, path, body});
+    pending = true;
     if (!busy) run();
   }
   async function run() {
     busy = true;
-    while (pending) {
-      const p = pending; pending = null;
+    while (waiting.length) {
+      const {path, body: p} = waiting.shift();
+      pending = waiting.length > 0;
       const t = performance.now();
-      const r = await api('set', p);
+      const r = await api(path, p);
       if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
       dirty = true;
       const s = await r.json();
-      renderHistory(s.history);
-      const m = state.modules.find((x) => x.operation === p.operation);
+      if (path === 'history_end') show(s);
+      else renderHistory(s.history);
+      if (path === 'geometry') showGeo(s.geometry);
+      const m = path === 'set' && state.modules.find((x) => x.operation === p.operation);
       if (m && !m.enabled && s.enabled) { m.enabled = true; show(state); }
-      if (!pending) await preview(`set ${Math.round(performance.now() - t)} ms,`);
+      if (!waiting.length) await preview(`${DONE[path]} ${Math.round(performance.now() - t)} ms,`);
     }
+    endTarget = null;
+    pending = false;
     busy = false;
   }
 
+  // export: darktable's export of the saved edit, into darktable's export
+  // folder (by default $(FILE_FOLDER)/darktable_exported); unsaved changes
+  // are saved first, after asking
+  $('#ex-go').onclick = async () => {
+    if (busy) { status('wait for the last change to finish'); return; }
+    if (dirty && !confirm('Export uses the saved edit. Save your changes and export?')) return;
+    const body = {save: dirty};
+    const fmt = $('#ex-format').value, size = $('#ex-size').value, q = parseInt($('#ex-quality').value);
+    if (fmt) body.format = fmt;
+    if (size !== '') body.size = parseInt(size);
+    if (q > 0) body.quality = q;
+    if ($('#ex-hq').checked) body.high_quality = true;
+    $('#ex-go').disabled = true;
+    $('#ex-result').textContent = 'exporting…';
+    const t = performance.now();
+    const r = await api('export', body);
+    $('#ex-go').disabled = false;
+    const s = await r.json();
+    if (!r.ok) { $('#ex-result').textContent = 'export failed: ' + s.detail; return; }
+    if (s.saved) dirty = false;
+    const box = $('#ex-result');
+    box.textContent = '';
+    if (s.skipped) { box.textContent = 'skipped: the file exists (darktable\'s conflict setting)'; return; }
+    box.append(`exported in ${((performance.now() - t) / 1000).toFixed(1)} s to ${s.file} · `);
+    const a = document.createElement('a');
+    a.href = s.download; a.textContent = 'download'; a.setAttribute('download', '');
+    box.append(a);
+  };
+
+  $('#undo').onclick = () => step(-1);
+  $('#redo').onclick = () => step(1);
   $('#save').onclick = async () => {
     const r = await api('save', {});
     const s = await r.json();
@@ -155,7 +427,19 @@
 
   addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
   document.addEventListener('keydown', (e) => {
+    // a focused slider has no undo of its own; text fields keep theirs
+    const typing = e.target.closest('select, textarea') || (e.target.closest('input') && e.target.type !== 'range'
+                                                            && e.target.type !== 'checkbox');
+    const k = e.key.toLowerCase();
+    if (!typing && (e.metaKey || e.ctrlKey) && !e.altKey && (k === 'z' || (k === 'y' && !e.shiftKey))) {
+      e.preventDefault();
+      if (cropping) setCropping(false);
+      step(k === 'z' && !e.shiftKey ? -1 : 1);
+      return;
+    }
     if (e.target.closest('input, select, textarea')) return;
+    if (cropping && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
+    if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];
     const a = go && document.getElementById(go);
     if (a) { e.preventDefault(); a.click(); }

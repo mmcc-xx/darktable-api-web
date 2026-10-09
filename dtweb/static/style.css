@@ -66,3 +66,16 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .history .undone { opacity: .45; }
 .buttons { display: flex; gap: .4rem; flex-wrap: wrap; }
 #darkroom { font-size: .8rem; }
+
+/* crop & rotate: the box drawn over the uncropped preview */
+.cropframe { position: absolute; overflow: hidden; touch-action: none; cursor: crosshair; }
+.cropbox { position: absolute; border: 1px solid #fff; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); cursor: move;
+           background-image: linear-gradient(to right, transparent calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% + .5px), transparent calc(66.67% + .5px)),
+                             linear-gradient(to bottom, transparent calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% + .5px), transparent calc(66.67% + .5px)); }
+#geo select { max-width: 7rem; }
+.history-head { display: flex; align-items: center; justify-content: space-between; }
+.undo-redo button { padding: 0 .5rem; font-size: 1rem; line-height: 1.4; }
+.undo-redo button:disabled { opacity: .35; cursor: default; }
+#export label { font-size: .85rem; display: inline-flex; align-items: center; gap: .3rem; }
+#export .num { width: 3.5rem; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .2rem .3rem; }
+#ex-result { word-break: break-all; }

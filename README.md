@@ -24,6 +24,18 @@ owner.
   on/off; history with undo/redo; save; discard unsaved; start over from
   darktable's defaults (your workflow and auto-apply presets); previous/next
   within the current filter.
+- **Crop & rotate:** turn by 90°, mirror, straighten by an angle (darktable's
+  rotate and perspective module, with its automatic crop so no blank
+  corners show), and crop: *crop…* shows the whole photo with a box to drag
+  (edges and corners resize, inside moves; Enter applies, Esc cancels),
+  optionally held to an aspect ratio (⤾ swaps portrait/landscape). These
+  edit darktable's own flip, ashift and crop modules, so darktable shows
+  the same crop.
+- **Export:** darktable's own export of the saved edit (format, longest
+  side, quality, high quality; darktable's export settings for anything left
+  at its default, including the folder, by default
+  `$(FILE_FOLDER)/darktable_exported/`), with a download link for the file.
+  Unsaved changes are saved first, after asking.
 - **Sharing the library with darktable:** darktable and the engine can't
   have one library open at the same time. The header has *release to
   darktable* (the engine closes the library; unsaved edits are kept), *take

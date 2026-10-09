@@ -14,9 +14,10 @@ from pathlib import Path
 
 import asyncio
 import json
+import secrets
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -226,7 +227,13 @@ async def _state(image_id: int) -> dict:
                         "lo": max(lo, x.get("min", lo)), "hi": min(hi, x.get("max", hi)),
                         "factor": factor, "unit": unit, "digits": digits})
         modules.append({"operation": op, "title": title, "enabled": g["enabled"], "fields": out})
-    return {"modules": modules, "history": await engine.edit(image_id, "history_list")}
+    try:
+        geometry = await engine.edit(image_id, "geometry_get")
+    except EngineError as exc:
+        # a darktable built before crop & rotate: the rest still works
+        geometry = {"missing": str(exc)}
+    return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
+            "geometry": geometry}
 
 
 def _bad(exc: EngineError, code: int = 400) -> HTTPException:
@@ -259,6 +266,29 @@ async def photo_set(image_id: int, body: SetBody):
     try:
         r = await engine.edit(image_id, "module_set", operation=body.operation, values=body.values)
         return {**r, "history": await engine.edit(image_id, "history_list")}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class GeometryBody(BaseModel):
+    """Any of: rotate (90, -90, 180), flip ("horizontal", "vertical"), angle
+    (degrees), autocrop, crop ({left, top, right, bottom} in 0..1 of the
+    uncropped image, or null to remove it), aspect ("free", "original",
+    "3:2", ...). Only the fields sent are changed."""
+    model_config = {"extra": "forbid"}
+    rotate: int | None = None
+    flip: str | None = None
+    angle: float | None = None
+    autocrop: str | None = None
+    crop: dict | None = None
+    aspect: str | None = None
+
+
+@app.post("/api/photo/{image_id}/geometry")
+async def photo_geometry(image_id: int, body: GeometryBody):
+    try:
+        g = await engine.edit(image_id, "geometry_set", **body.model_dump(exclude_unset=True))
+        return {"geometry": g, "history": await engine.edit(image_id, "history_list")}
     except EngineError as exc:
         raise _bad(exc)
 
@@ -308,11 +338,58 @@ async def photo_reset(image_id: int):
         raise _bad(exc, 502)
 
 
+class ExportBody(BaseModel):
+    """darktable's export of the photo's saved edit. Omitted settings come
+    from darktable's export module (format, size, quality, high quality,
+    output folder pattern, conflict handling). save: save unsaved changes
+    first (else they are refused)."""
+    model_config = {"extra": "forbid"}
+    format: str | None = None
+    size: int | None = None              # longest side in pixels, 0 = full size
+    quality: int | None = None
+    high_quality: bool | None = None
+    save: bool = False
+
+
+EXPORTED: dict[str, Path] = {}           # download token -> file this app exported
+
+
+@app.post("/api/photo/{image_id}/export")
+async def photo_export(image_id: int, body: ExportBody):
+    params: dict = {"imgid": image_id, "save": body.save}
+    if body.format:
+        params["format"] = body.format
+    if body.size is not None:
+        params["max_width"] = params["max_height"] = max(0, body.size)
+    if body.quality:
+        params["quality"] = body.quality
+    if body.high_quality is not None:
+        params["high_quality"] = body.high_quality
+    try:
+        r = await engine.call("export", **params)
+    except EngineError as exc:
+        raise _bad(exc, 409 if "unsaved" in str(exc) else 400)
+    if r.get("file"):
+        token = secrets.token_urlsafe(12)
+        EXPORTED[token] = Path(r["file"])
+        r["download"] = f"/api/export/{token}/{Path(r['file']).name}"
+    return r
+
+
+@app.get("/api/export/{token}/{name}")
+async def export_download(token: str, name: str):
+    """A file this app exported, for the browser to save."""
+    path = EXPORTED.get(token)
+    if path is None or path.name != name or not path.is_file():
+        raise HTTPException(404, "no such export (exports are offered for download until the web app restarts)")
+    return FileResponse(path, filename=path.name)
+
+
 @app.get("/api/photo/{image_id}/preview.jpg")
-async def photo_preview(image_id: int, w: int = 1200, h: int = 1200):
+async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: bool = False):
     w, h = max(64, min(w, 2560)), max(64, min(h, 2560))
     try:
-        r = await engine.render(image_id, w, h)
+        r = await engine.render(image_id, w, h, uncropped)
     except EngineError as exc:
         raise _bad(exc, 502)
     if r is None:

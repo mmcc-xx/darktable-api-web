@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}library · darktable-api{% endblock %}
+{% block top %}
+<form class="filters" method="get" action="/">
+  <select name="roll" onchange="this.form.submit()">
+    <option value="">all film rolls</option>
+    {% for r in rolls %}<option value="{{ r.id }}"{% if filters.roll == r.id %} selected{% endif %}>{{ r.folder.rsplit('/', 1)[-1] }} ({{ r.count }})</option>{% endfor %}
+  </select>
+  <select name="rating" onchange="this.form.submit()">
+    {% for r in ratings %}<option value="{{ r }}"{% if filters.rating == r %} selected{% endif %}>{{ {'visible': 'not rejected', 'all': 'all', 'rejected': 'rejected'}.get(r, '★ ' ~ r ~ ' or more') }}</option>{% endfor %}
+  </select>
+  <select name="label" onchange="this.form.submit()">
+    <option value="">any label</option>
+    {% for name in labels %}<option value="{{ loop.index0 }}"{% if filters.label == loop.index0 %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  </select>
+</form>
+{% endblock %}
+{% block main %}
+{% if error %}<p class="banner">{{ error }}</p>{% endif %}
+{% if lib.state == 'released' %}
+<p class="banner">The library is released to darktable. Take it back (top right) to browse and edit.</p>
+{% elif lib.state != 'owned' %}
+<p class="banner">The engine isn't available: {{ lib.detail }}</p>
+{% else %}
+<p class="count">{{ total }} photos · arrows move, Enter opens, 0–5 rate, R rejects, F1–F5 toggle labels</p>
+<div class="grid" id="grid" data-query="{{ query }}">
+  {% include "_tiles.html" %}
+</div>
+{% endif %}
+<script>
+(() => {
+  const grid = document.getElementById('grid');
+  if (!grid) return;
+  const query = grid.dataset.query;
+  const key = 'lib:' + query;
+  try { sessionStorage.setItem('lib:query', query); } catch (e) {}
+  let current = null;
+
+  function setCurrent(t, scroll) {
+    if (current) current.classList.remove('current');
+    current = t;
+    if (t) { t.classList.add('current'); if (scroll) t.scrollIntoView({block: 'nearest'}); }
+  }
+
+  async function loadMore(btn) {
+    const r = await fetch(btn.dataset.more);
+    btn.remove();
+    if (r.ok) grid.insertAdjacentHTML('beforeend', await r.text());
+  }
+
+  async function post(tile, path, body) {
+    const r = await fetch(`/api/photo/${tile.dataset.id}/${path}?${query}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    if (!r.ok) { alert((await r.json()).detail); return; }
+    const was = tile === current;
+    tile.outerHTML = await r.text();
+    const t = document.getElementById(tile.id);
+    if (was) setCurrent(t, false);
+  }
+  function rate(tile, v) { post(tile, 'rating', {rating: v === 'reject' ? 'reject' : parseInt(v)}); }
+  function label(tile, n) {
+    const on = !tile.dataset.labels.split(',').includes(String(n));
+    post(tile, 'label', {label: n, on});
+  }
+
+  grid.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.more) return loadMore(b);
+    const tile = b.closest('.tile');
+    if (b.dataset.rate) rate(tile, b.dataset.rate);
+    else if (b.dataset.label) label(tile, parseInt(b.dataset.label));
+  });
+  grid.addEventListener('mousemove', (e) => { const t = e.target.closest('.tile'); if (t && t !== current) setCurrent(t, false); });
+
+  // remember where we were when a photo is opened
+  grid.addEventListener('click', (e) => {
+    const a = e.target.closest('a');
+    if (!a) return;
+    try { sessionStorage.setItem(key, JSON.stringify({y: scrollY, n: grid.querySelectorAll('.tile').length, id: a.closest('.tile').dataset.id})); } catch (e) {}
+  }, true);
+
+  function cols() {
+    const ts = grid.querySelectorAll('.tile');
+    if (ts.length < 2) return 1;
+    const top = ts[0].offsetTop;
+    let n = 0;
+    for (const t of ts) { if (t.offsetTop !== top) break; n++; }
+    return n;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input, select, textarea')) return;
+    const tiles = [...grid.querySelectorAll('.tile')];
+    if (!tiles.length) return;
+    const i = current ? tiles.indexOf(current) : -1;
+    const move = {ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols(), ArrowUp: -cols()}[e.key];
+    if (move) {
+      e.preventDefault();
+      setCurrent(tiles[Math.max(0, Math.min(tiles.length - 1, i < 0 ? 0 : i + move))], true);
+      return;
+    }
+    if (!current) return;
+    if (e.key === 'Enter') { current.querySelector('a').click(); }
+    else if (/^[0-5]$/.test(e.key)) { e.preventDefault(); rate(current, e.key); }
+    else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); rate(current, 'reject'); }
+    else if (/^F[1-5]$/.test(e.key)) { e.preventDefault(); label(current, parseInt(e.key.slice(1)) - 1); }
+  });
+
+  // coming back from a photo: load as many tiles as before, then scroll back
+  (async () => {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(key)); } catch (e) {}
+    if (!saved) return;
+    let btn;
+    while (grid.querySelectorAll('.tile').length < saved.n && (btn = grid.querySelector('[data-more]'))) await loadMore(btn);
+    scrollTo(0, saved.y);
+    const t = document.getElementById('t' + saved.id);
+    if (t) { setCurrent(t, false); t.classList.add('last-viewed'); }
+  })();
+})();
+</script>
+{% endblock %}

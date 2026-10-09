@@ -1,0 +1,14 @@
+<figure class="tile{% if img.rejected %} rejected{% endif %}" id="t{{ img.id }}" data-id="{{ img.id }}"
+        data-rating="{{ 'reject' if img.rejected else img.rating }}" data-labels="{{ img.labels | join(',') }}">
+  <a href="/photo/{{ img.id }}?{{ query }}">
+    <img src="/thumb/{{ img.id }}/{{ version(img) }}.jpg" alt="{{ img.filename }}" loading="lazy">
+  </a>
+  <figcaption>
+    <span class="name" title="{{ img.folder }}/{{ img.filename }}">{{ img.filename }}{% if img.version %} ({{ img.version }}){% endif %}</span>
+    <span class="ctl">
+      <button class="rej{% if img.rejected %} on{% endif %}" data-rate="reject" title="reject (r)">✕</button>
+      {% for n in range(1, 6) %}<button class="star{% if not img.rejected and img.rating >= n %} on{% endif %}" data-rate="{{ n }}" title="{{ n }} (key {{ n }})">★</button>{% endfor %}
+      {% for name in labels %}<button class="dot {{ name }}{% if loop.index0 in img.labels %} on{% endif %}" data-label="{{ loop.index0 }}" title="{{ name }} (F{{ loop.index }})"></button>{% endfor %}
+    </span>
+  </figcaption>
+</figure>

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}darktable-api{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <a href="/" class="brand" id="brand">darktable-api</a>
+    {% block top %}{% endblock %}
+    <span class="lib" id="lib" data-state="{{ lib.state }}">
+      <span id="lib-text">
+        {% if lib.state == 'owned' %}library: {{ lib.library }}
+        {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% endif %}
+        {% else %}{{ lib.detail }}{% endif %}
+      </span>
+      {% if lib.state == 'owned' %}
+        <button data-lib="release" title="close the library so darktable can open it">release to darktable</button>
+      {% elif lib.state == 'released' %}
+        <button data-lib="acquire">take back</button>
+        {% if lib.holder_pid %}<button data-lib="takeover" title="quit darktable the normal way, then take the library back">quit darktable and take back</button>{% endif %}
+      {% endif %}
+    </span>
+  </header>
+  <main>{% block main %}{% endblock %}</main>
+  <script>
+    try { const q = sessionStorage.getItem('lib:query'); if (q !== null) document.getElementById('brand').href = '/?' + q; } catch (e) {}
+    document.querySelectorAll('[data-lib]').forEach((b) => b.onclick = async () => {
+      const action = b.dataset.lib;
+      if (action === 'takeover' && !confirm('Quit darktable (it saves its edits), then take the library back?')) return;
+      b.disabled = true;
+      document.getElementById('lib-text').textContent = action === 'takeover' ? 'asking darktable to quit…' : '…';
+      const r = await fetch(`/api/library/${action}`, {method: 'POST'});
+      const s = await r.json();
+      if (!r.ok) { document.getElementById('lib-text').textContent = s.detail; b.disabled = false; return; }
+      if (s.draft) sessionStorage.setItem('draft-note', s.draft);
+      location.reload();
+    });
+  </script>
+</body>
+</html>

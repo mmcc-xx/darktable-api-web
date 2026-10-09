@@ -1,0 +1,4 @@
+{% for img in images %}{% include "_tile.html" %}{% endfor %}
+{% if next_offset is not none %}
+<button class="more" data-more="/grid?offset={{ next_offset }}&{{ query }}">load more</button>
+{% endif %}

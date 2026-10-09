@@ -1,0 +1,67 @@
+:root {
+  --bg: #1b1c1e; --panel: #25272a; --line: #3a3d42; --text: #d8d8d8; --dim: #8b8f96;
+  --accent: #e0a24a; --tile: 200px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+         border-radius: 4px; padding: .3rem .7rem; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.secondary { color: var(--dim); }
+button.link { background: none; border: none; padding: 0; text-align: left; }
+select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+         border-radius: 4px; padding: .25rem .4rem; }
+main { padding: .8rem 1rem 2rem; }
+h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
+
+/* header */
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; padding: .5rem 1rem;
+       background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+.brand { font-weight: 700; color: var(--text); }
+.filters { display: flex; gap: .4rem; flex-wrap: wrap; }
+.lib { margin-left: auto; font-size: .8rem; color: var(--dim); display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.lib button { font-size: .8rem; padding: .15rem .5rem; }
+.lib[data-state="released"] #lib-text { color: var(--accent); }
+.banner { background: #3a2f1c; border: 1px solid #6b5228; padding: .6rem .8rem; border-radius: 4px; }
+.count { color: var(--dim); font-size: .8rem; margin: 0 0 .6rem; }
+
+/* library grid */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--tile), 1fr)); gap: .6rem; }
+.tile { margin: 0; background: var(--panel); border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
+.tile.current { border-color: var(--accent); }
+.tile.last-viewed figcaption { background: #33302a; }
+.tile.rejected img { opacity: .4; }
+.tile img { display: block; width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #111; }
+.tile figcaption { padding: .25rem .4rem; font-size: .75rem; display: flex; flex-direction: column; gap: .15rem; }
+.tile .name { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctl { display: flex; align-items: center; gap: .1rem; }
+.ctl button { background: none; border: none; padding: 0 .1rem; color: #555; font-size: .9rem; line-height: 1; }
+.ctl button.on { color: var(--accent); }
+.ctl .rej.on { color: #d0534a; }
+.ctl .rej { margin-right: .3rem; }
+.ctl button.dot { width: .7rem; height: .7rem; border-radius: 50%; margin-left: .2rem; padding: 0; opacity: .35; border: 1px solid transparent; }
+.ctl button.dot.on { opacity: 1; border-color: #fff; }
+.dot.red { background: #d0534a; } .dot.yellow { background: #d8c34a; } .dot.green { background: #5aa85a; }
+.dot.blue { background: #4a7ed0; } .dot.purple { background: #9a5ad0; }
+.more { grid-column: 1 / -1; justify-self: center; margin: .6rem; }
+
+/* photo page */
+.photo-nav { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+.photo-nav .name { color: var(--dim); }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 1rem; align-items: start; }
+@media (max-width: 800px) { .editor { grid-template-columns: 1fr; } }
+.view { position: sticky; top: 3.2rem; }
+.view img { width: 100%; height: auto; max-height: calc(100vh - 6rem); object-fit: contain; display: block; background: #111; }
+.status { font-size: .8rem; color: var(--dim); margin: .3rem 0; }
+.module { margin: 0 0 1rem; }
+.module .head { font-weight: 600; display: block; margin-bottom: .3rem; }
+.field { display: grid; grid-template-columns: 1fr auto; column-gap: .5rem; font-size: .85rem; }
+.field input[type=range] { grid-column: 1 / -1; width: 100%; margin: .1rem 0 .5rem; accent-color: var(--accent); }
+.field span { user-select: none; }
+.val { font-variant-numeric: tabular-nums; text-decoration: underline dotted; }
+.history { font-size: .8rem; max-height: 14rem; overflow-y: auto; padding-left: 0; list-style: none; margin: 0; }
+.history .current { font-weight: 700; color: var(--accent); }
+.history .undone { opacity: .45; }
+.buttons { display: flex; gap: .4rem; flex-wrap: wrap; }

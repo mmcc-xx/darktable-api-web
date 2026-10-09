@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}{{ img.filename if img else image_id }} · darktable-api{% endblock %}
+{% block top %}
+<nav class="photo-nav">
+  <a href="/?{{ query }}" id="back" title="back to the library (Esc)">‹ library</a>
+  {% if prev %}<a href="/photo/{{ prev }}?{{ query }}" id="prev" title="previous (Page Up)">← prev</a>{% endif %}
+  {% if total %}<span>{{ pos }} / {{ total }}</span>{% endif %}
+  {% if next %}<a href="/photo/{{ next }}?{{ query }}" id="next" title="next (Page Down)">next →</a>{% endif %}
+  {% if img %}<span class="name">{{ img.filename }}</span>{% endif %}
+</nav>
+{% endblock %}
+{% block main %}
+{% if error %}<p class="banner">{{ error }}</p>
+{% elif lib.state == 'released' %}<p class="banner">The library is released to darktable. Take it back (top right) to edit.</p>
+{% elif lib.state != 'owned' %}<p class="banner">The engine isn't available: {{ lib.detail }}</p>
+{% else %}
+<div class="editor">
+  <div class="view">
+    <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
+    <p id="status" class="status">opening…</p>
+  </div>
+  <div class="side">
+    <div id="panels"></div>
+    <h4>history</h4>
+    <ol id="history" class="history"></ol>
+    <p class="buttons">
+      <button id="save">save</button>
+      <button id="reload" class="secondary" title="reopen the photo as saved">discard unsaved</button>
+      <button id="reset" class="secondary" title="delete the edit and apply darktable's defaults">start over</button>
+    </p>
+  </div>
+</div>
+<script>
+(() => {
+  const ID = {{ img.id }};
+  const api = (p, body) => fetch(`/api/photo/${ID}/${p}`, body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const $ = (s) => document.querySelector(s);
+  const status = (t) => { $('#status').textContent = t; };
+  let state = null, pending = null, busy = false, url = null, dirty = false;
+
+  const fmt = (f, v) => (v * f.factor).toFixed(f.digits) + (f.unit ? ' ' + f.unit : '');
+
+  async function preview(note) {
+    const img = $('#pv');
+    const w = Math.min(2048, Math.round((img.parentElement.clientWidth || 800) * (window.devicePixelRatio || 1)));
+    const t = performance.now();
+    const r = await fetch(`/api/photo/${ID}/preview.jpg?w=${w}&h=${w}`);
+    if (r.status === 204) return;
+    if (!r.ok) { status('preview failed: ' + (await r.text())); return; }
+    const blob = await r.blob();
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(blob);
+    img.src = url;
+    status(`${note || ''} render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
+  }
+
+  function renderHistory(h) {
+    const ol = $('#history');
+    ol.innerHTML = '';
+    [{num: -1, operation: 'original', applied: true}, ...h.items].forEach((it) => {
+      const li = document.createElement('li');
+      const b = document.createElement('button');
+      b.className = 'link' + (it.num + 1 === h.history_end ? ' current' : '') + (it.applied ? '' : ' undone');
+      b.textContent = `${it.num + 1} ${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}${it.enabled === false ? ' (off)' : ''}`;
+      b.onclick = async () => {
+        const r = await api('history_end', {end: it.num + 1});
+        if (r.ok) { dirty = true; show(await r.json()); preview('undo/redo:'); }
+      };
+      li.appendChild(b);
+      ol.appendChild(li);
+    });
+    ol.lastChild && ol.querySelector('.current') && ol.querySelector('.current').scrollIntoView({block: 'nearest'});
+  }
+
+  function show(s) {
+    state = s;
+    const box = $('#panels');
+    box.innerHTML = '';
+    s.modules.forEach((m) => {
+      const sec = document.createElement('section');
+      sec.className = 'module';
+      const head = document.createElement('label');
+      head.className = 'head';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = !!m.enabled; cb.disabled = !!m.missing;
+      cb.onchange = async () => {
+        const r = await api('enable', {operation: m.operation, enabled: cb.checked});
+        if (r.ok) { dirty = true; show(await r.json()); preview(); }
+      };
+      head.append(cb, ' ' + m.title + (m.missing ? ' (not available)' : ''));
+      sec.appendChild(head);
+      m.fields.forEach((f) => {
+        const row = document.createElement('div');
+        row.className = 'field';
+        const lab = document.createElement('span');
+        lab.textContent = f.label; lab.title = 'double-click: back to default';
+        const val = document.createElement('button');
+        val.className = 'link val'; val.textContent = fmt(f, f.value); val.title = 'type a value';
+        const sl = document.createElement('input');
+        sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = (f.hi - f.lo) / 1000; sl.value = f.value;
+        const send = (v) => { f.value = v; val.textContent = fmt(f, v); queue(m.operation, f.name, v); };
+        sl.oninput = () => send(parseFloat(sl.value));
+        lab.ondblclick = () => { sl.value = f.default; send(f.default); };
+        val.onclick = () => {
+          const t = prompt(`${f.label}${f.unit ? ' (' + f.unit + ')' : ''}`, (f.value * f.factor).toFixed(f.digits));
+          if (t === null || isNaN(parseFloat(t))) return;
+          const v = parseFloat(t) / f.factor; sl.value = v; send(v);
+        };
+        row.append(lab, val, sl);
+        sec.appendChild(row);
+      });
+      box.appendChild(sec);
+    });
+    renderHistory(s.history);
+  }
+
+  // one change in flight; newer slider values replace the waiting one
+  function queue(op, name, v) {
+    pending = {operation: op, values: {[name]: v}};
+    if (!busy) run();
+  }
+  async function run() {
+    busy = true;
+    while (pending) {
+      const p = pending; pending = null;
+      const t = performance.now();
+      const r = await api('set', p);
+      if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
+      dirty = true;
+      const s = await r.json();
+      renderHistory(s.history);
+      const m = state.modules.find((x) => x.operation === p.operation);
+      if (m && !m.enabled && s.enabled) { m.enabled = true; show(state); }
+      if (!pending) await preview(`set ${Math.round(performance.now() - t)} ms,`);
+    }
+    busy = false;
+  }
+
+  $('#save').onclick = async () => {
+    const r = await api('save', {});
+    const s = await r.json();
+    if (r.ok) dirty = false;
+    status(r.ok ? (s.changed ? `saved (${s.history_items} history items)` : 'nothing new to save') : 'save failed: ' + s.detail);
+  };
+  $('#reload').onclick = () => { if (!dirty || confirm('Discard unsaved changes?')) open(true); };
+  $('#reset').onclick = async () => {
+    if (!confirm("Start over from darktable's defaults? This deletes the photo's whole edit.")) return;
+    const r = await api('reset', {});
+    if (!r.ok) { status('start over failed: ' + (await r.json()).detail); return; }
+    dirty = false;
+    show(await r.json());
+    preview('started over from the defaults,');
+  };
+
+  addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input, select, textarea')) return;
+    const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];
+    const a = go && document.getElementById(go);
+    if (a) { e.preventDefault(); a.click(); }
+  });
+
+  async function open(fresh) {
+    const t = performance.now();
+    const r = await api('open' + (fresh ? '?fresh=true' : ''), {});
+    if (!r.ok) { status('engine error: ' + (await r.json()).detail); return; }
+    const s = await r.json();
+    dirty = !!s.unsaved;
+    show(s);
+    await preview(`opened in ${Math.round(performance.now() - t)} ms,`);
+    const note = sessionStorage.getItem('draft-note');
+    if (note) { status('after taking the library back: ' + note); sessionStorage.removeItem('draft-note'); }
+  }
+  open();
+})();
+</script>
+{% endif %}
+{% endblock %}

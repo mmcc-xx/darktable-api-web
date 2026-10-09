@@ -12,11 +12,12 @@
     {% block top %}{% endblock %}
     <span class="lib" id="lib" data-state="{{ lib.state }}">
       <span id="lib-text">
-        {% if lib.state == 'owned' %}library: {{ lib.library }}
+        {% if lib.state == 'owned' and lib.server == 'gui' %}library served by darktable's window: {{ lib.library }}
+        {% elif lib.state == 'owned' %}library: {{ lib.library }}
         {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% endif %}
         {% else %}{{ lib.detail }}{% endif %}
       </span>
-      {% if lib.state == 'owned' %}
+      {% if lib.state == 'owned' and lib.server != 'gui' %}
         <button data-lib="release" title="close the library so darktable can open it">release to darktable</button>
       {% elif lib.state == 'released' %}
         <button data-lib="acquire">take back</button>

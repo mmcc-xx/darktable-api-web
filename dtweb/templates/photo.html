@@ -169,6 +169,8 @@
     es.onmessage = (m) => {
       const ev = JSON.parse(m.data);
       if (ev.type === 'library_released') return location.reload();
+      // darktable's window is taking over from the engine: reload once it serves
+      if (ev.type === 'handover') return setTimeout(() => location.reload(), 8000);
       if (ev.imgid !== ID || !['edit', 'saved', 'reset', 'reopened', 'closed'].includes(ev.type)) return;
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(async () => {

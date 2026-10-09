@@ -72,6 +72,17 @@ assistant and the browser work on the same photos at the same time:
   AI's changes land in the same history, and whoever saves saves both;
 - the page updates live when the AI (or another browser on another web app
   instance) edits the photo shown, rates it or changes its labels;
+- **darktable's own window can serve the library too**, so you can edit in
+  darktable, the browser and with the AI at the same time. Start darktable
+  (built from the same fork) with `--api-socket` pointing at the same socket:
+
+      /path/to/darktable/build/bin/darktable --configdir library-copy/config \
+          --cachedir library-copy/cache --api-socket library-copy/darktable-api.sock
+
+  It takes over from a running engine automatically (unsaved edits
+  included); the photo open in its darkroom is shared live with the browser
+  (sliders move in both directions); when darktable quits, the apps go back
+  to the engine. The header then says "served by darktable's window";
 - the engine keeps up to 3 photos open (`DTAPI_MAX_SESSIONS`) and stops 10
   minutes after the last app disconnected (`DTAPI_IDLE_EXIT`), unless
   something is unsaved.

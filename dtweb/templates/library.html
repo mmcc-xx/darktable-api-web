@@ -113,6 +113,8 @@
     es.onmessage = async (m) => {
       const ev = JSON.parse(m.data);
       if (ev.type === 'library_released' || ev.type === 'library_acquired') return location.reload();
+      // darktable's window is taking over from the engine: reload once it serves
+      if (ev.type === 'handover') return setTimeout(() => location.reload(), 8000);
       if (!['image', 'saved', 'reset'].includes(ev.type)) return;
       const t = document.getElementById('t' + ev.imgid);
       if (!t) return;

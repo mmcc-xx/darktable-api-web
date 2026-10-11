@@ -14,6 +14,7 @@ from pathlib import Path
 
 import asyncio
 import json
+import os
 import secrets
 
 from fastapi import FastAPI, HTTPException, Request
@@ -399,6 +400,84 @@ async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: 
         "Cache-Control": "no-store",
         "X-Render-Ms": str(timing.get("process_ms", "")),
         "X-Total-Ms": str(timing.get("total_ms", ""))})
+
+
+@app.get("/api/photo/{image_id}/before.jpg")
+async def photo_before(image_id: int, step: int, w: int = 1200, h: int = 1200):
+    """The photo as it was at a history step (0 = the original), for a
+    before/after comparison; nothing is undone."""
+    w, h = max(64, min(w, 2560)), max(64, min(h, 2560))
+    try:
+        r = await engine.render(image_id, w, h, region={"history_end": step}, lane="before")
+    except EngineError as exc:
+        raise _bad(exc, 502)
+    if r is None:
+        return Response(status_code=204)
+    return Response(r[0], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+# alternatives an AI rendered (darktable-api-mcp's propose_alternatives):
+# the engine writes them here, and the event that announces them carries
+# their paths and the steps that make each one
+VARIANTS_DIR = Path(os.environ.get("DTAPI_VARIANTS_DIR")
+                    or Path.home() / ".cache/darktable-api-mcp/variants").resolve()
+VARIANT_METHODS = {"module_set", "module_enable", "preset_apply", "blend_set", "curve_set", "geometry_set"}
+
+
+# the alternatives last proposed for each photo, until one is applied or
+# they are dismissed: a photo page opened later still shows them
+PENDING_VARIANTS: dict[int, list[dict]] = {}
+
+
+def _remember_shared(ev: dict) -> None:
+    if ev.get("type") != "shared" or ev.get("kind") != "variants":
+        return
+    data = ev.get("data") or {}
+    if data.get("variants"):
+        PENDING_VARIANTS[ev["imgid"]] = data["variants"]
+    else:
+        PENDING_VARIANTS.pop(ev.get("imgid"), None)
+
+
+engine.add_listener(_remember_shared)
+
+
+@app.get("/api/photo/{image_id}/alternatives")
+async def photo_alternatives(image_id: int):
+    return {"variants": PENDING_VARIANTS.get(image_id, [])}
+
+
+@app.post("/api/photo/{image_id}/alternatives/dismiss")
+async def photo_alternatives_dismiss(image_id: int):
+    PENDING_VARIANTS.pop(image_id, None)
+    return {"variants": []}
+
+
+@app.get("/api/variant")
+async def variant_image(path: str):
+    p = Path(path).resolve()
+    if VARIANTS_DIR not in p.parents or p.suffix != ".jpg" or not p.is_file():
+        raise HTTPException(404, "no such alternative")
+    return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+class StepsBody(BaseModel):
+    steps: list[dict]
+
+
+@app.post("/api/photo/{image_id}/apply_steps")
+async def photo_apply_steps(image_id: int, body: StepsBody):
+    """Apply an alternative: its steps, each as the edit it names."""
+    bad = [st.get("method") for st in body.steps if st.get("method") not in VARIANT_METHODS]
+    if bad or not body.steps:
+        raise HTTPException(400, f"steps must be edits of these kinds: {', '.join(sorted(VARIANT_METHODS))}")
+    try:
+        for st in body.steps:
+            await engine.edit(image_id, st["method"], **(st.get("params") or {}))
+        PENDING_VARIANTS.pop(image_id, None)
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
 
 
 @app.get("/tile/{image_id}", response_class=HTMLResponse)

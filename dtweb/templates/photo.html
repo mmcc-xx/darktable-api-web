@@ -18,6 +18,21 @@
   <div class="view">
     <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
     <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
+    <div id="cmpframe" class="cmpframe" hidden>
+      <img id="cmp-before" alt="before"><div id="cmp-line" class="cmp-line"></div>
+      <span class="cmp-tag left">before</span><span class="cmp-tag right">after</span>
+    </div>
+    <div id="cmp-side" class="cmp-side" hidden>
+      <figure><img id="cmp-side-before" alt="before"><figcaption>before</figcaption></figure>
+      <figure><img id="cmp-side-after" alt="after"><figcaption>after</figcaption></figure>
+    </div>
+    <p id="cmp-bar" class="cmp-bar" hidden><span id="cmp-label"></span>
+      <button id="cmp-close" class="secondary">close comparison</button></p>
+    <section id="alts" class="alts" hidden>
+      <div class="alts-head"><span id="alts-title">alternatives</span>
+        <button id="alts-close" class="secondary" title="dismiss the alternatives">✕</button></div>
+      <div id="alts-list" class="alts-list"></div>
+    </section>
     <p id="status" class="status">opening…</p>
   </div>
   <div class="side">
@@ -74,6 +89,7 @@
     </section>
     <h4 class="history-head">history
       <span class="undo-redo">
+        <button id="compare" class="secondary" title="compare the edit with the original (before/after)">⇆</button>
         <button id="undo" class="secondary" title="undo (⌘Z / Ctrl+Z)">↶</button>
         <button id="redo" class="secondary" title="redo (⇧⌘Z / Ctrl+Y)">↷</button>
       </span>
@@ -133,7 +149,8 @@
     $('#redo').disabled = h.history_end >= h.items.length;
     const ol = $('#history');
     ol.innerHTML = '';
-    [{num: -1, operation: 'original', applied: true}, ...h.items].forEach((it) => {
+    // newest at the top, original at the bottom, as darktable's history panel
+    [{num: -1, operation: 'original', applied: true}, ...h.items].reverse().forEach((it) => {
       const li = document.createElement('li');
       const b = document.createElement('button');
       b.className = 'link' + (it.num + 1 === h.history_end ? ' current' : '') + (it.applied ? '' : ' undone');
@@ -409,6 +426,110 @@
     box.append(a);
   };
 
+  // ── before/after: the edit against an earlier step (0 = the original),
+  // asked for here (⇆) or by an AI (compare_before_after). Same shape: a
+  // wipe over the preview; a different shape (a new crop): side by side
+  let cmp = null, beforeUrl = null;
+  async function openCompare(stepNo, label) {
+    const img = $('#pv');
+    const w = Math.min(2048, Math.round((img.parentElement.clientWidth || 800) * (window.devicePixelRatio || 1)));
+    const r = await fetch(`/api/photo/${ID}/before.jpg?step=${stepNo}&w=${w}&h=${w}`);
+    if (r.status === 204) return;
+    if (!r.ok) { status('comparison failed: ' + (await r.text())); return; }
+    if (beforeUrl) URL.revokeObjectURL(beforeUrl);
+    beforeUrl = URL.createObjectURL(await r.blob());
+    cmp = {step: stepNo, split: cmp ? cmp.split : 0.5};
+    $('#cmp-before').src = beforeUrl;
+    $('#cmp-side-before').src = beforeUrl;
+    await $('#cmp-before').decode().catch(() => {});
+    $('#cmp-label').textContent = label || `before: ${stepNo ? 'step ' + stepNo : 'the original'} · after: the current edit`;
+    $('#cmp-bar').hidden = false;
+    placeCompare();
+  }
+  function closeCompare() {
+    cmp = null;
+    $('#cmpframe').hidden = $('#cmp-side').hidden = $('#cmp-bar').hidden = true;
+    $('#pv').hidden = false;
+  }
+  function placeCompare() {
+    if (!cmp) return;
+    const b = $('#cmp-before'), a = $('#pv');
+    const same = b.naturalWidth && a.naturalWidth
+      && Math.abs(b.naturalWidth / b.naturalHeight - a.naturalWidth / a.naturalHeight) < 0.01;
+    $('#cmp-side').hidden = same;
+    a.hidden = !same;
+    $('#cmpframe').hidden = !same;
+    if (!same) { $('#cmp-side-after').src = a.src; return; }
+    const r = imgRect(), f = $('#cmpframe');
+    Object.assign(f.style, {left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px'});
+    const pct = (cmp.split * 100).toFixed(2) + '%';
+    b.style.clipPath = `inset(0 calc(100% - ${pct}) 0 0)`;
+    $('#cmp-line').style.left = pct;
+  }
+  $('#pv').addEventListener('load', placeCompare);
+  addEventListener('resize', placeCompare);
+  $('#cmpframe').addEventListener('pointerdown', (e) => {
+    const f = $('#cmpframe');
+    f.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const r = f.getBoundingClientRect();
+      cmp.split = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+      placeCompare();
+    };
+    move(e);
+    f.onpointermove = move;
+    f.onpointerup = () => { f.onpointermove = null; };
+  });
+  $('#cmp-close').onclick = closeCompare;
+  $('#compare').onclick = () => cmp ? closeCompare() : openCompare(0);
+
+  // ── alternatives an AI rendered for the user to pick from
+  // (propose_alternatives): click one to look at it large, apply one
+  let alts = null, showing = null;
+  function showAlternatives(list) {
+    alts = list;
+    const box = $('#alts-list');
+    box.textContent = '';
+    for (const v of list) {
+      const fig = document.createElement('figure');
+      const im = document.createElement('img');
+      im.src = '/api/variant?path=' + encodeURIComponent(v.path);
+      im.alt = v.label;
+      im.title = 'show it large (click again for the current edit)';
+      im.onclick = () => {
+        showing = showing === v ? null : v;
+        $('#pv').src = showing ? im.src : url;
+        for (const f of box.children) f.classList.toggle('on', showing && f === fig);
+        status(showing ? `showing alternative ${v.number}: ${v.label} (not applied)` : 'the current edit');
+      };
+      const cap = document.createElement('figcaption');
+      cap.textContent = `${v.number}. ${v.label}`;
+      const b = document.createElement('button');
+      b.textContent = 'apply';
+      b.onclick = async () => {
+        status(`applying ${v.label}…`);
+        const r = await api('apply_steps', {steps: v.steps});
+        if (!r.ok) { status('apply failed: ' + (await r.json()).detail); return; }
+        dirty = true;
+        closeAlternatives();
+        show(await r.json());
+        preview(`applied "${v.label}",`);
+      };
+      cap.append(' ', b);
+      fig.append(im, cap);
+      box.append(fig);
+    }
+    $('#alts-title').textContent = `alternatives (${list.length}): not applied`;
+    $('#alts').hidden = false;
+  }
+  function closeAlternatives(dismiss) {
+    if (dismiss && alts) api('alternatives/dismiss', {});
+    alts = null;
+    if (showing) { showing = null; $('#pv').src = url; }
+    $('#alts').hidden = true;
+  }
+  $('#alts-close').onclick = () => closeAlternatives(true);
+
   $('#undo').onclick = () => step(-1);
   $('#redo').onclick = () => step(1);
   $('#save').onclick = async () => {
@@ -457,6 +578,14 @@
       if (ev.type === 'library_released') return location.reload();
       // darktable's window is taking over from the engine: reload once it serves
       if (ev.type === 'handover') return setTimeout(() => location.reload(), 8000);
+      if (ev.type === 'shared' && ev.imgid === ID) {
+        const d = ev.data || {};
+        if (ev.kind === 'compare')
+          openCompare(d.history_end, d.before_label && `before: ${d.before_label} · after: ${d.after_label}`);
+        else if (ev.kind === 'variants' && d.variants) showAlternatives(d.variants);
+        else if (ev.kind === 'variants' && d.applied) { closeAlternatives(); status(`"${d.applied}" applied by another client`); }
+        return;
+      }
       if (ev.imgid !== ID || !['edit', 'saved', 'reset', 'reopened', 'closed'].includes(ev.type)) return;
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(async () => {
@@ -479,6 +608,10 @@
     dirty = !!s.unsaved;
     show(s);
     await preview(`opened in ${Math.round(performance.now() - t)} ms${s.joined ? ', shared with another client' : ''},`);
+    // alternatives proposed while this page wasn't open; #compare=N opens a comparison with step N
+    api('alternatives').then((r) => r.ok && r.json()).then((a) => a && a.variants.length && showAlternatives(a.variants));
+    const m = location.hash.match(/compare=(\d+)/);
+    if (m) openCompare(+m[1]);
     const note = sessionStorage.getItem('draft-note');
     if (note) { status('after taking the library back: ' + note); sessionStorage.removeItem('draft-note'); }
   }

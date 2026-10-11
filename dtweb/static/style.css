@@ -4,6 +4,8 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+/* elements' own display rules must not show what the page hides */
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, sans-serif; }
 a { color: var(--accent); text-decoration: none; }
 button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
@@ -80,3 +82,25 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 #export label { font-size: .85rem; display: inline-flex; align-items: center; gap: .3rem; }
 #export .num { width: 3.5rem; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .2rem .3rem; }
 #ex-result { word-break: break-all; }
+
+/* before/after and alternatives */
+.cmpframe { position: absolute; overflow: hidden; touch-action: none; cursor: ew-resize; }
+.cmpframe img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.cmp-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 3px #000; }
+.cmp-tag { position: absolute; top: .4rem; font-size: .75rem; padding: .1rem .4rem; background: rgba(0, 0, 0, .55); border-radius: 3px; }
+.cmp-tag.left { left: .4rem; } .cmp-tag.right { right: .4rem; }
+.cmp-side { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.cmp-side figure { margin: 0; }
+.cmp-side img { width: 100%; max-height: calc(100vh - 8rem); object-fit: contain; background: #111; display: block; }
+.cmp-side figcaption { font-size: .8rem; color: var(--dim); text-align: center; }
+.cmp-bar { font-size: .8rem; color: var(--dim); display: flex; gap: .6rem; align-items: center; margin: .3rem 0; }
+.cmp-bar button { font-size: .8rem; padding: .1rem .5rem; }
+.alts { margin: .5rem 0; padding: .4rem; border: 1px solid var(--accent); border-radius: 4px; }
+.alts-head { display: flex; justify-content: space-between; align-items: center; font-size: .85rem; margin-bottom: .3rem; }
+.alts-head button { padding: 0 .4rem; }
+.alts-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .4rem; }
+.alts-list figure { margin: 0; border: 2px solid transparent; border-radius: 3px; }
+.alts-list figure.on { border-color: var(--accent); }
+.alts-list img { width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #111; display: block; cursor: zoom-in; }
+.alts-list figcaption { font-size: .75rem; padding: .2rem; display: flex; justify-content: space-between; align-items: center; gap: .3rem; }
+.alts-list figcaption button { font-size: .75rem; padding: .05rem .4rem; }

@@ -83,7 +83,7 @@ class Engine:
         self._lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._ids = itertools.count(1)
-        self._render_seq = 0
+        self._render_seqs: dict[str, int] = {}
         self._edits_waiting = 0
         self._listeners: list[Callable[[dict], None]] = []
         self._handover_until = 0.0     # darktable's window is taking over: don't start an engine
@@ -270,17 +270,19 @@ class Engine:
             return r
 
     async def render(self, image_id: int, width: int, height: int,
-                     uncropped: bool = False, region: dict | None = None) -> tuple[bytes, dict] | None:
-        """JPEG bytes and timings, or None if a newer render request arrived
-        while this one waited. uncropped leaves the crop module's box out
-        (to draw a new one on); region ({zoom, center_x, center_y}) renders
-        width x height of the photo at that scale (1 = 100%)."""
-        self._render_seq += 1
-        seq = self._render_seq
+                     uncropped: bool = False, region: dict | None = None,
+                     lane: str = "main") -> tuple[bytes, dict] | None:
+        """JPEG bytes and timings, or None if a newer render request in the
+        same lane arrived while this one waited. uncropped leaves the crop
+        module's box out (to draw a new one on); region ({zoom, center_x,
+        center_y}, history_end) renders width x height of the photo at that
+        scale (1 = 100%), or an earlier step. Lanes are dropped separately:
+        a comparison's before image doesn't cancel the edit's preview."""
+        self._render_seqs[lane] = seq = self._render_seqs.get(lane, 0) + 1
         self._edits_waiting += 1
         async with self._lock:
             self._edits_waiting -= 1
-            if seq != self._render_seq:
+            if seq != self._render_seqs[lane]:
                 return None
             return await self._to_file(lambda **p: self._session_call(image_id, "render", **p),
                                        width=width, height=height, quality=85, uncropped=uncropped,

@@ -31,6 +31,15 @@ owner.
   optionally held to an aspect ratio (⤾ swaps portrait/landscape). These
   edit darktable's own flip, ashift and crop modules, so darktable shows
   the same crop.
+- **Before/after:** ⇆ in the history header compares the edit with the
+  original: a wipe with a line to drag over the photo, or side by side when
+  the crop changed. An AI (darktable-api-mcp's `compare_before_after`) opens
+  the same comparison from its own "before" step; `#compare=N` in the
+  address opens one with step N.
+- **Alternatives:** versions an AI rendered for you to choose from
+  (`propose_alternatives`: crops, B&W filters, looks) show as a strip under
+  the photo, not applied: click one to see it large, *apply* applies it as
+  history steps, ✕ dismisses them. A page opened later still shows them.
 - **Export:** darktable's own export of the saved edit (format, longest
   side, quality, high quality; darktable's export settings for anything left
   at its default, including the folder, by default

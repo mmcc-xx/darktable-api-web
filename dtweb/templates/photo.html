@@ -137,7 +137,9 @@
       const li = document.createElement('li');
       const b = document.createElement('button');
       b.className = 'link' + (it.num + 1 === h.history_end ? ' current' : '') + (it.applied ? '' : ' undone');
-      b.textContent = `${it.num + 1} ${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}${it.enabled === false ? ' (off)' : ''}`;
+      // darktable's own name for the step ("local contrast", "exposure • sky"); older engines give only the operation
+      const name = it.label || `${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}`;
+      b.textContent = `${it.num + 1} ${name}${it.enabled === false ? ' (off)' : ''}`;
       b.onclick = () => goTo(it.num + 1);
       li.appendChild(b);
       ol.appendChild(li);

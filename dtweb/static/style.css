@@ -65,7 +65,8 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .history .current { font-weight: 700; color: var(--accent); }
 .history .undone { opacity: .45; }
 .buttons { display: flex; gap: .4rem; flex-wrap: wrap; }
-#darkroom { font-size: .8rem; }
+#darkroom { font-size: .8rem; border: 1px solid var(--accent); border-radius: 4px; padding: .15rem .5rem; }
+#darkroom:hover { background: var(--accent); color: var(--bg); }
 
 /* crop & rotate: the box drawn over the uncropped preview */
 .cropframe { position: absolute; overflow: hidden; touch-action: none; cursor: crosshair; }

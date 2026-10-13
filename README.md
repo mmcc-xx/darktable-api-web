@@ -13,6 +13,8 @@ versions, which an older darktable may not be able to read.
 Written with AI assistance (Claude), directed and reviewed by the repository
 owner.
 
+[Demo Video](https://www.youtube.com/watch?v=VDfZbxvvniY)
+
 ## What it does
 
 - **Library:** film rolls, filters (film roll, rating, color label), a

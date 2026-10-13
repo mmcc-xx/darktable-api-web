@@ -60,12 +60,13 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
 
 1. **darktable-api**, from the `darktable-api` branch of the darktable fork:
    https://github.com/mmcc-xx/darktable/tree/darktable-api
-   (see `src/api/README.md` there). Build darktable as usual with the MCP
-   server enabled, which builds `darktable-api` alongside:
+   (see `src/api/README.md` there). Build darktable as usual with the API
+   enabled (`-DUSE_API=ON`, off by default), which builds `darktable-api`
+   alongside:
 
        git clone -b darktable-api --recurse-submodules https://github.com/mmcc-xx/darktable.git
        cd darktable
-       cmake -B build -G Ninja -DUSE_MCP=ON
+       cmake -B build -G Ninja -DUSE_API=ON
        cmake --build build --target darktable-api darktable
 
    darktable's README lists the build dependencies (on macOS:

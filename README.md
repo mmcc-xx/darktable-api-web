@@ -64,6 +64,14 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
    enabled (`-DUSE_API=ON`, off by default), which builds `darktable-api`
    alongside:
 
+   Which branch: the one matching the darktable you edit the library with
+   (a newer darktable writes module versions an older one can't open):
+
+   | Your darktable | Branch |
+   |---|---|
+   | 5.6.x (5.6.2 on) | `darktable-api-5.6` |
+   | built from master | `darktable-api` |
+
        git clone -b darktable-api --recurse-submodules https://github.com/mmcc-xx/darktable.git
        cd darktable
        cmake -B build -G Ninja -DUSE_API=ON

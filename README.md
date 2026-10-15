@@ -79,7 +79,7 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
        git clone -b darktable-api-5.6 --recurse-submodules https://github.com/mmcc-xx/darktable.git
        cd darktable
        cmake -B build -G Ninja -DUSE_API=ON
-       cmake --build build --target darktable-api darktable
+       cmake --build build
 
    darktable's README lists the build dependencies (on macOS:
    `brew bundle --file=.ci/Brewfile`). `darktable` (the GUI) from the same

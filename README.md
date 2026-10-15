@@ -10,6 +10,11 @@ edits and writes the history to the library exactly as darktable does.
 does that). Saving writes darktable's history in the engine's module
 versions, which an older darktable may not be able to read.
 
+The app works with the current engine but lags behind it: many newer
+engine features (drawn and AI masks, dust removal, AI denoise, styles,
+alternatives, ...) are only reachable through
+[darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp) for now.
+
 Written with AI assistance (Claude), directed and reviewed by the repository
 owner.
 
@@ -58,21 +63,20 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
 
 ## Requirements
 
-1. **darktable-api**, from the `darktable-api` branch of the darktable fork:
-   https://github.com/mmcc-xx/darktable/tree/darktable-api
-   (see `src/api/README.md` there). Build darktable as usual with the API
+1. **darktable-api**, from the darktable fork
+   https://github.com/mmcc-xx/darktable (see `src/api/README.md` there). Build darktable as usual with the API
    enabled (`-DUSE_API=ON`, off by default), which builds `darktable-api`
    alongside:
 
    Which branch: the one matching the darktable you edit the library with
    (a newer darktable writes module versions an older one can't open):
 
-   | Your darktable | Branch |
-   |---|---|
-   | 5.6.x (5.6.2 on) | `darktable-api-5.6` |
-   | built from master | `darktable-api` |
+   | Your darktable | Branch | What it is |
+   |---|---|---|
+   | 5.6.x (5.6.2 on) | `darktable-api-5.6` | darktable's 5.6 release with the API; darktable's point releases are merged in as they come out. Most people want this one |
+   | built from master | `darktable-api` (the fork's default branch) | darktable's development version with the API; darktable master is merged in weekly once the tests pass. Its edits use module versions darktable 5.6 can't open |
 
-       git clone -b darktable-api --recurse-submodules https://github.com/mmcc-xx/darktable.git
+       git clone -b darktable-api-5.6 --recurse-submodules https://github.com/mmcc-xx/darktable.git
        cd darktable
        cmake -B build -G Ninja -DUSE_API=ON
        cmake --build build --target darktable-api darktable
@@ -80,6 +84,12 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
    darktable's README lists the build dependencies (on macOS:
    `brew bundle --file=.ci/Brewfile`). `darktable` (the GUI) from the same
    build is the one to open the library copy with.
+
+   To update: `git pull --recurse-submodules` and the `cmake --build` line
+   again, then restart the app. darktable's changes come in as merges, so
+   a pull always works (a `darktable-api` clone made before 2026-10-13,
+   when that branch was still rebased, needs one
+   `git fetch origin && git reset --hard origin/darktable-api`).
 2. Python 3.10 or later.
 
 ## Run

@@ -161,3 +161,9 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .alts-list img { width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #111; display: block; cursor: zoom-in; }
 .alts-list figcaption { font-size: .75rem; padding: .2rem; display: flex; justify-content: space-between; align-items: center; gap: .3rem; }
 .alts-list figcaption button { font-size: .75rem; padding: .05rem .4rem; }
+.looks { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: .35rem; margin-top: .4rem; }
+.look { display: flex; flex-direction: column; gap: .15rem; padding: 2px; border: 2px solid transparent; border-radius: 3px; background: none; color: var(--dim); font-size: .7rem; text-align: left; cursor: pointer; }
+.look img { width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #111; display: block; }
+.look span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.look:hover { color: var(--text); }
+.look.on { border-color: var(--accent); color: var(--text); }

@@ -34,7 +34,11 @@ owner.
   aperture, ISO, focal length, bias). Live preview from darktable's pipeline with sliders for
   exposure, AgX (or sigmoid, for photos edited with it) and color balance
   rgb in collapsible sections (basic, color, export), each summing up its
-  settings in one line when closed; module on/off. Pinned under the panel:
+  settings in one line when closed; module on/off. A black & white
+  section: one checkbox adds a second color calibration instance with a
+  gray mix (the first keeps the white balance), and a strip of looks
+  (luminance, red/orange/yellow/green/blue filters, darktable's film
+  presets) rendered on the current edit; a click applies one. Pinned under the panel:
   the history step ("step 14 of 14: local contrast", click for the whole
   history), undo/redo, save, discard unsaved, and ⋯ for export and start
   over from darktable's defaults (your workflow and auto-apply presets).

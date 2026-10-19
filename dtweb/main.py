@@ -13,9 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import asyncio
+import base64
 import json
 import os
 import secrets
+import tempfile
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
@@ -260,7 +262,130 @@ async def _state(image_id: int) -> dict:
         # a darktable built before crop & rotate: the rest still works
         geometry = {"missing": str(exc)}
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
-            "geometry": geometry}
+            "geometry": geometry, "mono": await _mono(image_id)}
+
+
+# ── black & white: a second color calibration instance with a gray mix, as
+# darktable's monochrome presets make (the first keeps the white balance).
+# The looks: darktable's film presets, and color filters as gray mixes on
+# top of its luminance-based preset (darktable has no filter presets)
+MONO_BASE = "_builtin_monochrome | luminance-based"
+MONO_LOOKS = [
+    # key, label, preset, gray mix (R, G, B) set after it
+    ("luminance", "luminance", MONO_BASE, None),
+    ("red", "red filter", MONO_BASE, [0.80, 0.20, 0.00]),
+    ("orange", "orange filter", MONO_BASE, [0.60, 0.35, 0.05]),
+    ("yellow", "yellow filter", MONO_BASE, [0.45, 0.45, 0.10]),
+    ("green", "green filter", MONO_BASE, [0.20, 0.65, 0.15]),
+    ("blue", "blue filter", MONO_BASE, [0.15, 0.25, 0.60]),
+    ("acros", "Fuji Acros 100", "_builtin_monochrome | Fuji Acros 100", None),
+    ("delta100", "Ilford Delta 100", "_builtin_monochrome | ILFORD DELTA 100", None),
+    ("delta400", "Ilford Delta 400–3200", "_builtin_monochrome | ILFORD DELTA 400 - 3200", None),
+    ("fp4", "Ilford FP4+", "_builtin_monochrome | ILFORD FP4+", None),
+    ("hp5", "Ilford HP5+", "_builtin_monochrome | ILFORD HP5+", None),
+]
+
+
+async def _mono(image_id: int) -> dict | None:
+    """The B&W instance (the last color calibration instance after the first
+    with a gray mix): instance, enabled, gray mix; None if there is none."""
+    mods = (await engine.edit(image_id, "module_list"))["modules"]
+    for m in reversed([m for m in mods if m["operation"] == "channelmixerrgb" and m["instance"] > 0]):
+        g = await engine.edit(image_id, "module_get", operation="channelmixerrgb", instance=m["instance"])
+        grey = next((x["value"] for x in g["fields"] if x["name"] == "grey"), None)
+        if grey and any(abs(v) > 1e-6 for v in grey[:3]):
+            mono = {"instance": m["instance"], "enabled": g["enabled"], "grey": grey[:3]}
+            return {**mono, "look": _current_look(mono)}
+    return None
+
+
+def _look_steps(key: str, instance: int) -> list[dict]:
+    look = next((x for x in MONO_LOOKS if x[0] == key), None)
+    if look is None:
+        raise HTTPException(404, f"no B&W look '{key}'")
+    steps = [{"method": "preset_apply", "params": {"operation": "channelmixerrgb", "instance": instance,
+                                                    "name": look[2]}}]
+    if look[3]:
+        steps.append({"method": "module_set", "params": {"operation": "channelmixerrgb", "instance": instance,
+                                                         "values": {"grey": [*look[3], 0.0]}}})
+    return steps
+
+
+class MonoBody(BaseModel):
+    on: bool
+
+
+@app.post("/api/photo/{image_id}/mono")
+async def photo_mono(image_id: int, body: MonoBody):
+    """Black & white on: turn the B&W instance back on, or add one (a new
+    color calibration instance, not a copy) with the luminance look. Off:
+    turn it off, keeping its gray mix."""
+    try:
+        m = await _mono(image_id)
+        if m:
+            if m["enabled"] != body.on:
+                await engine.edit(image_id, "module_enable", operation="channelmixerrgb",
+                                  instance=m["instance"], enabled=body.on)
+        elif body.on:
+            n = (await engine.edit(image_id, "module_add", operation="channelmixerrgb", instance=0))["instance"]
+            for st in _look_steps("luminance", n):
+                await engine.edit(image_id, st["method"], **st["params"])
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+@app.get("/api/photo/{image_id}/mono_looks")
+async def photo_mono_looks(image_id: int, size: int = 200):
+    """Each B&W look applied to the current edit, rendered small (as data
+    URLs); the edit is unchanged."""
+    size = max(64, min(size, 600))
+    try:
+        m = await _mono(image_id)
+        if not m:
+            raise HTTPException(409, "black & white is off")
+        with tempfile.TemporaryDirectory(prefix="dtweb_mono_") as tmp:
+            variants = [{"label": key, "path": str(Path(tmp) / f"{key}.jpg"), "steps": _look_steps(key, m["instance"])}
+                        for key, *_ in MONO_LOOKS]
+            r = await engine.edit(image_id, "render_variants", width=size, height=size, variants=variants)
+            out = []
+            for (key, label, preset, grey), v, var in zip(MONO_LOOKS, r["variants"], variants):
+                data = None if v.get("error") else base64.b64encode(Path(var["path"]).read_bytes()).decode()
+                out.append({"key": key, "label": label, "error": v.get("error"),
+                             "src": data and "data:image/jpeg;base64," + data})
+    except EngineError as exc:
+        raise _bad(exc, 502)
+    return {"looks": out}
+
+
+def _current_look(m: dict) -> str | None:
+    """The look whose gray mix the B&W instance has (film presets: their mix
+    as darktable's source sets it)."""
+    films = {"acros": [0.333, 0.313, 0.353], "delta100": [0.2455, 0.2537, 0.5008],
+             "delta400": [0.2438, 0.2361, 0.5201], "fp4": [0.2415, 0.2215, 0.5370],
+             "hp5": [0.2530, 0.2596, 0.4874], "luminance": [0.0, 1.0, 0.0]}
+    for key, _, _, grey in MONO_LOOKS:
+        want = grey or films.get(key)
+        if want and all(abs(a - b) < 2e-3 for a, b in zip(m["grey"], want)):
+            return key
+    return None
+
+
+class LookBody(BaseModel):
+    key: str
+
+
+@app.post("/api/photo/{image_id}/mono_look")
+async def photo_mono_look(image_id: int, body: LookBody):
+    try:
+        m = await _mono(image_id)
+        if not m:
+            raise HTTPException(409, "black & white is off")
+        for st in _look_steps(body.key, m["instance"]):
+            await engine.edit(image_id, st["method"], **st["params"])
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
 
 
 def _bad(exc: EngineError, code: int = 400) -> HTTPException:

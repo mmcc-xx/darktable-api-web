@@ -146,6 +146,7 @@
     img.src = url;
     if (cropping) img.decode().then(drawBox, drawBox);
     status(`${note || ''} render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
+    looksSoon();
   }
 
   // undo/redo move history_end by a step, as darktable's ctrl+z/ctrl+y do;
@@ -236,6 +237,7 @@
       mods.forEach((m) => body.appendChild(modulePanel(m, resum)));
       box.appendChild(d);
     }
+    box.appendChild(monoSection(s.mono));
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
   }
@@ -274,6 +276,96 @@
       sec.appendChild(row);
     });
     return sec;
+  }
+
+  // ── black & white: a second color calibration instance (the engine adds
+  // it); the strip shows each look on the current edit, a click applies one
+  let looks = null, looksFor = null, looksTimer = null;
+  const LOOK_NAMES = {luminance: 'luminance', red: 'red filter', orange: 'orange filter', yellow: 'yellow filter',
+                      green: 'green filter', blue: 'blue filter', acros: 'Fuji Acros 100', delta100: 'Ilford Delta 100',
+                      delta400: 'Ilford Delta 400–3200', fp4: 'Ilford FP4+', hp5: 'Ilford HP5+'};
+  function monoSection(m) {
+    const d = document.createElement('details');
+    d.className = 'sec'; d.dataset.sec = 'bw';
+    const sum = document.createElement('summary');
+    const line = document.createElement('span');
+    line.className = 'sum';
+    line.textContent = !m ? 'off' : !m.enabled ? 'off (kept)' : (LOOK_NAMES[m.look] || 'custom gray mix');
+    sum.append('black & white ', line);
+    const body = document.createElement('div');
+    body.className = 'sec-body';
+    const head = document.createElement('label');
+    head.className = 'head';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!(m && m.enabled);
+    cb.onchange = async () => {
+      if (busy) { cb.checked = !cb.checked; status('wait for the last change to finish'); return; }
+      status(cb.checked ? 'black & white…' : 'back to color…');
+      const r = await api('mono', {on: cb.checked});
+      if (!r.ok) { status('not applied: ' + (await r.json()).detail); return; }
+      dirty = true; show(await r.json()); preview(cb.checked ? 'black & white,' : 'color,');
+    };
+    head.append(cb, ' black & white');
+    head.title = 'a second color calibration instance with a gray mix; the first keeps the white balance';
+    const strip = document.createElement('div');
+    strip.className = 'looks'; strip.id = 'looks';
+    body.append(head, strip);
+    d.append(sum, body);
+    keepOpen(d);
+    d.addEventListener('toggle', () => d.open && loadLooks());
+    drawLooks(strip, m);
+    return d;
+  }
+  function drawLooks(strip, m) {
+    strip.textContent = '';
+    strip.hidden = !(m && m.enabled);
+    if (strip.hidden) return;
+    for (const [key, label] of Object.entries(LOOK_NAMES)) {
+      const v = looks && looks.find((x) => x.key === key);
+      const b = document.createElement('button');
+      b.className = 'look' + (m.look === key ? ' on' : '');
+      b.setAttribute('aria-pressed', m.look === key);
+      b.title = v && v.error ? `${label}: ${v.error}` : `apply ${label}`;
+      const im = document.createElement('img');
+      im.alt = ''; if (v && v.src) im.src = v.src;
+      const cap = document.createElement('span');
+      cap.textContent = label;
+      b.append(im, cap);
+      b.onclick = () => applyLook(key, label);
+      strip.append(b);
+    }
+  }
+  // the thumbnails show the current edit: rendered again after it changes
+  // (not after a look is applied: each look replaces the B&W instance whole)
+  async function loadLooks(force) {
+    const d = document.querySelector('details[data-sec="bw"]');
+    if (!d || !d.open || !state.mono || !state.mono.enabled) return;
+    const key = editKey();
+    if (!force && looksFor === key) return;
+    looksFor = key;
+    const r = await api('mono_looks');
+    if (!r.ok || looksFor !== key) return;
+    looks = (await r.json()).looks;
+    const strip = $('#looks');
+    if (strip) drawLooks(strip, state.mono);
+  }
+  // the edit apart from the B&W instance's look
+  const editKey = () => state.history.items.slice(0, state.history.history_end)
+    .filter((it) => !(it.operation === 'channelmixerrgb' && it.instance === state.mono.instance)).length
+    + ':' + state.history.items.length + ':' + state.history.history_end;
+  const looksSoon = () => { clearTimeout(looksTimer); looksTimer = setTimeout(loadLooks, 800); };
+  async function applyLook(key, label) {
+    if (busy) { status('wait for the last change to finish'); return; }
+    status(`applying ${label}…`);
+    const before = editKey();
+    const r = await api('mono_look', {key});
+    if (!r.ok) { status('not applied: ' + (await r.json()).detail); return; }
+    dirty = true;
+    const s = await r.json();
+    show(s);
+    if (looksFor === before) looksFor = editKey();   // the thumbnails still hold
+    drawLooks($('#looks'), s.mono);
+    preview(`${label},`);
   }
 
   // ── crop & rotate ──────────────────────────────────────────────────────

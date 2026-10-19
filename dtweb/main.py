@@ -21,6 +21,7 @@ import secrets
 import shlex
 import shutil
 import tempfile
+import zipfile
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
@@ -220,6 +221,22 @@ async def duplicate(image_id: int, body: DuplicateBody):
         return await engine.call("image_duplicate", imgid=image_id, virgin=body.virgin, save=body.save)
     except EngineError as exc:
         raise _bad(exc)
+
+
+@app.get("/api/photo/{image_id}/details")
+async def photo_details(image_id: int):
+    """The lighttable's detail panel: the image, its exif lines, title,
+    description and tags (darktable's own tags left out)."""
+    try:
+        info = await engine.call("image_info", imgid=image_id)
+        meta = await engine.call("image_metadata", imgid=image_id)
+    except EngineError as exc:
+        raise HTTPException(404, str(exc))
+    m = meta.get("metadata") or {}
+    return {"image": info["image"], "version": _version(info["image"]), "shot": _shot(info.get("exif")),
+            "title": m.get("title", ""), "description": m.get("description", ""),
+            "tags": [t if isinstance(t, str) else t.get("name", "") for t in meta.get("tags") or []
+                     if not (t if isinstance(t, str) else t.get("name", "")).startswith("darktable|")]}
 
 
 def _tile(request: Request, img: dict):
@@ -681,8 +698,7 @@ class ExportBody(BaseModel):
 EXPORTED: dict[str, Path] = {}           # download token -> file this app exported
 
 
-@app.post("/api/photo/{image_id}/export")
-async def photo_export(image_id: int, body: ExportBody):
+def _export_params(image_id: int, body: ExportBody) -> dict:
     params: dict = {"imgid": image_id, "save": body.save}
     if body.format:
         params["format"] = body.format
@@ -692,15 +708,92 @@ async def photo_export(image_id: int, body: ExportBody):
         params["quality"] = body.quality
     if body.high_quality is not None:
         params["high_quality"] = body.high_quality
+    return params
+
+
+def _offer(path: Path) -> str:
+    """A download address for a file this app exported."""
+    token = secrets.token_urlsafe(12)
+    EXPORTED[token] = path
+    return f"/api/export/{token}/{path.name}"
+
+
+@app.post("/api/photo/{image_id}/export")
+async def photo_export(image_id: int, body: ExportBody):
     try:
-        r = await engine.call("export", **params)
+        r = await engine.call("export", **_export_params(image_id, body))
     except EngineError as exc:
         raise _bad(exc, 409 if "unsaved" in str(exc) else 400)
     if r.get("file"):
-        token = secrets.token_urlsafe(12)
-        EXPORTED[token] = Path(r["file"])
-        r["download"] = f"/api/export/{token}/{Path(r['file']).name}"
+        r["download"] = _offer(Path(r["file"]))
     return r
+
+
+class BatchExportBody(ExportBody):
+    """Several photos with one set of settings; zip: also offer them as one
+    zip file to download (else they are only in darktable's export folder)."""
+    imgids: list[int]
+    zip: bool = False
+
+
+BATCHES: dict[str, dict] = {}            # batch export id -> its progress and results
+
+
+@app.post("/api/export_batch")
+async def export_batch(body: BatchExportBody):
+    """Start exporting the photos, one after another; poll
+    /api/export_batch/{id}. A photo with unsaved changes is left out
+    (unsaved: true) unless save."""
+    if not body.imgids:
+        raise HTTPException(400, "no photos to export")
+    job = secrets.token_urlsafe(8)
+    BATCHES[job] = b = {"total": len(body.imgids), "done": 0, "results": [], "state": "running",
+                        "zip": None, "folders": []}
+
+    async def run():
+        files = []
+        for imgid in body.imgids:
+            res: dict = {"imgid": imgid}
+            try:
+                r = await engine.call("export", **_export_params(imgid, body))
+                if r.get("file"):
+                    files.append(Path(r["file"]))
+                    res.update(file=r["file"], download=_offer(Path(r["file"])))
+                else:
+                    res["skipped"] = True    # darktable's conflict setting kept an existing file
+            except EngineError as exc:
+                res.update(error=str(exc), unsaved="unsaved" in str(exc))
+            b["results"].append(res)
+            b["done"] += 1
+        b["folders"] = sorted({str(f.parent) for f in files})
+        if body.zip and files:
+            b["state"] = "zipping"
+            b["zip"] = await asyncio.to_thread(_zip, files)
+        b["state"] = "done"
+
+    asyncio.create_task(run())
+    return {"id": job, **b}
+
+
+def _zip(files: list[Path]) -> str:
+    out = Path(tempfile.mkdtemp(prefix="dtweb_export_")) / f"darktable-export-{len(files)}.zip"
+    names: set[str] = set()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:   # images are compressed already
+        for f in files:
+            name, n = f.name, 1
+            while name in names:                                  # same name from two folders
+                n += 1
+                name = f"{f.stem}_{n}{f.suffix}"
+            names.add(name)
+            z.write(f, name)
+    return _offer(out)
+
+
+@app.get("/api/export_batch/{job}")
+async def export_batch_status(job: str):
+    if job not in BATCHES:
+        raise HTTPException(404, "no such batch export (they are kept until the web app restarts)")
+    return {"id": job, **BATCHES[job]}
 
 
 @app.get("/api/export/{token}/{name}")

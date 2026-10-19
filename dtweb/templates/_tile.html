@@ -1,6 +1,8 @@
 <figure class="tile{% if img.rejected %} rejected{% endif %}" id="t{{ img.id }}" data-id="{{ img.id }}"
-        data-rating="{{ 'reject' if img.rejected else img.rating }}" data-labels="{{ img.labels | join(',') }}">
-  <a href="/photo/{{ img.id }}?{{ query }}">
+        data-rating="{{ 'reject' if img.rejected else img.rating }}" data-labels="{{ img.labels | join(',') }}"
+        data-version="{{ version(img) }}" data-name="{{ img.filename }}{% if img.version %} ({{ img.version }}){% endif %}">
+  <input type="checkbox" class="sel" aria-label="select {{ img.filename }}" title="select (⌘/Ctrl-click the photo; shift: a range)">
+  <a href="/photo/{{ img.id }}?{{ query }}" title="click: show here; double-click or Enter: open">
     <img src="/thumb/{{ img.id }}/{{ version(img) }}.jpg" alt="{{ img.filename }}" loading="lazy">
   </a>
   <figcaption>

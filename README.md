@@ -23,10 +23,21 @@ owner.
 ## What it does
 
 - **Library:** film rolls, filters (film roll, rating, color label), a
-  thumbnail grid with paging; rate, reject and set color labels by click or
-  keyboard (arrows, Enter, 0–5, R, F1–F5); ⧉ or ⌘/Ctrl+D makes a
-  duplicate (a virtual copy with the saved edit). Thumbnails come from darktable's
+  thumbnail grid with paging. A click shows a photo in the detail panel at
+  the right (larger, rating and labels, camera and exposure, title,
+  description, tags, *open in darkroom*, duplicate, export); double-click
+  or Enter opens it. ⌘/Ctrl-click or a tile's box selects (shift: a range,
+  ⌘/Ctrl+A: all shown, Esc: none); a bar over the grid then rates, labels,
+  duplicates or exports the selection. Rate, reject and set color labels by
+  click or keyboard (arrows, 0–5, R, F1–F5: the selection's, else the shown
+  photo's); ⧉ or ⌘/Ctrl+D makes a duplicate (a virtual copy with the saved
+  edit). Thumbnails come from darktable's
   own thumbnail cache, rendered with each photo's current edit.
+- **Export:** one or many photos with one set of settings (format, longest
+  side, quality, high quality) into darktable's export folder, and for
+  several as one zip to download; photos with unsaved changes in the
+  darkroom are left out until you choose to save them. In the darkroom,
+  the export section or ⋯ exports the photo open there.
 - **Photo (darkroom):** the photo with a toolbar above it (one tool at a
   time; the active tool's controls in a bar under the toolbar) and a panel
   at the right. At the panel's top, an RGB + luminance histogram of the

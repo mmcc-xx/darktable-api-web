@@ -22,45 +22,133 @@
 {% elif lib.state != 'owned' %}
 <p class="banner">The engine isn't available: {{ lib.detail }}</p>
 {% else %}
-<p class="count">{{ total }} photos · arrows move, Enter opens, 0–5 rate, R rejects, F1–F5 toggle labels</p>
-<div class="grid" id="grid" data-query="{{ query }}">
-  {% include "_tiles.html" %}
+<div class="lt">
+  <div class="lt-main">
+    <p class="count">{{ total }} photos · click shows a photo, double-click or Enter opens it · ⌘/Ctrl-click or the box selects (shift: a range, ⌘A: all shown, Esc: none) · arrows move, 0–5 rate, R rejects, F1–F5 toggle labels: the selection's, or the shown photo's</p>
+    <div id="selbar" class="selbar" hidden>
+      <span id="sel-count"></span>
+      <button id="sel-export" aria-expanded="false" aria-controls="exform">export…</button>
+      <button id="sel-dup" title="a virtual copy of each, with its saved edit">duplicate</button>
+      <span class="sel-rate ctl" title="rate or label the selection (or keys 0–5, R, F1–F5)">
+        <button class="rej" data-rate="reject" title="reject">✕</button>{% for n in range(1, 6) %}<button class="star" data-rate="{{ n }}" title="{{ n }}">★</button>{% endfor %}
+        {% for name in labels %}<button class="dot {{ name }} on" data-label="{{ loop.index0 }}" title="{{ name }}: on for all, or off if all have it"></button>{% endfor %}
+      </span>
+      <button id="sel-clear" class="secondary" title="select none (Esc)">clear</button>
+    </div>
+    <form id="exform" class="exform" hidden>
+      <strong id="ex-what"></strong>
+      <select id="ex-format" title="file format">
+        <option value="">darktable's format</option><option value="jpeg">JPEG</option>
+        <option value="tiff">TIFF</option><option value="png">PNG</option>
+        <option value="webp">WebP</option><option value="jpegxl">JPEG XL</option>
+      </select>
+      <select id="ex-size" title="longest side">
+        <option value="">darktable's size</option><option value="0">full size</option>
+        <option value="3840">3840 px</option><option value="2560">2560 px</option>
+        <option value="2048">2048 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option>
+      </select>
+      <label title="JPEG/WebP/JPEG XL quality">quality <input id="ex-quality" type="number" min="1" max="100" placeholder="—" class="num"></label>
+      <label title="process at full resolution, then scale (slower, sharper)"><input id="ex-hq" type="checkbox"> high quality</label>
+      <select id="ex-to" title="where the files go (always into darktable's export folder too)">
+        <option value="zip">and download as a zip</option>
+        <option value="folder">into darktable's export folder only</option>
+      </select>
+      <button id="ex-go" class="primary">export</button>
+      <button type="button" id="ex-close" class="secondary">close</button>
+      <p id="ex-result" class="status"></p>
+    </form>
+    <div class="grid" id="grid" data-query="{{ query }}">
+      {% include "_tiles.html" %}
+    </div>
+  </div>
+  <aside class="detail" id="detail" aria-live="polite">
+    <p class="dim">Click a photo to see it here.</p>
+  </aside>
 </div>
 {% endif %}
 <script>
 (() => {
   const grid = document.getElementById('grid');
   if (!grid) return;
+  const $ = (s) => document.querySelector(s);
   const query = grid.dataset.query;
   const key = 'lib:' + query;
+  const LABELS = {{ labels | tojson }};
   try { sessionStorage.setItem('lib:query', query); } catch (e) {}
-  let current = null;
+  // the selection bar and the detail panel stick under the header
+  const topH = () => document.documentElement.style.setProperty('--top-h', $('.top').offsetHeight + 'px');
+  topH(); addEventListener('resize', topH);
+  // current: the photo the detail panel shows (click, arrows); selected:
+  // ids, kept apart from the tiles, which are replaced after each change
+  let current = null, anchor = null;
+  const selected = new Set();
+  const tileOf = (id) => document.getElementById('t' + id);
 
   function setCurrent(t, scroll) {
     if (current) current.classList.remove('current');
     current = t;
     if (t) { t.classList.add('current'); if (scroll) t.scrollIntoView({block: 'nearest'}); }
+    detailSoon();
   }
+
+  // ── selection
+  function mark(t) {
+    if (!t) return;
+    const on = selected.has(t.dataset.id);
+    t.classList.toggle('selected', on);
+    t.querySelector('.sel').checked = on;
+  }
+  function select(t, on) {
+    if (on) selected.add(t.dataset.id); else selected.delete(t.dataset.id);
+    mark(t);
+  }
+  function selectRange(t) {
+    const ts = [...grid.querySelectorAll('.tile')];
+    let a = ts.indexOf(anchor);
+    const b = ts.indexOf(t);
+    if (a < 0) a = b;
+    ts.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => select(x, true));
+  }
+  function clearSelection() {
+    selected.clear();
+    grid.querySelectorAll('.tile.selected').forEach(mark);
+    selChanged();
+  }
+  function selChanged() {
+    $('#selbar').hidden = !selected.size;
+    $('#sel-count').textContent = `${selected.size} selected`;
+    if (exTarget === 'selection') { if (selected.size) exWhat(); else closeExport(); }
+  }
+  // the selection in grid order; keys and the selection bar act on it, or on the shown photo
+  const selection = () => [...grid.querySelectorAll('.tile')].filter((t) => selected.has(t.dataset.id));
+  const targets = () => selected.size ? selection() : current ? [current] : [];
 
   async function loadMore(btn) {
     const r = await fetch(btn.dataset.more);
     btn.remove();
     if (r.ok) grid.insertAdjacentHTML('beforeend', await r.text());
+    grid.querySelectorAll('.tile').forEach(mark);
   }
 
+  // a change to one photo; its tile comes back drawn anew
   async function post(tile, path, body) {
     const r = await fetch(`/api/photo/${tile.dataset.id}/${path}?${query}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     if (!r.ok) { alert((await r.json()).detail); return; }
-    const was = tile === current;
+    const was = tile === current, id = tile.id;
     tile.outerHTML = await r.text();
-    const t = document.getElementById(tile.id);
+    const t = document.getElementById(id);
+    mark(t);
     if (was) setCurrent(t, false);
   }
-  function rate(tile, v) { post(tile, 'rating', {rating: v === 'reject' ? 'reject' : parseInt(v)}); }
-  function label(tile, n) {
-    const on = !tile.dataset.labels.split(',').includes(String(n));
-    post(tile, 'label', {label: n, on});
+  async function rate(tiles, v) {
+    for (const t of tiles) await post(t, 'rating', {rating: v === 'reject' ? 'reject' : parseInt(v)});
+  }
+  // a label goes on for all, or off for all when all have it (darktable's toggle)
+  async function label(tiles, n) {
+    const has = (t) => t.dataset.labels.split(',').includes(String(n));
+    const on = !tiles.every(has);
+    for (const t of tiles) if (has(t) !== on) await post(t, 'label', {label: n, on});
   }
 
   // a duplicate (virtual copy) with the saved edit, shown after the original
@@ -72,26 +160,175 @@
     r = await fetch(`/tile/${img.id}?${query}`);
     if (!r.ok) return;
     tile.insertAdjacentHTML('afterend', await r.text());
-    setCurrent(document.getElementById('t' + img.id), true);
+    setCurrent(tileOf(img.id), true);
   }
+  async function duplicateAll(tiles) { for (const t of tiles) await duplicate(t); }
 
+  // opening a photo: remember where we were, to come back to it
+  function remember(t) {
+    try { sessionStorage.setItem(key, JSON.stringify({y: scrollY, n: grid.querySelectorAll('.tile').length, id: t.dataset.id})); } catch (e) {}
+  }
+  function open(t) { remember(t); location.href = t.querySelector('a').href; }
+
+  // click: show it; ⌘/Ctrl-click or the box: select; shift: a range.
+  // Without the detail panel (narrow screens) a click opens the photo
   grid.addEventListener('click', (e) => {
     const b = e.target.closest('button');
-    if (!b) return;
-    if (b.dataset.more) return loadMore(b);
-    const tile = b.closest('.tile');
-    if (b.hasAttribute('data-dup')) duplicate(tile);
-    else if (b.dataset.rate) rate(tile, b.dataset.rate);
-    else if (b.dataset.label) label(tile, parseInt(b.dataset.label));
+    if (b) {
+      if (b.dataset.more) return loadMore(b);
+      const tile = b.closest('.tile');
+      if (b.hasAttribute('data-dup')) duplicate(tile);
+      else if (b.dataset.rate) rate([tile], b.dataset.rate);
+      else if (b.dataset.label) label([tile], parseInt(b.dataset.label));
+      return;
+    }
+    const box = e.target.closest('.sel'), a = e.target.closest('a');
+    if (!box && !a) return;
+    const t = (box || a).closest('.tile');
+    if (box || e.metaKey || e.ctrlKey || e.shiftKey) {
+      if (a) e.preventDefault();
+      if (e.shiftKey && anchor) selectRange(t);
+      else select(t, box ? box.checked : !selected.has(t.dataset.id));
+      anchor = t;
+      selChanged();
+      return;
+    }
+    if (!detailOn()) { remember(t); return; }
+    e.preventDefault();
+    anchor = t;
+    setCurrent(t, false);
   });
-  grid.addEventListener('mousemove', (e) => { const t = e.target.closest('.tile'); if (t && t !== current) setCurrent(t, false); });
-
-  // remember where we were when a photo is opened
-  grid.addEventListener('click', (e) => {
+  grid.addEventListener('dblclick', (e) => {
     const a = e.target.closest('a');
-    if (!a) return;
-    try { sessionStorage.setItem(key, JSON.stringify({y: scrollY, n: grid.querySelectorAll('.tile').length, id: a.closest('.tile').dataset.id})); } catch (e) {}
-  }, true);
+    if (a && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); open(a.closest('.tile')); }
+  });
+
+  // ── the selection bar
+  $('#sel-clear').onclick = clearSelection;
+  $('#sel-dup').onclick = () => duplicateAll(selection());
+  $('#sel-export').onclick = () => exTarget === 'selection' ? closeExport() : openExport('selection');
+  document.querySelectorAll('.sel-rate [data-rate]').forEach((b) => b.onclick = () => rate(selection(), b.dataset.rate));
+  document.querySelectorAll('.sel-rate [data-label]').forEach((b) => b.onclick = () => label(selection(), +b.dataset.label));
+
+  // ── export: the selection, or the shown photo, with one set of settings,
+  // into darktable's export folder and, if asked, as one zip to download
+  let exTarget = null;                     // 'selection' or a photo id
+  const exIds = () => exTarget === 'selection' ? selection().map((t) => +t.dataset.id) : [+exTarget];
+  function exWhat() {
+    const ids = exIds(), t = ids.length === 1 && tileOf(ids[0]);
+    $('#ex-what').textContent = ids.length === 1 ? `export ${t ? t.dataset.name : 'photo ' + ids[0]}` : `export ${ids.length} photos`;
+    $('#ex-to').hidden = ids.length === 1;
+  }
+  function openExport(target) {
+    exTarget = target;
+    $('#exform').hidden = false;
+    $('#sel-export').setAttribute('aria-expanded', target === 'selection');
+    $('#sel-export').classList.toggle('on', target === 'selection');
+    $('#ex-result').textContent = '';
+    exWhat();
+    $('#exform').scrollIntoView({block: 'nearest'});
+  }
+  function closeExport() {
+    exTarget = null;
+    $('#exform').hidden = true;
+    $('#sel-export').setAttribute('aria-expanded', false);
+    $('#sel-export').classList.remove('on');
+  }
+  $('#ex-close').onclick = closeExport;
+  $('#exform').onsubmit = (e) => { e.preventDefault(); runExport(exIds(), false); };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function runExport(ids, save) {
+    const body = {imgids: ids, save, zip: ids.length > 1 && $('#ex-to').value === 'zip'};
+    const fmt = $('#ex-format').value, size = $('#ex-size').value, q = parseInt($('#ex-quality').value);
+    if (fmt) body.format = fmt;
+    if (size !== '') body.size = parseInt(size);
+    if (q > 0) body.quality = q;
+    if ($('#ex-hq').checked) body.high_quality = true;
+    const out = $('#ex-result'), go = $('#ex-go');
+    go.disabled = true;
+    const t0 = performance.now();
+    let r = await fetch('/api/export_batch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    let s = await r.json();
+    while (r.ok && s.state !== 'done') {
+      out.textContent = s.state === 'zipping' ? 'making the zip…' : `exporting ${s.done + 1} of ${s.total}…`;
+      await sleep(400);
+      r = await fetch(`/api/export_batch/${s.id}`);
+      s = await r.json();
+    }
+    go.disabled = false;
+    if (!r.ok) { out.textContent = 'export failed: ' + s.detail; return; }
+    const res = s.results, ok = res.filter((x) => x.file), unsaved = res.filter((x) => x.unsaved),
+          failed = res.filter((x) => x.error && !x.unsaved), skipped = res.filter((x) => x.skipped);
+    out.textContent = '';
+    const link = (href, text) => { const a = document.createElement('a'); a.href = href; a.textContent = text; a.setAttribute('download', ''); return a; };
+    const line = (...parts) => { const p = document.createElement('span'); p.className = 'ex-line'; p.append(...parts); out.append(p); };
+    const name = (x) => { const t = tileOf(x.imgid); return t ? t.dataset.name : 'photo ' + x.imgid; };
+    line(`exported ${ok.length} of ${s.total} in ${((performance.now() - t0) / 1000).toFixed(1)} s`,
+         ...(s.zip ? [' · ', link(s.zip, 'download the zip')] : ok.length === 1 ? [' · ', link(ok[0].download, 'download')] : []));
+    if (s.folders.length) line(`files in ${s.folders.join(', ')}`);
+    if (skipped.length) line(`${skipped.length} skipped: the file exists (darktable's conflict setting)`);
+    if (unsaved.length) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = 'save their changes and export them';
+      b.onclick = () => runExport(unsaved.map((x) => x.imgid), true);
+      line(`${unsaved.length} left out, with unsaved changes in the darkroom (${unsaved.map(name).join(', ')}): `, b);
+    }
+    for (const x of failed) line(`${name(x)}: ${x.error}`);
+  }
+
+  // ── the detail panel: the shown photo larger, with its rating, labels,
+  // exif, title, description and tags
+  let detailTimer = null, detailKey = null;
+  const detailOn = () => $('#detail').offsetParent !== null;   // not shown on narrow screens
+  function detailSoon() { clearTimeout(detailTimer); detailTimer = setTimeout(showDetail, 100); }
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  async function showDetail() {
+    const t = current;
+    if (!t || !detailOn()) return;
+    const k = [t.dataset.id, t.dataset.version, t.dataset.rating, t.dataset.labels].join(':');
+    if (k === detailKey) return;
+    detailKey = k;
+    const r = await fetch(`/api/photo/${t.dataset.id}/details`);
+    if (!r.ok || detailKey !== k) return;
+    const d = await r.json(), img = d.image, box = $('#detail');
+    box.textContent = '';
+    const pv = el('img', 'detail-img');
+    pv.src = `/thumb/${img.id}/${d.version}.jpg?size=720`;
+    pv.alt = img.filename; pv.title = 'double-click: open';
+    pv.ondblclick = () => open(t);
+    box.append(pv, el('h3', 'detail-name', t.dataset.name));
+    const acts = el('p', 'buttons');
+    const op = el('a', 'detail-open', 'open in darkroom');
+    op.href = t.querySelector('a').href;
+    op.onclick = () => remember(t);
+    const dup = el('button', null, 'duplicate'); dup.onclick = () => duplicate(t);
+    const ex = el('button', null, 'export…'); ex.onclick = () => openExport(img.id);
+    acts.append(op, dup, ex);
+    const ctl = el('p', 'ctl detail-ctl');
+    const rej = el('button', 'rej' + (img.rejected ? ' on' : ''), '✕'); rej.title = 'reject (r)';
+    rej.onclick = () => rate([t], 'reject');
+    ctl.append(rej);
+    for (let n = 1; n <= 5; n++) {
+      const s = el('button', 'star' + (!img.rejected && img.rating >= n ? ' on' : ''), '★');
+      s.title = `${n} (key ${n})`; s.onclick = () => rate([t], n);
+      ctl.append(s);
+    }
+    LABELS.forEach((name, i) => {
+      const b = el('button', `dot ${name}` + (img.labels.includes(i) ? ' on' : ''));
+      b.title = `${name} (F${i + 1})`; b.onclick = () => label([t], i);
+      ctl.append(b);
+    });
+    box.append(acts, ctl);
+    if (d.shot.length) { const p = el('p', 'shot'); d.shot.forEach((s) => p.append(el('span', null, s))); box.append(p); }
+    const dl = el('dl', 'detail-meta');
+    const row = (k, v) => { dl.append(el('dt', null, k), el('dd', null, v)); };
+    if (d.title) row('title', d.title);
+    if (d.description) row('description', d.description);
+    row('tags', d.tags.length ? d.tags.join(', ') : '—');
+    row('file', `${img.folder}/${img.filename}`);
+    box.append(dl);
+  }
+  addEventListener('resize', detailSoon);
 
   function cols() {
     const ts = grid.querySelectorAll('.tile');
@@ -102,9 +339,10 @@
     return n;
   }
   document.addEventListener('keydown', (e) => {
-    if (e.target.closest('input, select, textarea')) return;
+    if (e.target.closest('select, textarea') || (e.target.closest('input') && e.target.type !== 'checkbox')) return;
     const tiles = [...grid.querySelectorAll('.tile')];
     if (!tiles.length) return;
+    const k = e.key.toLowerCase(), cmd = e.metaKey || e.ctrlKey;
     const i = current ? tiles.indexOf(current) : -1;
     const move = {ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols(), ArrowUp: -cols()}[e.key];
     if (move) {
@@ -112,12 +350,19 @@
       setCurrent(tiles[Math.max(0, Math.min(tiles.length - 1, i < 0 ? 0 : i + move))], true);
       return;
     }
-    if (!current) return;
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicate(current); }
-    else if (e.key === 'Enter') { current.querySelector('a').click(); }
-    else if (/^[0-5]$/.test(e.key)) { e.preventDefault(); rate(current, e.key); }
-    else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); rate(current, 'reject'); }
-    else if (/^F[1-5]$/.test(e.key)) { e.preventDefault(); label(current, parseInt(e.key.slice(1)) - 1); }
+    if (cmd && k === 'a') { e.preventDefault(); tiles.forEach((t) => select(t, true)); selChanged(); return; }
+    if (e.key === 'Escape') {
+      if (!$('#exform').hidden) closeExport(); else if (selected.size) clearSelection();
+      return;
+    }
+    const ts = targets();
+    if (!ts.length) return;
+    if (cmd && k === 'd') { e.preventDefault(); duplicateAll(ts); }
+    else if (e.key === 'Enter' && current) { e.preventDefault(); open(current); }
+    else if (cmd || e.altKey) return;
+    else if (/^[0-5]$/.test(e.key)) { e.preventDefault(); rate(ts, e.key); }
+    else if (k === 'r') { e.preventDefault(); rate(ts, 'reject'); }
+    else if (/^F[1-5]$/.test(e.key)) { e.preventDefault(); label(ts, parseInt(e.key.slice(1)) - 1); }
   });
 
   // another client (the MCP server, another browser) rated, labelled or
@@ -130,13 +375,14 @@
       // darktable's window is taking over from the engine: reload once it serves
       if (ev.type === 'handover') return setTimeout(() => location.reload(), 8000);
       if (!['image', 'saved', 'reset'].includes(ev.type)) return;
-      const t = document.getElementById('t' + ev.imgid);
+      const t = tileOf(ev.imgid);
       if (!t) return;
       const r = await fetch(`/tile/${ev.imgid}?${query}`);
       if (!r.ok) return;
       const was = t === current;
       t.outerHTML = await r.text();
-      if (was) setCurrent(document.getElementById('t' + ev.imgid), false);
+      mark(tileOf(ev.imgid));
+      if (was) { detailKey = null; setCurrent(tileOf(ev.imgid), false); }
     };
   } catch (e) {}
 
@@ -148,7 +394,7 @@
     let btn;
     while (grid.querySelectorAll('.tile').length < saved.n && (btn = grid.querySelector('[data-more]'))) await loadMore(btn);
     scrollTo(0, saved.y);
-    const t = document.getElementById('t' + saved.id);
+    const t = tileOf(saved.id);
     if (t) { setCurrent(t, false); t.classList.add('last-viewed'); }
   })();
 })();

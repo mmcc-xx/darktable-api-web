@@ -71,6 +71,10 @@
     <p id="status" class="status">opening…</p>
   </section>
   <aside class="panel">
+    <div class="panel-head">
+      <canvas id="histo" class="histo" title="histogram of the preview: click for linear / logarithmic"></canvas>
+      <p id="histo-clip" class="histo-clip"></p>
+    </div>
     <div id="sections" class="sections">
       <div id="panels"></div>
       <details class="sec" id="export" data-sec="export">
@@ -540,6 +544,68 @@
     $('#cmp-line').style.left = pct;
   }
   $('#pv').addEventListener('load', placeCompare);
+
+  // ── histogram of what the photo shows (the preview, or an alternative
+  // shown large), counted here from the image: no second render
+  let histoLog = true, counts = null;
+  try { histoLog = localStorage.getItem('dr:histlog') !== 'linear'; } catch (e) {}
+  function countHisto() {
+    const img = $('#pv');
+    if (!img.naturalWidth) return;
+    const s = Math.min(1, 512 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * s));
+    c.height = Math.max(1, Math.round(img.naturalHeight * s));
+    const g = c.getContext('2d', {willReadFrequently: true});
+    g.drawImage(img, 0, 0, c.width, c.height);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    const r = new Uint32Array(256), gr = new Uint32Array(256), b = new Uint32Array(256), l = new Uint32Array(256);
+    let hi = 0, lo = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      r[d[i]]++; gr[d[i + 1]]++; b[d[i + 2]]++;
+      l[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
+      if (d[i] === 255 || d[i + 1] === 255 || d[i + 2] === 255) hi++;
+      if (d[i] + d[i + 1] + d[i + 2] === 0) lo++;
+    }
+    counts = {r, g: gr, b, l, n: d.length / 4, hi, lo};
+    drawHisto();
+  }
+  function drawHisto() {
+    const cv = $('#histo');
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.width = Math.round(cv.clientWidth * dpr), H = cv.height = Math.round(cv.clientHeight * dpr);
+    const g = cv.getContext('2d');
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = 'rgba(255,255,255,.08)';
+    for (let q = 1; q < 4; q++) { const x = Math.round(W * q / 4) + .5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+    if (!counts) return;
+    // the tallest bin away from the ends: a clipped spike doesn't flatten the rest
+    let top = 1;
+    for (const k of ['r', 'g', 'b', 'l']) for (let i = 1; i < 255; i++) top = Math.max(top, counts[k][i]);
+    const y = (v) => H - H * Math.min(1, histoLog ? Math.log1p(v) / Math.log1p(top) : v / top);
+    const path = (h) => {
+      g.beginPath(); g.moveTo(0, H);
+      for (let i = 0; i < 256; i++) g.lineTo(i * W / 255, y(h[i]));
+      g.lineTo(W, H); g.closePath();
+    };
+    g.globalCompositeOperation = 'lighter';
+    for (const [k, col] of [['r', 'rgba(200,50,50,.5)'], ['g', 'rgba(50,180,70,.5)'], ['b', 'rgba(60,95,220,.5)']]) {
+      g.fillStyle = col; path(counts[k]); g.fill();
+    }
+    g.globalCompositeOperation = 'source-over';
+    g.strokeStyle = 'rgba(235,235,235,.85)'; g.lineWidth = dpr;
+    path(counts.l); g.stroke();
+    const pc = (v) => { const p = 100 * v / counts.n; return p === 0 ? '0' : p < 0.1 ? '<0.1' : p.toFixed(1); };
+    $('#histo-clip').textContent = `${histoLog ? 'log' : 'linear'} · clipped: highlights ${pc(counts.hi)}%, shadows ${pc(counts.lo)}%`;
+  }
+  $('#pv').addEventListener('load', countHisto);
+  addEventListener('resize', drawHisto);
+  if ($('#pv').complete) countHisto();
+  $('#histo').onclick = () => {
+    histoLog = !histoLog;
+    try { localStorage.setItem('dr:histlog', histoLog ? 'log' : 'linear'); } catch (e) {}
+    drawHisto();
+  };
   addEventListener('resize', placeCompare);
   $('#cmpframe').addEventListener('pointerdown', (e) => {
     const f = $('#cmpframe');

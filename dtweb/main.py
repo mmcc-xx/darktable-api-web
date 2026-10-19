@@ -282,8 +282,26 @@ async def photo_page(request: Request, image_id: int):
     return templates.TemplateResponse(request, "photo.html", ctx)
 
 
+# darktable's plumbing (raw decoding, color profiles, orientation) and what
+# the crop tool covers: left out of the "other modules" list
+PLUMBING = {"rawprepare", "temperature", "highlights", "demosaic", "demosaicscale", "colorin", "colorout",
+            "gamma", "finalscale", "overexposed", "rawoverexposed", "flip", "crop", "clipping", "ashift"}
+
+
+def _others(mods: list[dict], mono: dict | None) -> list[dict]:
+    """Modules in the edit's history that no panel shows (often added by an
+    AI or a preset): label, instance, on/off."""
+    shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0)}
+    if mono:
+        shown.add(("channelmixerrgb", mono["instance"]))
+    return [{"operation": m["operation"], "instance": m["instance"], "label": m["label"], "enabled": m["enabled"]}
+            for m in mods if m.get("in_history") and m["operation"] not in PLUMBING
+            and (m["operation"], m["instance"]) not in shown]
+
+
 async def _state(image_id: int) -> dict:
-    listed = {m["operation"] for m in (await engine.edit(image_id, "module_list"))["modules"]}
+    mods = (await engine.edit(image_id, "module_list"))["modules"]
+    listed = {m["operation"] for m in mods}
     modules = []
     for op, title, fields in PANELS:
         if op == "sigmoid" and op not in listed:
@@ -308,8 +326,9 @@ async def _state(image_id: int) -> dict:
     except EngineError as exc:
         # a darktable built before crop & rotate: the rest still works
         geometry = {"missing": str(exc)}
+    mono = await _mono(image_id)
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
-            "geometry": geometry, "mono": await _mono(image_id)}
+            "geometry": geometry, "mono": mono, "others": _others(mods, mono)}
 
 
 # ── black & white: a second color calibration instance with a gray mix, as
@@ -494,13 +513,15 @@ async def photo_geometry(image_id: int, body: GeometryBody):
 
 class EnableBody(BaseModel):
     operation: str
+    instance: int = 0
     enabled: bool
 
 
 @app.post("/api/photo/{image_id}/enable")
 async def photo_enable(image_id: int, body: EnableBody):
     try:
-        await engine.edit(image_id, "module_enable", operation=body.operation, enabled=body.enabled)
+        await engine.edit(image_id, "module_enable", operation=body.operation, instance=body.instance,
+                          enabled=body.enabled)
         return await _state(image_id)
     except EngineError as exc:
         raise _bad(exc)

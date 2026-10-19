@@ -40,7 +40,10 @@ owner.
   section: one checkbox adds a second color calibration instance with a
   gray mix (the first keeps the white balance), and a strip of looks
   (luminance, red/orange/yellow/green/blue filters, darktable's film
-  presets) rendered on the current edit; a click applies one. Pinned under the panel:
+  presets) rendered on the current edit; a click applies one. *Other
+  modules* lists the edit's modules no panel shows (lens correction, or
+  local contrast and the like added by Claude or a preset), each with on/off
+  and *ask Claude*, which copies a question about it. Pinned under the panel:
   the history step ("step 14 of 14: local contrast", click for the whole
   history), undo/redo, save, discard unsaved, and ⋯ for export,
   duplicate (with this edit, ⌘/Ctrl+D, or unedited) and start over from

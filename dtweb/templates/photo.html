@@ -242,6 +242,7 @@
       box.appendChild(d);
     }
     box.appendChild(monoSection(s.mono));
+    if (s.others && s.others.length) box.appendChild(othersSection(s.others));
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
   }
@@ -280,6 +281,47 @@
       sec.appendChild(row);
     });
     return sec;
+  }
+
+  // ── modules in the edit that no panel shows (often added by Claude or a
+  // preset): on/off, and a question about it to paste into Claude
+  function othersSection(others) {
+    const d = document.createElement('details');
+    d.className = 'sec'; d.dataset.sec = 'others';
+    const sum = document.createElement('summary');
+    const line = document.createElement('span');
+    line.className = 'sum';
+    line.textContent = others.map((m) => m.label.split(' • ')[0] + (m.enabled ? '' : ' (off)')).join(' · ');
+    sum.append('other\u00a0modules ', line);
+    const body = document.createElement('div');
+    body.className = 'sec-body';
+    for (const m of others) {
+      const row = document.createElement('div');
+      row.className = 'other';
+      const head = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = !!m.enabled;
+      cb.onchange = async () => {
+        const r = await api('enable', {operation: m.operation, instance: m.instance, enabled: cb.checked});
+        if (!r.ok) { cb.checked = !cb.checked; status('not applied: ' + (await r.json()).detail); return; }
+        dirty = true; show(await r.json()); preview();
+      };
+      head.append(cb, ' ' + m.label);
+      const ask = document.createElement('button');
+      ask.className = 'link ask'; ask.textContent = 'ask Claude';
+      ask.title = 'copy a question about this module to paste into Claude';
+      ask.onclick = async () => {
+        const q = `Photo ${ID}: what is the ${m.label} module doing in this edit` +
+                  `${m.instance ? ` (instance ${m.instance})` : ''}? Should I keep it, change it or turn it off?`;
+        try { await navigator.clipboard.writeText(q); status('question copied: paste it into Claude (Claude, top right, to connect)'); }
+        catch (e) { prompt('Ask Claude:', q); }
+      };
+      row.append(head, ask);
+      body.appendChild(row);
+    }
+    d.append(sum, body);
+    keepOpen(d);
+    return d;
   }
 
   // ── black & white: a second color calibration instance (the engine adds

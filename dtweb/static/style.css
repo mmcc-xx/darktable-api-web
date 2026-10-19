@@ -109,6 +109,9 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .sec[open] .sum { visibility: hidden; }
 .sec-body { padding: 0 .9rem .6rem; }
 .module { margin: 0 0 .8rem; }
+.other { display: flex; align-items: baseline; gap: .5rem; margin: 0 0 .4rem; font-size: .85rem; }
+.other label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.other .ask { font-size: .75rem; white-space: nowrap; color: var(--accent); }
 .module .head { font-weight: 600; display: block; margin-bottom: .3rem; font-size: .9rem; }
 .field { display: grid; grid-template-columns: 1fr auto; column-gap: .5rem; font-size: .85rem; }
 .field input[type=range] { grid-column: 1 / -1; width: 100%; margin: .1rem 0 .5rem; accent-color: var(--accent); }

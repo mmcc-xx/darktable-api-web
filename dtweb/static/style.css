@@ -248,3 +248,33 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .detail-meta dt { color: var(--dim); }
 .detail-meta dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 800px) { .detail { display: none; } }
+
+/* tags, title and description (static/meta.js): lighttable detail panel and darkroom */
+.meta-ed { display: flex; flex-direction: column; gap: .4rem; margin: .5rem 0 0; font-size: .8rem; }
+.meta-field { display: flex; flex-direction: column; gap: .1rem; }
+.meta-ed input, .meta-ed textarea, .sel-tag input, .tag-filter input, .import input[type=text] {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .2rem .35rem; }
+.meta-ed textarea { resize: vertical; }
+.meta-tags { display: flex; flex-direction: column; gap: .25rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .25rem; }
+.chip { display: inline-flex; align-items: center; gap: .15rem; border: 1px solid var(--line); border-radius: 999px; padding: 0 .1rem 0 .5rem; background: var(--bg); }
+.chip a { color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.chip a:hover { color: var(--accent); }
+.chip button { padding: 0 .3rem; border: none; background: none; color: var(--dim); }
+.chip button:hover { color: var(--text); }
+.meta-note { margin: 0; min-height: 1em; }
+.detail-file { font-size: .75rem; overflow-wrap: anywhere; margin: .6rem 0 0; }
+.sel-tag { display: inline-flex; gap: .2rem; align-items: center; }
+.sel-tag input { width: 8rem; }
+.tag-filter input { width: 9rem; }
+.tag-filter.on input { border-color: var(--accent); }
+/* import dialog */
+.import { width: 40rem; }
+.imp-tabs { display: flex; gap: .3rem; }
+.imp-tabs .on { border-color: var(--accent); }
+.imp-path { display: flex; gap: .3rem; }
+.imp-path input { flex: 1; min-width: 0; }
+.imp-dirs { list-style: none; margin: .3rem 0; padding: .3rem; max-height: 14rem; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; columns: 2 12rem; }
+.imp-dirs:empty { display: none; }
+.imp-dirs button { text-align: left; overflow-wrap: anywhere; }
+.ex-line { display: block; }

@@ -92,6 +92,10 @@
     </div>
     <div id="sections" class="sections">
       <div id="panels"></div>
+      <details class="sec" id="info" data-sec="info">
+        <summary>info &amp; tags <span class="sum" id="info-sum"></span></summary>
+        <div class="sec-body"><div id="meta"></div></div>
+      </details>
       <details class="sec" id="export" data-sec="export">
         <summary>export <span class="sum" id="ex-sum"></span></summary>
         <div class="sec-body">
@@ -138,6 +142,7 @@
     </footer>
   </aside>
 </div>
+<script src="/static/meta.js?v={{ static_version('meta.js') }}"></script>
 <script>
 (() => {
   const ID = {{ img.id }};
@@ -315,6 +320,25 @@
     });
   }
   keepOpen($('#export'));
+  keepOpen($('#info'));
+
+  // ── info & tags: title, description, tags (static/meta.js)
+  async function loadMeta() {
+    if (dtMeta.typing($('#meta'))) {
+      $('#meta').addEventListener('focusout', () => setTimeout(loadMeta, 0), {once: true});
+      return;
+    }
+    const r = await api('details');
+    if (!r.ok) return;
+    const d = await r.json();
+    const sum = () => {
+      const t = $('#meta [name=title]'), n = $('#meta').querySelectorAll('.chip').length;
+      $('#info-sum').textContent = [t && t.value.trim(), n ? `${n} tag${n === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+    };
+    dtMeta.editor($('#meta'), ID, d, {onSaved: sum});
+    sum();
+  }
+  loadMeta();
 
   // a closed section's one-line summary: modules turned off, values off their default
   function summary(mods, wb) {
@@ -1239,6 +1263,7 @@
         else if (ev.kind === 'variants' && d.applied) { closeAlternatives(); status(`"${d.applied}" applied by another client`); }
         return;
       }
+      if (ev.imgid === ID && ev.type === 'image') return loadMeta();      // tags or metadata set elsewhere
       if (ev.imgid !== ID || !['edit', 'saved', 'reset', 'reopened', 'closed'].includes(ev.type)) return;
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(async () => {

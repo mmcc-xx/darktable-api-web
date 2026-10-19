@@ -13,9 +13,15 @@
     <option value="">any label</option>
     {% for name in labels %}<option value="{{ loop.index0 }}"{% if filters.label == loop.index0 %} selected{% endif %}>{{ name }}</option>{% endfor %}
   </select>
+  {% if tag_filter %}<span class="tag-filter{% if filters.tag %} on{% endif %}">
+    <input type="search" name="tag" list="tag-list" value="{{ filters.tag or '' }}" placeholder="tag" aria-label="only photos with this tag"
+           title="only photos with this tag or one under it (places: also places|paris)" onchange="this.form.submit()" onfocus="dtMeta.suggestions()">
+  </span>{% endif %}
 </form>
+<button id="import-btn" title="add photos to the library: a folder on this computer, or files from this browser">import…</button>
 {% endblock %}
 {% block main %}
+<script src="/static/meta.js?v={{ static_version('meta.js') }}"></script>
 {% if error %}<p class="banner">{{ error }}</p>{% endif %}
 {% if lib.state == 'released' %}
 <p class="banner">The library is released to darktable. Take it back (top right) to browse and edit.</p>
@@ -29,6 +35,9 @@
       <span id="sel-count"></span>
       <button id="sel-export" aria-expanded="false" aria-controls="exform">export…</button>
       <button id="sel-dup" title="a virtual copy of each, with its saved edit">duplicate</button>
+      <span class="sel-tag" title="add a tag to the selection, or remove it from them (| for a hierarchy)">
+        <input id="sel-tag" type="text" list="tag-list" placeholder="tag" aria-label="tag"><button id="sel-tag-add">tag</button><button id="sel-tag-rm" class="secondary">untag</button>
+      </span>
       <span class="sel-rate ctl" title="rate or label the selection (or keys 0–5, R, F1–F5)">
         <button class="rej" data-rate="reject" title="reject">✕</button>{% for n in range(1, 6) %}<button class="star" data-rate="{{ n }}" title="{{ n }}">★</button>{% endfor %}
         {% for name in labels %}<button class="dot {{ name }} on" data-label="{{ loop.index0 }}" title="{{ name }}: on for all, or off if all have it"></button>{% endfor %}
@@ -66,6 +75,133 @@
   </aside>
 </div>
 {% endif %}
+<dialog id="import" class="connect import">
+  <h3>Import</h3>
+  <p class="imp-tabs" role="tablist">
+    <button type="button" role="tab" data-tab="folder" class="on" aria-selected="true">a folder on this computer</button>
+    <button type="button" role="tab" data-tab="upload" aria-selected="false">files from this browser</button>
+  </p>
+  <section data-pane="folder">
+    <p class="imp-path"><button type="button" id="imp-up" title="the folder above" aria-label="the folder above">↑</button>
+      <input id="imp-path" type="text" value="{{ import_dir.start }}" aria-label="folder or file" title="a folder, or one photo; Enter: go there"></p>
+    <ul id="imp-dirs" class="imp-dirs"></ul>
+    <p id="imp-here" class="dim"></p>
+    <p><label><input type="checkbox" id="imp-rec"> its subfolders too</label></p>
+    <p><label><input type="radio" name="imp-mode" value="add" checked> add to the library: the photos stay where they are</label><br>
+       <label><input type="radio" name="imp-mode" value="copy"> copy &amp; import: copied into <code>{{ import_dir.copy_to or "darktable's import folders" }}</code></label></p>
+  </section>
+  <section data-pane="upload" hidden>
+    <p><input type="file" id="imp-files" multiple aria-label="photos to upload"></p>
+    <p class="dim">Sent to the web app, then copied into <code>{{ import_dir.copy_to or "darktable's import folders" }}</code> as darktable's copy &amp; import does.</p>
+  </section>
+  <p id="imp-jc" hidden><label title="fills $(JOBCODE) in the folder names">job code <input id="imp-jobcode" type="text" value="{{ import_dir.jobcode }}"></label></p>
+  <p class="dim">Photos already in the library are skipped (darktable's import settings decide what else is left out, e.g. non-raws).</p>
+  <p class="buttons"><button type="button" id="imp-go" class="primary">import</button>
+    <button type="button" id="imp-stop" class="secondary" hidden>stop</button>
+    <button type="button" id="imp-close" class="secondary">close</button></p>
+  <p id="imp-result" class="status" aria-live="polite"></p>
+</dialog>
+<script>
+(() => {
+  // ── import: a folder or file on this computer (added in place, or copied
+  // into darktable's import folders), or files uploaded from the browser
+  const $ = (s) => document.querySelector(s);
+  const dlg = $('#import');
+  let tab = 'folder', job = null, imported = 0;
+  const mode = () => tab === 'upload' ? 'copy' : document.querySelector('[name=imp-mode]:checked').value;
+  const jc = () => { $('#imp-jc').hidden = mode() !== 'copy'; };
+  $('#import-btn').onclick = () => { dlg.showModal(); browse($('#imp-path').value); };
+  $('#imp-close').onclick = () => dlg.close();
+  dlg.addEventListener('close', () => { if (imported) location.reload(); });
+  dlg.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => {
+    tab = b.dataset.tab;
+    dlg.querySelectorAll('[data-tab]').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', x === b); });
+    dlg.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== tab; });
+    jc();
+  });
+  dlg.querySelectorAll('[name=imp-mode]').forEach((r) => r.onchange = jc);
+
+  let parent = null;
+  async function browse(path) {
+    const r = await fetch('/api/fs?path=' + encodeURIComponent(path));
+    const d = await r.json();
+    if (!r.ok) { $('#imp-here').textContent = d.detail; return; }
+    $('#imp-path').value = d.path; parent = d.parent;
+    $('#imp-up').disabled = !parent;
+    const ul = $('#imp-dirs');
+    ul.textContent = '';
+    for (const name of d.dirs) {
+      const li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.className = 'link'; b.textContent = name + '/';
+      b.onclick = () => browse(d.path.replace(/\/$/, '') + '/' + name);
+      li.append(b); ul.append(li);
+    }
+    $('#imp-here').textContent = `${d.photos} photo${d.photos === 1 ? '' : 's'} in this folder` +
+      (d.dirs.length ? `, ${d.dirs.length} subfolder${d.dirs.length === 1 ? '' : 's'}` : '');
+  }
+  $('#imp-up').onclick = () => parent && browse(parent);
+  $('#imp-path').onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); browse($('#imp-path').value); } };
+
+  const out = (t) => { $('#imp-result').textContent = t; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  $('#imp-go').onclick = async () => {
+    const go = $('#imp-go');
+    const body = {copy_files: mode() === 'copy', jobcode: $('#imp-jobcode').value};
+    go.disabled = true;
+    try {
+      if (tab === 'upload') {
+        const files = [...$('#imp-files').files];
+        if (!files.length) { out('choose some files first'); return; }
+        const batch = Array.from(crypto.getRandomValues(new Uint8Array(8)), (x) => x.toString(16).padStart(2, '0')).join('');
+        for (const [i, f] of files.entries()) {
+          out(`sending ${i + 1} of ${files.length}: ${f.name}…`);
+          const r = await fetch(`/api/import/upload/${batch}?name=${encodeURIComponent(f.name)}&mtime=${f.lastModified / 1000}`,
+                                {method: 'POST', body: f});
+          if (!r.ok) { out(`${f.name}: ${(await r.json()).detail}`); return; }
+        }
+        body.upload = batch;
+      } else {
+        body.paths = [$('#imp-path').value];
+        body.recursive = $('#imp-rec').checked;
+      }
+      out('importing…');
+      let r = await fetch('/api/import', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      let s = await r.json();
+      if (!r.ok) { out(s.detail); return; }
+      job = s.job; $('#imp-stop').hidden = false;
+      while (s.state === 'running') {
+        await sleep(500);
+        r = await fetch(`/api/import/${job}`);
+        s = await r.json();
+        if (!r.ok) { out(s.detail); return; }
+      }
+      report(s);
+    } finally { go.disabled = false; $('#imp-stop').hidden = true; job = null; }
+  };
+  $('#imp-stop').onclick = () => job && fetch(`/api/import/${job}/cancel`, {method: 'POST'});
+
+  function report(s) {
+    const res = $('#imp-result');
+    res.textContent = '';
+    const line = (...parts) => { const p = document.createElement('span'); p.className = 'ex-line'; p.append(...parts); res.append(p); };
+    if (s.state !== 'done') { line(s.state === 'cancelled' ? 'stopped' : `import failed: ${s.error || s.state}`); }
+    imported += s.imported || 0;
+    if (s.state === 'done' || s.imported) {
+      const parts = [`${s.imported || 0} imported`];
+      if (s.film_ids && s.film_ids.length === 1 && s.imported) {
+        const a = document.createElement('a'); a.href = '/?roll=' + s.film_ids[0]; a.textContent = 'show them';
+        parts.push(' · ', a);
+      }
+      line(...parts);
+    }
+    const why = {};
+    for (const x of s.skipped || []) (why[x.reason || 'skipped'] = why[x.reason || 'skipped'] || []).push(x.file);
+    for (const [reason, files] of Object.entries(why))
+      line(`${files.length} skipped, ${reason}: ${files.slice(0, 8).join(', ')}${files.length > 8 ? ', …' : ''}`);
+    for (const x of s.failed || []) line(`${x.file}: ${x.error}`);
+  }
+})();
+</script>
 <script>
 (() => {
   const grid = document.getElementById('grid');
@@ -206,6 +342,20 @@
   // ── the selection bar
   $('#sel-clear').onclick = clearSelection;
   $('#sel-dup').onclick = () => duplicateAll(selection());
+  async function tagSelection(on) {
+    const names = $('#sel-tag').value.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!names.length) return $('#sel-tag').focus();
+    const ids = selection().map((t) => +t.dataset.id);
+    try { await dtMeta.setTags(ids, on ? names : [], on ? [] : names); }
+    catch (e) { alert(e.message); return; }
+    $('#sel-tag').value = '';
+    $('#sel-count').textContent = `${selected.size} selected · ${names.join(', ')} ${on ? 'added' : 'removed'}`;
+    detailKey = null; detailSoon();
+  }
+  $('#sel-tag-add').onclick = () => tagSelection(true);
+  $('#sel-tag-rm').onclick = () => tagSelection(false);
+  $('#sel-tag').onfocus = () => dtMeta.suggestions();
+  $('#sel-tag').onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') tagSelection(true); };
   $('#sel-export').onclick = () => exTarget === 'selection' ? closeExport() : openExport('selection');
   document.querySelectorAll('.sel-rate [data-rate]').forEach((b) => b.onclick = () => rate(selection(), b.dataset.rate));
   document.querySelectorAll('.sel-rate [data-label]').forEach((b) => b.onclick = () => label(selection(), +b.dataset.label));
@@ -278,7 +428,7 @@
 
   // ── the detail panel: the shown photo larger, with its rating, labels,
   // exif, title, description and tags
-  let detailTimer = null, detailKey = null;
+  let detailTimer = null, detailKey = null, detailId = null;
   const detailOn = () => $('#detail').offsetParent !== null;   // not shown on narrow screens
   function detailSoon() { clearTimeout(detailTimer); detailTimer = setTimeout(showDetail, 100); }
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
@@ -287,11 +437,16 @@
     if (!t || !detailOn()) return;
     const k = [t.dataset.id, t.dataset.version, t.dataset.rating, t.dataset.labels].join(':');
     if (k === detailKey) return;
+    if (dtMeta.typing($('#detail')) && detailId === t.dataset.id) {
+      $('#detail').addEventListener('focusout', () => { detailKey = null; detailSoon(); }, {once: true});
+      return;
+    }
     detailKey = k;
     const r = await fetch(`/api/photo/${t.dataset.id}/details`);
     if (!r.ok || detailKey !== k) return;
     const d = await r.json(), img = d.image, box = $('#detail');
     box.textContent = '';
+    detailId = t.dataset.id;
     const pv = el('img', 'detail-img');
     pv.src = `/thumb/${img.id}/${d.version}.jpg?size=720`;
     pv.alt = img.filename; pv.title = 'double-click: open';
@@ -320,13 +475,10 @@
     });
     box.append(acts, ctl);
     if (d.shot.length) { const p = el('p', 'shot'); d.shot.forEach((s) => p.append(el('span', null, s))); box.append(p); }
-    const dl = el('dl', 'detail-meta');
-    const row = (k, v) => { dl.append(el('dt', null, k), el('dd', null, v)); };
-    if (d.title) row('title', d.title);
-    if (d.description) row('description', d.description);
-    row('tags', d.tags.length ? d.tags.join(', ') : '—');
-    row('file', `${img.folder}/${img.filename}`);
-    box.append(dl);
+    const ed = el('div');
+    dtMeta.editor(ed, img.id, d);
+    const file = el('p', 'detail-file dim', `${img.folder}/${img.filename}`);
+    box.append(ed, file);
   }
   addEventListener('resize', detailSoon);
 

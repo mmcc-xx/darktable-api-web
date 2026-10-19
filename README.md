@@ -22,17 +22,29 @@ owner.
 
 ## What it does
 
-- **Library:** film rolls, filters (film roll, rating, color label), a
+- **Library:** film rolls, filters (film roll, rating, color label, tag:
+  a tag also takes the tags under it, `places` takes `places|paris`), a
   thumbnail grid with paging. A click shows a photo in the detail panel at
-  the right (larger, rating and labels, camera and exposure, title,
-  description, tags, *open in darkroom*, duplicate, export); double-click
+  the right (larger, rating and labels, camera and exposure, *open in
+  darkroom*, duplicate, export, and its title, description and tags to
+  edit: a tag links to the library filtered by it); double-click
   or Enter opens it. ⌘/Ctrl-click or a tile's box selects (shift: a range,
   ⌘/Ctrl+A: all shown, Esc: none); a bar over the grid then rates, labels,
-  duplicates or exports the selection. Rate, reject and set color labels by
+  tags or untags, duplicates or exports the selection. Rate, reject and set color labels by
   click or keyboard (arrows, 0–5, R, F1–F5: the selection's, else the shown
   photo's); ⧉ or ⌘/Ctrl+D makes a duplicate (a virtual copy with the saved
   edit). Thumbnails come from darktable's
   own thumbnail cache, rendered with each photo's current edit.
+- **Import:** *import…* in the library's header: a folder on this
+  computer (picked in a folder browser; its subfolders too if asked),
+  added where it is or copied into darktable's import folders (*copy &
+  import*, with a job code), or files uploaded from the browser (always
+  copied in). Photos already in the library are skipped, as darktable's
+  import does; the dialog lists what was imported and skipped.
+- **Tags & metadata:** title, description and tags in the library's
+  detail panel and the darkroom's *info & tags* section, written as
+  darktable's metadata editor and tagging module do (`|` for the
+  hierarchy; new tags are created; the library's tags are suggested).
 - **Export:** one or many photos with one set of settings (format, longest
   side, quality, high quality) into darktable's export folder, and for
   several as one zip to download; photos with unsaved changes in the
@@ -194,7 +206,8 @@ To open the copy in darktable's GUI: *release to darktable*, then
 
     /path/to/darktable/build/bin/darktable --configdir library-copy/config --cachedir library-copy/cache
 
-**No authentication.** Keep it on 127.0.0.1, or put it behind something that
+**No authentication.** Anyone who can reach the app can browse this
+computer's folders (the import dialog) and add files to it. Keep it on 127.0.0.1, or put it behind something that
 authenticates, before exposing it to a network.
 
 ## Layout
@@ -204,6 +217,7 @@ authenticates, before exposing it to a network.
 | `dtweb/engine.py` | connects to the darktable-api engine (starting it if needed) and talks JSON-RPC to it: edits before thumbnails, latest preview wins, events from other apps, the library hand-off |
 | `dtweb/main.py` | FastAPI routes: library, thumbnails (cached by edit state), ratings/labels, photo editing, live updates (server-sent events), library hand-off |
 | `dtweb/templates`, `dtweb/static` | pages (plain HTML and JavaScript, no framework) |
+| `dtweb/static/meta.js` | the title, description and tags editor (library and darkroom) |
 | `make_library_copy.py` | makes the library copy |
 
 Tested on macOS. On Linux, *quit darktable and take back* uses darktable's

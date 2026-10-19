@@ -21,6 +21,8 @@ import secrets
 import shlex
 import shutil
 import tempfile
+import time
+import urllib.parse
 import zipfile
 
 from fastapi import FastAPI, HTTPException, Request
@@ -105,16 +107,20 @@ def _filters(request: Request) -> dict:
     label = q.get("label", "")
     return {"roll": int(roll) if roll.isdigit() else None,
             "rating": q.get("rating") if q.get("rating") in RATINGS else "visible",
-            "label": int(label) if label.isdigit() and int(label) < len(LABELS) else None}
+            "label": int(label) if label.isdigit() and int(label) < len(LABELS) else None,
+            "tag": q.get("tag", "").strip() or None}
 
 
 def _query(f: dict) -> str:
-    return "&".join(f"{k}={v}" for k, v in f.items() if v is not None)
+    return urllib.parse.urlencode({k: v for k, v in f.items() if v is not None})
 
 
 def _list_args(f: dict) -> dict:
-    return {"film_id": f["roll"] if f["roll"] is not None else -1, "rating": f["rating"],
-            "label": f["label"] if f["label"] is not None else -1}
+    a = {"film_id": f["roll"] if f["roll"] is not None else -1, "rating": f["rating"],
+         "label": f["label"] if f["label"] is not None else -1}
+    if f["tag"]:
+        a["tag"] = f["tag"]     # an engine without images_list.tag ignores it; the page then hides the field
+    return a
 
 
 def _version(img: dict) -> str:
@@ -139,9 +145,10 @@ async def library_page(request: Request):
     f = _filters(request)
     ctx = {"filters": f, "query": _query(f), "ratings": RATINGS, "labels": LABELS,
            "lib": await _library_state(), "rolls": [], "images": [], "total": 0, "next_offset": None,
-           "error": None}
+           "error": None, "tag_filter": False, "import_dir": _import_dir()}
     if ctx["lib"].get("state") == "owned":
         try:
+            ctx["tag_filter"] = await engine.supports("images_list.tag")
             ctx["rolls"] = (await engine.call("film_rolls"))["film_rolls"]
             r = await engine.call("images_list", offset=0, limit=PAGE, **_list_args(f))
             ctx.update(images=r["images"], total=r["total"],
@@ -235,8 +242,63 @@ async def photo_details(image_id: int):
     m = meta.get("metadata") or {}
     return {"image": info["image"], "version": _version(info["image"]), "shot": _shot(info.get("exif")),
             "title": m.get("title", ""), "description": m.get("description", ""),
-            "tags": [t if isinstance(t, str) else t.get("name", "") for t in meta.get("tags") or []
-                     if not (t if isinstance(t, str) else t.get("name", "")).startswith("darktable|")]}
+            "tags": _user_tags(meta.get("tags"))}
+
+
+def _user_tags(tags: list) -> list[str]:
+    names = [t if isinstance(t, str) else t.get("name", "") for t in tags or []]
+    return [n for n in names if n and not n.startswith("darktable|")]
+
+
+@app.get("/api/tags")
+async def tags(filter: str = ""):
+    """The library's tags (darktable's own left out) with how many photos
+    carry each: suggestions for the tag fields and the tag filter."""
+    try:
+        r = await engine.call("tag_list", filter=filter)
+    except EngineError as exc:
+        raise _bad(exc)
+    return {"tags": [{"name": t["name"], "images": t.get("images", 0)} for t in r.get("tags") or []
+                     if not t["name"].startswith("darktable|")]}
+
+
+class TagsBody(BaseModel):
+    imgids: list[int]
+    attach: list[str] = []
+    detach: list[str] = []
+
+
+@app.post("/api/tags")
+async def set_tags(body: TagsBody):
+    """Attach and detach tags by name (| for the hierarchy), as darktable's
+    tagging module; new tags are created."""
+    attach = [t.strip() for t in body.attach if t.strip()]
+    detach = [t.strip() for t in body.detach if t.strip()]
+    if not body.imgids or not (attach or detach):
+        raise HTTPException(400, "no photos or no tags")
+    try:
+        await engine.call("set_tags", imgids=body.imgids, attach=attach, detach=detach)
+    except EngineError as exc:
+        raise _bad(exc)
+    return {"ok": True}
+
+
+class MetadataBody(BaseModel):
+    title: str | None = None
+    description: str | None = None
+
+
+@app.post("/api/photo/{image_id}/metadata")
+async def set_metadata(image_id: int, body: MetadataBody):
+    """Title and description, as darktable's metadata editor ("" clears)."""
+    values = {k: v.strip() for k, v in body.model_dump().items() if v is not None}
+    if not values:
+        raise HTTPException(400, "nothing to set")
+    try:
+        await engine.call("set_metadata", imgids=[image_id], values=values)
+    except EngineError as exc:
+        raise _bad(exc)
+    return await photo_details(image_id)
 
 
 def _tile(request: Request, img: dict):
@@ -949,6 +1011,163 @@ async def events(request: Request):
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+# ── import ───────────────────────────────────────────────────────────────────
+
+def _rc(key: str) -> str:
+    """A darktable preference from the library copy's darktablerc."""
+    try:
+        for line in (CONFIG / "darktablerc").read_text(errors="replace").splitlines():
+            if line.startswith(key + "="):
+                return line[len(key) + 1:]
+    except OSError:
+        pass
+    return ""
+
+
+def _import_dir() -> dict:
+    """Where the import dialog's folder browser starts, and where copy &
+    import puts photos (darktable's import settings)."""
+    start = _rc("ui_last/import_last_directory")
+    if not start or not Path(start).is_dir():
+        start = str(Path.home() / "Pictures") if (Path.home() / "Pictures").is_dir() else str(Path.home())
+    return {"start": start, "jobcode": _rc("plugins/session/jobcode"),
+            "copy_to": "/".join(p for p in (_rc("session/base_directory_pattern"),
+                                            _rc("session/sub_directory_pattern")) if p)}
+
+
+# what darktable imports (src/common/image.c's supported extensions, the common ones):
+# only for counting photos in the folder browser; the engine decides what it imports
+PHOTO_EXT = {".3fr", ".arw", ".cr2", ".cr3", ".crw", ".dng", ".erf", ".exr", ".fff", ".gpr", ".heic", ".heif",
+             ".hdr", ".iiq", ".j2k", ".jp2", ".jpeg", ".jpg", ".jxl", ".kdc", ".mef", ".mos", ".mrw", ".nef",
+             ".nrw", ".orf", ".ori", ".pef", ".pfm", ".png", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf",
+             ".srw", ".tif", ".tiff", ".webp", ".x3f", ".avif", ".pnm", ".qoi"}
+
+
+@app.get("/api/fs")
+async def fs_list(path: str = ""):
+    """A folder's subfolders and how many photos are in it, for the import
+    dialog's folder browser (this app has no authentication: see README)."""
+    p = Path(path or _import_dir()["start"]).expanduser()
+    try:
+        p = p.resolve(strict=True)
+        entries = sorted(p.iterdir(), key=lambda e: e.name.lower())
+    except OSError as exc:
+        raise HTTPException(404, f"can't read {p}: {exc.strerror or exc}")
+    dirs, photos = [], 0
+    for e in entries:
+        if e.name.startswith("."):
+            continue
+        try:
+            if e.is_dir():
+                dirs.append(e.name)
+            elif e.suffix.lower() in PHOTO_EXT:
+                photos += 1
+        except OSError:
+            pass
+    return {"path": str(p), "parent": str(p.parent) if p.parent != p else None, "dirs": dirs, "photos": photos}
+
+
+UPLOADS = CONFIG.parent / "web-uploads"      # files sent from the browser, until they are imported
+IMPORTS: dict[str, dict] = {}                 # engine job id -> {"upload": folder to delete afterwards}
+
+
+@app.post("/api/import/upload/{batch}")
+async def import_upload(request: Request, batch: str, name: str, mtime: float = 0):
+    """One file from the browser (the body is the file), into a folder per
+    batch; /api/import with the batch then copies and imports them. mtime
+    (seconds) keeps the file's modification time, which darktable's
+    duplicate check compares."""
+    if not batch.isalnum() or len(batch) > 40:
+        raise HTTPException(400, "bad batch id")
+    safe = Path(name).name
+    if not safe or safe.startswith("."):
+        raise HTTPException(400, "bad file name")
+    folder = UPLOADS / batch
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / safe
+    with open(dest, "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+    if mtime > 0:
+        os.utime(dest, (time.time(), mtime))
+    return {"file": safe, "bytes": dest.stat().st_size}
+
+
+class ImportBody(BaseModel):
+    """paths: files or folders on this computer; upload: a batch sent with
+    /api/import/upload (always copied, as it lives in a temporary folder);
+    copy_files: copy & import."""
+    paths: list[str] = []
+    upload: str | None = None
+    recursive: bool = False
+    copy_files: bool = False
+    jobcode: str | None = None
+
+
+@app.post("/api/import")
+async def import_start(body: ImportBody):
+    """darktable's import as a background job: add the photos where they
+    are, or (copy) copy them into darktable's import folders first. Photos
+    already in the library are skipped. Poll /api/import/{job}."""
+    paths, upload = [p for p in body.paths if p.strip()], None
+    if body.upload:
+        if not body.upload.isalnum() or not (UPLOADS / body.upload).is_dir():
+            raise HTTPException(400, "no such upload")
+        upload = UPLOADS / body.upload
+        paths = [str(upload)]
+    if not paths:
+        raise HTTPException(400, "nothing to import")
+    params: dict = {"paths": paths, "recursive": body.recursive, "copy": body.copy_files or upload is not None}
+    if params["copy"] and body.jobcode and body.jobcode.strip():
+        params["jobcode"] = body.jobcode.strip()
+    try:
+        r = await engine.call("import", **params)
+    except EngineError as exc:
+        if upload:
+            shutil.rmtree(upload, ignore_errors=True)
+        if "recursive" in str(exc) and not body.recursive:
+            raise HTTPException(400, "no photos in this folder itself: tick “its subfolders too” to look in them")
+        raise _bad(exc)
+    IMPORTS[str(r.get("job"))] = {"upload": upload}
+    return await _import_state(r)
+
+
+async def _import_state(r: dict) -> dict:
+    """A job's state; when it's over, its result in short and the upload's
+    temporary folder removed."""
+    out = {"job": r.get("job"), "state": r.get("state"), "error": r.get("error")}
+    if r.get("state") in (None, "running"):
+        return out
+    res = r.get("result") or {}
+    imported = res.get("imported") or []
+    out.update(imported=len(imported), skipped=[{"file": Path(x.get("source", "")).name, "reason": x.get("reason")}
+                                                for x in res.get("skipped") or []],
+               failed=[{"file": Path(x.get("source", "")).name, "error": x.get("error")}
+                       for x in res.get("failed") or []],
+               film_ids=res.get("film_ids") or [], first=imported[0]["imgid"] if imported else None)
+    done = IMPORTS.pop(str(r.get("job")), None)
+    if done and done["upload"]:
+        shutil.rmtree(done["upload"], ignore_errors=True)
+    return out
+
+
+@app.get("/api/import/{job}")
+async def import_status(job: int):
+    try:
+        r = await engine.call("job_status", job=job)
+    except EngineError as exc:
+        raise _bad(exc, 404)
+    return await _import_state({"job": job, **r})
+
+
+@app.post("/api/import/{job}/cancel")
+async def import_cancel(job: int):
+    try:
+        return await engine.call("job_cancel", job=job)
+    except EngineError as exc:
+        raise _bad(exc)
 
 
 # ── the library lock ─────────────────────────────────────────────────────────

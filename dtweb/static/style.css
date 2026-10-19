@@ -26,6 +26,19 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .lib { margin-left: auto; font-size: .8rem; color: var(--dim); display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
 .lib button { font-size: .8rem; padding: .15rem .5rem; }
 .lib[data-state="released"] #lib-text { color: var(--accent); }
+.claude-btn { margin-left: auto; font-size: .8rem; padding: .15rem .6rem; }
+.claude-btn + .lib { margin-left: 0; }
+.connect { max-width: min(46rem, calc(100vw - 2rem)); box-sizing: border-box; background: var(--panel); color: var(--text);
+           border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.2rem; }
+.connect::backdrop { background: rgba(0, 0, 0, .55); }
+.connect h3 { margin: 0 0 .4rem; }
+.connect ol { padding-left: 1.2rem; }
+.connect li { margin-bottom: .8rem; }
+.connect p { margin: .3rem 0; font-size: .85rem; }
+.connect .cmd { display: flex; align-items: flex-start; gap: .4rem; margin-top: .3rem; }
+.connect pre { flex: 1; min-width: 0; margin: 0; padding: .5rem .6rem; background: var(--bg); border: 1px solid var(--line);
+               border-radius: 4px; font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.connect form { text-align: right; }
 .banner { background: #3a2f1c; border: 1px solid #6b5228; padding: .6rem .8rem; border-radius: 4px; }
 .count { color: var(--dim); font-size: .8rem; margin: 0 0 .6rem; }
 

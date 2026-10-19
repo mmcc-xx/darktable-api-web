@@ -17,6 +17,8 @@ import base64
 import json
 import os
 import secrets
+import shlex
+import shutil
 import tempfile
 
 from fastapi import FastAPI, HTTPException, Request
@@ -25,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .engine import CONFIG, EngineError, engine
+from .engine import BIN, CONFIG, EngineError, engine
 
 HERE = Path(__file__).parent
 app = FastAPI(title="darktable-api-web")
@@ -33,6 +35,27 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
 # the stylesheet's address changes with the file, so browsers don't keep an old one
 templates.env.globals["static_version"] = lambda name: int((HERE / "static" / name).stat().st_mtime)
+
+
+def _connect() -> dict:
+    """The Connect Claude dialog's commands: the MCP server on this web app's
+    engine and library (DTAPI_MCP: the darktable-api-mcp program)."""
+    mcp = os.environ.get("DTAPI_MCP") or shutil.which("darktable-api-mcp")
+    if not mcp and (Path.home() / "darktable-api-mcp/.venv/bin/darktable-api-mcp").exists():
+        mcp = str(Path.home() / "darktable-api-mcp/.venv/bin/darktable-api-mcp")
+    env = [("DTAPI_BIN", BIN), ("DTAPI_CONFIGDIR", CONFIG)]
+    if os.environ.get("DTAPI_SOCKET"):
+        env.append(("DTAPI_SOCKET", os.environ["DTAPI_SOCKET"]))
+    q = lambda v: shlex.quote(str(v))
+    command = " \\\n  ".join(["claude mcp add darktable-api", *(f"-e {k}={q(v)}" for k, v in env),
+                               f"-- {q(mcp or '/path/to/darktable-api-mcp/.venv/bin/darktable-api-mcp')}"])
+    skills = Path(mcp).resolve().parents[2] / "skills" if mcp else None
+    return {"command": command, "found": bool(mcp),
+            "skills": (f"mkdir -p ~/.claude/skills\nfor s in {q(skills)}/*/; do ln -s \"$s\" ~/.claude/skills/; done"
+                       if skills and skills.is_dir() else None)}
+
+
+templates.env.globals["connect"] = _connect()
 
 PAGE = 60
 THUMB_SIZE = 400
@@ -55,6 +78,15 @@ PANELS = [
     ("sigmoid", "sigmoid", [
         ("middle_grey_contrast", "contrast", 0.5, 3.0, 1, "", 2),
         ("contrast_skewness", "skew", -1.0, 1.0, 1, "", 2),
+    ]),
+    # darktable's nine bands, by the scene exposure each one is centred on
+    ("toneequal", "tone equalizer", [
+        (name, f"{ev} EV {label}", -2.0, 2.0, 1, "EV", 2)
+        for name, ev, label in [
+            ("noise", "−8", "blacks"), ("ultra_deep_blacks", "−7", "deep shadows"),
+            ("deep_blacks", "−6", "shadows"), ("blacks", "−5", "light shadows"),
+            ("shadows", "−4", "midtones"), ("midtones", "−3", "dark highlights"),
+            ("highlights", "−2", "highlights"), ("whites", "−1", "whites"), ("speculars", "0", "speculars")]
     ]),
     ("colorbalancergb", "color balance rgb", [
         ("vibrance", "global vibrance", -1.0, 1.0, 100, "%", 0),

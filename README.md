@@ -33,8 +33,9 @@ owner.
   preview (click: logarithmic / linear) with the clipped highlight and
   shadow shares, then the camera, date, lens and exposure (shutter,
   aperture, ISO, focal length, bias). Live preview from darktable's pipeline with sliders for
-  exposure, AgX (or sigmoid, for photos edited with it) and color balance
-  rgb in collapsible sections (basic, color, export), each summing up its
+  exposure, AgX (or sigmoid, for photos edited with it), the tone
+  equalizer's nine bands (−8 EV to 0 EV) and color balance rgb in
+  collapsible sections (basic, tone, color, export), each summing up its
   settings in one line when closed; module on/off. A black & white
   section: one checkbox adds a second color calibration instance with a
   gray mix (the first keeps the white balance), and a strip of looks
@@ -70,6 +71,11 @@ owner.
   at its default, including the folder, by default
   `$(FILE_FOLDER)/darktable_exported/`), with a download link for the file.
   Unsaved changes are saved first, after asking.
+- **Connect Claude:** *Claude* in the header shows how to let Claude Code
+  edit this library: the `claude mcp add` command filled in with this
+  app's engine and library (set `DTAPI_MCP` if `darktable-api-mcp` isn't
+  on the PATH or in `~/darktable-api-mcp/.venv`), linking the editing
+  skills, and a prompt to start with. Claude's edits show up here live.
 - **Sharing the library with darktable:** darktable and the engine can't
   have one library open at the same time. The header has *release to
   darktable* (the engine closes the library; unsaved edits are kept), *take
@@ -159,6 +165,7 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_CACHEDIR` | `library-copy/cache` | the engine's darktable cache |
 | `DTAPI_SOCKET` | `library-copy/darktable-api.sock` (or `/tmp/darktable-api-<uid>-<hash>.sock` if that path is too long) | where the engine listens; every app using the library must use the same one |
 | `DTAPI_MAX_SESSIONS`, `DTAPI_IDLE_EXIT` | 3, 600 | used when this app starts the engine |
+| `DTAPI_MCP` | `darktable-api-mcp` on the PATH, else `~/darktable-api-mcp/.venv/bin/darktable-api-mcp` | the MCP server the *Claude* dialog's command runs |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
 To open the copy in darktable's GUI: *release to darktable*, then

@@ -194,8 +194,8 @@
 
   // the right panel's sections: each module's section, its title, and which
   // sections are open (kept per browser)
-  const SECTION = {exposure: 'basic', agx: 'basic', sigmoid: 'basic', colorbalancergb: 'color'};
-  const SECTIONS = ['basic', 'color'];
+  const SECTION = {exposure: 'basic', agx: 'basic', sigmoid: 'basic', toneequal: 'tone', colorbalancergb: 'color'};
+  const SECTIONS = ['basic', 'tone', 'color'];
   let opened;
   try { opened = JSON.parse(localStorage.getItem('dr:open')) || {basic: true}; } catch (e) { opened = {basic: true}; }
   function keepOpen(d) {
@@ -559,7 +559,7 @@
       else renderHistory(s.history);
       if (path === 'geometry') showGeo(s.geometry);
       const m = path === 'set' && state.modules.find((x) => x.operation === p.operation);
-      if (m && !m.enabled && s.enabled) { m.enabled = true; show(state); }
+      if (m && !m.enabled && s.enabled) { m.enabled = true; state.history = s.history; show(state); }
       if (!waiting.length) await preview(`${DONE[path]} ${Math.round(performance.now() - t)} ms,`);
     }
     endTarget = null;

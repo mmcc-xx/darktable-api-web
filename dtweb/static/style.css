@@ -202,3 +202,11 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 #wb .status { margin: -.1rem 0 .3rem; }
 #wb > button { font-size: .8rem; padding: .15rem .5rem; margin-top: -.2rem; }
 .view.picking, .view.picking img { cursor: crosshair; }
+
+/* zoomed: the image at its own pixels, dragged to pan */
+.view { overflow: hidden; }
+.view.zoomed { cursor: grab; }
+.view.zoomed.panning { cursor: grabbing; }
+.view.zoomed > img { object-fit: fill; }
+.zoom button { padding: .3rem .55rem; }
+.view.zoomed.picking, .view.zoomed.picking img { cursor: crosshair; }

@@ -24,7 +24,7 @@
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
-      <span class="zoom" role="group" aria-label="zoom"><button class="on" aria-pressed="true" title="fit the photo in the window">fit</button></span>
+      <span class="zoom" role="group" aria-label="zoom"><button data-zoom="0" class="on" aria-pressed="true" title="fit the photo in the window (double-click the photo: 100% there, again: fit)">fit</button><button data-zoom="1" aria-pressed="false" title="100%: one photo pixel per screen pixel; drag to pan">100%</button><button data-zoom="2" aria-pressed="false" title="200%; drag to pan">200%</button></span>
     </div>
     <!-- the active tool's controls; "done" returns to plain viewing -->
     <div id="toolbar-crop" class="toolbar-bar" hidden>
@@ -150,20 +150,117 @@
   const fmt = (f, v) => (v * f.factor).toFixed(f.digits) + (f.unit ? ' ' + f.unit : '');
 
   async function preview(note) {
-    const img = $('#pv');
-    const w = Math.min(2048, Math.round((img.parentElement.clientWidth || 800) * (window.devicePixelRatio || 1)));
+    const img = $('#pv'), v = img.parentElement, dpr = window.devicePixelRatio || 1;
+    const z = zoom;
+    let q;
+    if (z) {
+      // the view's size in device pixels, so 100% is one photo pixel per screen pixel
+      const w = Math.min(3200, Math.round(v.clientWidth * dpr)), h = Math.min(3200, Math.round(v.clientHeight * dpr));
+      clampCenter(w, h, z);
+      q = `w=${w}&h=${h}&zoom=${z}&cx=${center.x.toFixed(5)}&cy=${center.y.toFixed(5)}`;
+    } else {
+      const w = Math.min(2048, Math.round((v.clientWidth || 800) * dpr));
+      q = `w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`;
+    }
+    const sent = {...center};
     const t = performance.now();
-    const r = await fetch(`/api/photo/${ID}/preview.jpg?w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`);
+    const r = await fetch(`/api/photo/${ID}/preview.jpg?${q}`);
     if (r.status === 204) return;
     if (!r.ok) { status('preview failed: ' + (await r.text())); return; }
     const blob = await r.blob();
+    const reg = r.headers.get('X-Region');
+    // the size it is shown at: zoomed, its own pixels; else fitted (the stylesheet)
+    if (z && reg) {
+      const bmp = await createImageBitmap(blob);
+      shown = {zoom: z, region: JSON.parse(reg), center: sent};
+      const R = shown.region;
+      full = {w: bmp.width / (z * (R.right - R.left)), h: bmp.height / (z * (R.bottom - R.top))};
+      const cw = bmp.width / dpr, ch = bmp.height / dpr;
+      Object.assign(img.style, {width: cw + 'px', height: ch + 'px', inset: 'auto',
+                                left: (v.clientWidth - cw) / 2 + 'px', top: (v.clientHeight - ch) / 2 + 'px'});
+      bmp.close();
+    } else {
+      shown = null;
+      img.removeAttribute('style');
+    }
+    img.style.transform = $('#clipov').style.transform = '';
     if (url) URL.revokeObjectURL(url);
     url = URL.createObjectURL(blob);
     img.src = url;
     if (cropping) img.decode().then(drawBox, drawBox);
-    status(`${note || ''} render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
+    status(`${note ? note + ' ' : ''}${shown ? Math.round(z * 100) + '%, ' : ''}render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
     looksSoon();
   }
+
+  // ── zoom and pan: 0 fits the photo in the view; 1 and 2 are 100% and
+  // 200% of the region around center (fractions of the photo). shown: the
+  // zoom, region and center of the image on screen; full: the photo's size
+  // in pixels at 100%, from the last zoomed render
+  let zoom = 0, center = {x: 0.5, y: 0.5}, shown = null, full = null;
+  function clampCenter(w, h, z) {
+    if (!full) return;
+    for (const [k, px, size] of [['x', w, full.w], ['y', h, full.h]]) {
+      const half = px / (2 * z * size);
+      center[k] = half >= 0.5 ? 0.5 : Math.max(half, Math.min(1 - half, center[k]));
+    }
+  }
+  function setZoom(z, at) {
+    if (z && cropping) setCropping(false);
+    if (z && cmp) closeCompare();
+    if (z && showing) { showing = null; for (const f of $('#alts-list').children) f.classList.remove('on'); }
+    if (at) center = at;
+    markZoom(z);
+    return preview();
+  }
+  function markZoom(z) {
+    zoom = z;
+    document.querySelectorAll('.zoom button').forEach((b) => {
+      const on = +b.dataset.zoom === z;
+      b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    });
+    $('.view').classList.toggle('zoomed', !!z);
+  }
+  document.querySelectorAll('.zoom button').forEach((b) => b.onclick = () => setZoom(+b.dataset.zoom));
+  // where a point of the view is in the photo (fractions), or null off the photo
+  function photoPoint(e) {
+    const r = imgRect(), v = $('.view').getBoundingClientRect();
+    let x = (e.clientX - v.left - r.x) / r.w, y = (e.clientY - v.top - r.y) / r.h;
+    if (x < 0 || y < 0 || x > 1 || y > 1) return null;
+    if (shown) {
+      const R = shown.region;
+      x = R.left + x * (R.right - R.left); y = R.top + y * (R.bottom - R.top);
+    }
+    return {x, y};
+  }
+  // drag to pan: the image moves at once, the new region renders on release
+  $('.view').addEventListener('pointerdown', (e) => {
+    if (!shown || picking || cropping || cmp || e.button !== 0) return;
+    const v = $('.view'), x0 = e.clientX, y0 = e.clientY, from = shown;
+    v.setPointerCapture(e.pointerId);
+    v.classList.add('panning');
+    let dx = 0, dy = 0;
+    v.onpointermove = (ev) => {
+      dx = ev.clientX - x0; dy = ev.clientY - y0;
+      $('#pv').style.transform = $('#clipov').style.transform = `translate(${dx}px, ${dy}px)`;
+    };
+    v.onpointerup = v.onpointercancel = () => {
+      v.onpointermove = v.onpointerup = v.onpointercancel = null;
+      v.classList.remove('panning');
+      if (Math.abs(dx) + Math.abs(dy) < 3 || !full) return;
+      const k = (window.devicePixelRatio || 1) / from.zoom;
+      center = {x: from.center.x - dx * k / full.w, y: from.center.y - dy * k / full.h};
+      preview();
+    };
+  });
+  // double-click: 100% there, or back to fit
+  $('.view').addEventListener('dblclick', (e) => {
+    if (picking || cropping || cmp) return;
+    if (zoom) { setZoom(0); return; }
+    const p = photoPoint(e);
+    if (p) setZoom(1, p);
+  });
+  let resizeTimer = null;
+  addEventListener('resize', () => { if (zoom) { clearTimeout(resizeTimer); resizeTimer = setTimeout(preview, 300); } });
 
   // undo/redo move history_end by a step, as darktable's ctrl+z/ctrl+y do;
   // endTarget is where the steps queued so far will leave it
@@ -354,15 +451,17 @@
   }
   $('.view').addEventListener('click', (e) => {
     if (!picking || showing) return;
-    const r = imgRect(), v = $('.view').getBoundingClientRect();
-    const x = (e.clientX - v.left - r.x) / r.w, y = (e.clientY - v.top - r.y) / r.h;
-    if (x < 0 || y < 0 || x > 1 || y > 1) return;
-    const k = 0.015, c = (a) => Math.max(0, Math.min(1, a));
+    const pt = photoPoint(e);
+    if (!pt) return;
+    const {x, y} = pt;
+    // a box of about 1.5% of the view's photo, either side
+    const kx = 0.015 * (shown ? shown.region.right - shown.region.left : 1),
+          ky = 0.015 * (shown ? shown.region.bottom - shown.region.top : 1), c = (a) => Math.max(0, Math.min(1, a));
     const p = picking;
     setPicking(null);
     status(`picking the ${p.label}…`);
     enqueue('pick', {operation: p.operation, instance: 0, control: p.control,
-                     box: {left: c(x - k), top: c(y - k), right: c(x + k), bottom: c(y + k)}});
+                     box: {left: c(x - kx), top: c(y - ky), right: c(x + kx), bottom: c(y + ky)}});
   });
 
   // ── rgb levels under the histogram: black, gray and white of the first
@@ -714,6 +813,7 @@
 
   function setCropping(on) {
     if (on && cmp) closeCompare();
+    if (on && zoom) markZoom(0);
     cropping = on && !!geo;
     $('#toolbar-crop').hidden = !on;
     $('#tool-crop').setAttribute('aria-pressed', on);
@@ -776,7 +876,7 @@
       const s = await r.json();
       if (path === 'history_end' || path === 'pick') show(s);
       else renderHistory(s.history);
-      if (path === 'geometry') showGeo(s.geometry);
+      if (path === 'geometry') { showGeo(s.geometry); full = null; }
       const m = path === 'set' && state.modules.find((x) => x.operation === p.operation);
       if (m && !m.enabled && s.enabled) { m.enabled = true; state.history = s.history; show(state); }
       // a slider switched the module on: show it on (not while more values wait)
@@ -830,6 +930,7 @@
   // wipe over the preview; a different shape (a new crop): side by side
   let cmp = null, beforeUrl = null;
   async function openCompare(stepNo, label) {
+    if (zoom) await setZoom(0);
     const img = $('#pv');
     const w = Math.min(2048, Math.round((img.parentElement.clientWidth || 800) * (window.devicePixelRatio || 1)));
     const r = await fetch(`/api/photo/${ID}/before.jpg?step=${stepNo}&w=${w}&h=${w}`);
@@ -922,7 +1023,7 @@
     g.strokeStyle = 'rgba(235,235,235,.85)'; g.lineWidth = dpr;
     path(counts.l); g.stroke();
     const pc = (v) => { const p = 100 * v / counts.n; return p === 0 ? '0' : p < 0.1 ? '<0.1' : p.toFixed(1); };
-    $('#histo-clip').textContent = `${histoLog ? 'log' : 'linear'} · clipped: highlights ${pc(counts.hi)}%, shadows ${pc(counts.lo)}%`;
+    $('#histo-clip').textContent = `${histoLog ? 'log' : 'linear'}${shown ? ' · the area shown' : ''} · clipped: highlights ${pc(counts.hi)}%, shadows ${pc(counts.lo)}%`;
   }
   $('#pv').addEventListener('load', countHisto);
   addEventListener('resize', drawHisto);
@@ -1000,7 +1101,8 @@
       im.src = '/api/variant?path=' + encodeURIComponent(v.path);
       im.alt = v.label;
       im.title = 'show it large (click again for the current edit)';
-      im.onclick = () => {
+      im.onclick = async () => {
+        if (zoom) await setZoom(0);
         showing = showing === v ? null : v;
         $('#pv').src = showing ? im.src : url;
         for (const f of box.children) f.classList.toggle('on', showing && f === fig);

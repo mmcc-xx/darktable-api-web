@@ -60,6 +60,11 @@ owner.
   optionally held to an aspect ratio (⤾ swaps portrait/landscape). These
   edit darktable's own flip, ashift and crop modules, so darktable shows
   the same crop.
+- **Zoom:** *fit*, *100%* (one photo pixel per screen pixel) and *200%*
+  at the toolbar's right, or double-click the photo for 100% there (again:
+  fit). Zoomed, drag to pan; the engine renders just the region shown, so
+  edits, the clipping overlay and the pickers work on it, and the
+  histogram counts the area shown.
 - **Clipping:** *clipping* in the toolbar (or O) paints blown highlights
   (a channel at 255) red and crushed shadows (black) blue over the
   preview, counted from the preview in the browser.

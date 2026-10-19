@@ -713,10 +713,16 @@ async def export_download(token: str, name: str):
 
 
 @app.get("/api/photo/{image_id}/preview.jpg")
-async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: bool = False):
-    w, h = max(64, min(w, 2560)), max(64, min(h, 2560))
+async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: bool = False,
+                        zoom: float = 0, cx: float = 0.5, cy: float = 0.5):
+    """The edit fitted inside w x h, or with zoom (1 = 100%, up to 2) the
+    w x h region around cx, cy (fractions) at that scale; X-Region has the
+    part of the photo it shows (fractions, smaller at the photo's edges)."""
+    cap = 3200 if zoom > 0 else 2560       # a zoomed view fills a HiDPI window
+    w, h = max(64, min(w, cap)), max(64, min(h, cap))
+    region = {"zoom": min(zoom, 2.0), "center_x": cx, "center_y": cy} if zoom > 0 else None
     try:
-        r = await engine.render(image_id, w, h, uncropped)
+        r = await engine.render(image_id, w, h, uncropped and not region, region)
     except EngineError as exc:
         raise _bad(exc, 502)
     if r is None:
@@ -725,7 +731,8 @@ async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: 
     return Response(data, media_type="image/jpeg", headers={
         "Cache-Control": "no-store",
         "X-Render-Ms": str(timing.get("process_ms", "")),
-        "X-Total-Ms": str(timing.get("total_ms", ""))})
+        "X-Total-Ms": str(timing.get("total_ms", "")),
+        **({"X-Region": json.dumps(timing["region"])} if timing.get("region") else {})})
 
 
 @app.get("/api/photo/{image_id}/before.jpg")

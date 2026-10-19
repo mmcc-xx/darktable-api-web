@@ -43,6 +43,8 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .ctl button.on { color: var(--accent); }
 .ctl .rej.on { color: #d0534a; }
 .ctl .rej { margin-right: .3rem; }
+.ctl .dup { margin-left: auto; padding-left: .3rem; }
+.ctl .dup:hover { color: var(--accent); }
 .ctl button.dot { width: .7rem; height: .7rem; border-radius: 50%; margin-left: .2rem; padding: 0; opacity: .35; border: 1px solid transparent; }
 .ctl button.dot.on { opacity: 1; border-color: #fff; }
 .dot.red { background: #d0534a; } .dot.yellow { background: #d8c34a; } .dot.green { background: #5aa85a; }
@@ -167,3 +169,4 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .look span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .look:hover { color: var(--text); }
 .look.on { border-color: var(--accent); color: var(--text); }
+.clipov { position: absolute; pointer-events: none; image-rendering: pixelated; }

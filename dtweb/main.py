@@ -174,6 +174,21 @@ async def set_label(request: Request, image_id: int, body: LabelBody):
     return _tile(request, r["image"])
 
 
+class DuplicateBody(BaseModel):
+    virgin: bool = False
+    save: bool = False
+
+
+# a duplicate (virtual copy) as the lighttable's: with the saved edit, or
+# unedited (virgin); unsaved changes are refused unless save
+@app.post("/api/photo/{image_id}/duplicate")
+async def duplicate(image_id: int, body: DuplicateBody):
+    try:
+        return await engine.call("image_duplicate", imgid=image_id, virgin=body.virgin, save=body.save)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
 def _tile(request: Request, img: dict):
     f = _filters(request)
     return templates.TemplateResponse(request, "_tile.html", {

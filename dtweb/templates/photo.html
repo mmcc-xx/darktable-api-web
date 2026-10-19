@@ -23,6 +23,7 @@
       <button id="tool-crop" data-tool="crop" aria-pressed="false" title="crop, rotate and straighten">crop &amp; rotate</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
+      <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
       <span class="zoom" role="group" aria-label="zoom"><button class="on" aria-pressed="true" title="fit the photo in the window">fit</button></span>
     </div>
     <!-- the active tool's controls; "done" returns to plain viewing -->
@@ -51,6 +52,7 @@
     </div>
     <div class="view">
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
+      <canvas id="clipov" class="clipov" hidden></canvas>
       <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
       <div id="cmpframe" class="cmpframe" hidden>
         <img id="cmp-before" alt="before"><div id="cmp-line" class="cmp-line"></div>
@@ -112,9 +114,11 @@
         <button id="save" class="primary">save</button>
         <button id="reload" class="secondary" title="reopen the photo as saved">discard</button>
         <span class="menu">
-          <button id="more" class="secondary" aria-haspopup="true" aria-expanded="false" aria-label="more: export, start over">⋯</button>
+          <button id="more" class="secondary" aria-haspopup="true" aria-expanded="false" aria-label="more: export, duplicate, start over">⋯</button>
           <span id="more-menu" class="menu-list" hidden>
             <button id="more-export" class="link">export…</button>
+            <button id="dup" class="link" title="a virtual copy with this edit, as darktable's duplicate (ctrl+D)">duplicate</button>
+            <button id="dup-virgin" class="link" title="a virtual copy without an edit">duplicate unedited</button>
             <button id="reset" class="link" title="delete the edit and apply darktable's defaults">start over</button>
           </span>
         </span>
@@ -699,6 +703,45 @@
     try { localStorage.setItem('dr:histlog', histoLog ? 'log' : 'linear'); } catch (e) {}
     drawHisto();
   };
+  // ── clipping overlay: pixels of the preview at 255 in a channel (red) or
+  // black in all three (blue), as the histogram counts them; painted here
+  let clipOn = false;
+  try { clipOn = localStorage.getItem('dr:clip') === 'on'; } catch (e) {}
+  function drawClip() {
+    const img = $('#pv'), cv = $('#clipov');
+    cv.hidden = !clipOn || img.hidden || !img.naturalWidth;
+    $('#clip').setAttribute('aria-pressed', clipOn);
+    $('#clip').classList.toggle('on', clipOn);
+    if (cv.hidden) return;
+    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+    const g = cv.getContext('2d', {willReadFrequently: true});
+    g.drawImage(img, 0, 0);
+    const px = g.getImageData(0, 0, cv.width, cv.height), d = px.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const hi = d[i] === 255 || d[i + 1] === 255 || d[i + 2] === 255, lo = d[i] + d[i + 1] + d[i + 2] === 0;
+      if (hi) { d[i] = 255; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255; }
+      else if (lo) { d[i] = 40; d[i + 1] = 90; d[i + 2] = 255; d[i + 3] = 255; }
+      else d[i + 3] = 0;
+    }
+    g.putImageData(px, 0, 0);
+    placeClip();
+  }
+  function placeClip() {
+    const cv = $('#clipov');
+    if (cv.hidden) return;
+    const r = imgRect();
+    Object.assign(cv.style, {left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px'});
+  }
+  $('#pv').addEventListener('load', drawClip);
+  // side-by-side comparison hides the preview, and the overlay with it
+  new MutationObserver(drawClip).observe($('#pv'), {attributes: true, attributeFilter: ['hidden']});
+  new ResizeObserver(placeClip).observe($('.view'));
+  $('#clip').onclick = () => {
+    clipOn = !clipOn;
+    try { localStorage.setItem('dr:clip', clipOn ? 'on' : 'off'); } catch (e) {}
+    drawClip();
+  };
+  if ($('#pv').complete) drawClip();
   addEventListener('resize', placeCompare);
   $('#cmpframe').addEventListener('pointerdown', (e) => {
     const f = $('#cmpframe');
@@ -794,6 +837,23 @@
     status(r.ok ? (s.changed ? `saved (${s.history_items} history items)` : 'nothing new to save') : 'save failed: ' + s.detail);
   };
   $('#reload').onclick = () => { if (!dirty || confirm('Discard unsaved changes?')) open(true); };
+  // duplicate: a virtual copy (the next version) with the saved edit, or
+  // none; unsaved changes are saved first, after asking. This photo stays open
+  async function duplicate(virgin) {
+    menu(false);
+    if (!virgin && dirty && !confirm('The duplicate gets the saved edit. Save your changes and duplicate?')) return;
+    const r = await api('duplicate', {virgin, save: !virgin && dirty});
+    const s = await r.json();
+    if (!r.ok) { status('duplicate failed: ' + s.detail); return; }
+    if (s.saved) dirty = false;
+    const img = s.image, el = $('#status');
+    el.textContent = `made duplicate ${img.version}${virgin ? ' (unedited)' : ''} · `;
+    const a = document.createElement('a');
+    a.href = `/photo/${img.id}${location.search}`; a.textContent = 'open it';
+    el.append(a);
+  }
+  $('#dup').onclick = () => duplicate(false);
+  $('#dup-virgin').onclick = () => duplicate(true);
   $('#reset').onclick = async () => {
     menu(false);
     if (!confirm("Start over from darktable's defaults? This deletes the photo's whole edit.")) return;
@@ -817,10 +877,12 @@
       return;
     }
     if (e.target.closest('input, select, textarea')) return;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && k === 'd') { e.preventDefault(); duplicate(false); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
     if (e.key === 'Escape' && cmp) { closeCompare(); return; }
+    if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];
     const a = go && document.getElementById(go);

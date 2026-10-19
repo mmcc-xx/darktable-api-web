@@ -24,7 +24,8 @@ owner.
 
 - **Library:** film rolls, filters (film roll, rating, color label), a
   thumbnail grid with paging; rate, reject and set color labels by click or
-  keyboard (arrows, Enter, 0–5, R, F1–F5). Thumbnails come from darktable's
+  keyboard (arrows, Enter, 0–5, R, F1–F5); ⧉ or ⌘/Ctrl+D makes a
+  duplicate (a virtual copy with the saved edit). Thumbnails come from darktable's
   own thumbnail cache, rendered with each photo's current edit.
 - **Photo (darkroom):** the photo with a toolbar above it (one tool at a
   time; the active tool's controls in a bar under the toolbar) and a panel
@@ -40,8 +41,9 @@ owner.
   (luminance, red/orange/yellow/green/blue filters, darktable's film
   presets) rendered on the current edit; a click applies one. Pinned under the panel:
   the history step ("step 14 of 14: local contrast", click for the whole
-  history), undo/redo, save, discard unsaved, and ⋯ for export and start
-  over from darktable's defaults (your workflow and auto-apply presets).
+  history), undo/redo, save, discard unsaved, and ⋯ for export,
+  duplicate (with this edit, ⌘/Ctrl+D, or unedited) and start over from
+  darktable's defaults (your workflow and auto-apply presets).
   Previous/next within the current filter.
 - **Crop & rotate:** turn by 90°, mirror, straighten by an angle (darktable's
   rotate and perspective module, with its automatic crop so no blank
@@ -51,6 +53,9 @@ owner.
   optionally held to an aspect ratio (⤾ swaps portrait/landscape). These
   edit darktable's own flip, ashift and crop modules, so darktable shows
   the same crop.
+- **Clipping:** *clipping* in the toolbar (or O) paints blown highlights
+  (a channel at 255) red and crushed shadows (black) blue over the
+  preview, counted from the preview in the browser.
 - **Before/after:** *before / after* in the toolbar compares the edit with the
   original: a wipe with a line to drag over the photo, or side by side when
   the crop changed. An AI (darktable-api-mcp's `compare_before_after`) opens

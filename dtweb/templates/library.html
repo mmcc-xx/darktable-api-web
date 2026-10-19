@@ -63,12 +63,25 @@
     post(tile, 'label', {label: n, on});
   }
 
+  // a duplicate (virtual copy) with the saved edit, shown after the original
+  async function duplicate(tile) {
+    let r = await fetch(`/api/photo/${tile.dataset.id}/duplicate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})});
+    if (!r.ok) { alert((await r.json()).detail); return; }
+    const img = (await r.json()).image;
+    r = await fetch(`/tile/${img.id}?${query}`);
+    if (!r.ok) return;
+    tile.insertAdjacentHTML('afterend', await r.text());
+    setCurrent(document.getElementById('t' + img.id), true);
+  }
+
   grid.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.more) return loadMore(b);
     const tile = b.closest('.tile');
-    if (b.dataset.rate) rate(tile, b.dataset.rate);
+    if (b.hasAttribute('data-dup')) duplicate(tile);
+    else if (b.dataset.rate) rate(tile, b.dataset.rate);
     else if (b.dataset.label) label(tile, parseInt(b.dataset.label));
   });
   grid.addEventListener('mousemove', (e) => { const t = e.target.closest('.tile'); if (t && t !== current) setCurrent(t, false); });
@@ -100,7 +113,8 @@
       return;
     }
     if (!current) return;
-    if (e.key === 'Enter') { current.querySelector('a').click(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicate(current); }
+    else if (e.key === 'Enter') { current.querySelector('a').click(); }
     else if (/^[0-5]$/.test(e.key)) { e.preventDefault(); rate(current, e.key); }
     else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); rate(current, 'reject'); }
     else if (/^F[1-5]$/.test(e.key)) { e.preventDefault(); label(current, parseInt(e.key.slice(1)) - 1); }

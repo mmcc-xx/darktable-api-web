@@ -9,22 +9,57 @@
   {% if img %}<span class="name">{{ img.filename }}</span>{% endif %}
 </nav>
 {% endblock %}
+{% block bodyclass %}darkroom-page{% endblock %}
+{# releasing the library belongs to the lighttable #}
+{% block release %}{% endblock %}
 {% block main %}
 {% if error %}<p class="banner">{{ error }}</p>
 {% elif lib.state == 'released' %}<p class="banner">The library is released to darktable. Take it back (top right) to edit.</p>
 {% elif lib.state != 'owned' %}<p class="banner">The engine isn't available: {{ lib.detail }}</p>
 {% else %}
-<div class="editor">
-  <div class="view">
-    <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
-    <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
-    <div id="cmpframe" class="cmpframe" hidden>
-      <img id="cmp-before" alt="before"><div id="cmp-line" class="cmp-line"></div>
-      <span class="cmp-tag left">before</span><span class="cmp-tag right">after</span>
+<div class="darkroom">
+  <section class="stage">
+    <div class="toolbar" role="toolbar" aria-label="photo tools">
+      <button id="tool-crop" data-tool="crop" aria-pressed="false" title="crop, rotate and straighten">crop &amp; rotate</button>
+      <span class="sep"></span>
+      <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
+      <span class="zoom" role="group" aria-label="zoom"><button class="on" aria-pressed="true" title="fit the photo in the window">fit</button></span>
     </div>
-    <div id="cmp-side" class="cmp-side" hidden>
-      <figure><img id="cmp-side-before" alt="before"><figcaption>before</figcaption></figure>
-      <figure><img id="cmp-side-after" alt="after"><figcaption>after</figcaption></figure>
+    <!-- the active tool's controls; "done" returns to plain viewing -->
+    <div id="toolbar-crop" class="toolbar-bar" hidden>
+      <span id="geo-missing" hidden></span>
+      <span id="geo" class="geo">
+        <button data-rotate="-90" title="rotate 90° left">⟲ 90°</button>
+        <button data-rotate="90" title="rotate 90° right">⟳ 90°</button>
+        <button data-flip="horizontal" title="mirror left to right">⇋ mirror</button>
+        <span class="angle">
+          <span id="angle-lab" title="double-click: 0">angle</span>
+          <input type="range" id="angle" min="-10" max="10" step="0.05" value="0" aria-labelledby="angle-lab">
+          <button class="link val" id="angle-val" title="type a value"></button>
+        </span>
+        <select id="aspect" title="aspect ratio of the crop">
+          <option value="free">free</option><option value="original">original</option>
+          <option value="1:1">square</option><option value="3:2">3:2</option><option value="4:3">4:3</option>
+          <option value="5:4">5:4</option><option value="7:5">7:5</option><option value="16:9">16:9</option>
+          <option value="1.91:1">1.91:1</option><option value="2:1">2:1</option><option value="65:24">65:24</option>
+        </select>
+        <button id="aspect-swap" title="portrait / landscape">⤾</button>
+        <button id="crop-reset" class="secondary" title="remove the crop">no crop</button>
+      </span>
+      <button id="crop-cancel" class="secondary" title="leave the crop as it was (Esc)">cancel</button>
+      <button id="crop-apply" class="primary" title="apply the box (Enter)">done</button>
+    </div>
+    <div class="view">
+      <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
+      <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
+      <div id="cmpframe" class="cmpframe" hidden>
+        <img id="cmp-before" alt="before"><div id="cmp-line" class="cmp-line"></div>
+        <span class="cmp-tag left">before</span><span class="cmp-tag right">after</span>
+      </div>
+      <div id="cmp-side" class="cmp-side" hidden>
+        <figure><img id="cmp-side-before" alt="before"><figcaption>before</figcaption></figure>
+        <figure><img id="cmp-side-after" alt="after"><figcaption>after</figcaption></figure>
+      </div>
     </div>
     <p id="cmp-bar" class="cmp-bar" hidden><span id="cmp-label"></span>
       <button id="cmp-close" class="secondary">close comparison</button></p>
@@ -34,73 +69,53 @@
       <div id="alts-list" class="alts-list"></div>
     </section>
     <p id="status" class="status">opening…</p>
-  </div>
-  <div class="side">
-    <section class="module" id="geo">
-      <div class="head">crop &amp; rotate</div>
-      <p class="buttons">
-        <button data-rotate="-90" title="rotate 90° left">⟲ 90°</button>
-        <button data-rotate="90" title="rotate 90° right">⟳ 90°</button>
-        <button data-flip="horizontal" title="mirror left to right">⇋ mirror</button>
-      </p>
-      <div class="field">
-        <span id="angle-lab" title="double-click: 0">angle</span>
-        <button class="link val" id="angle-val" title="type a value"></button>
-        <input type="range" id="angle" min="-10" max="10" step="0.05" value="0">
+  </section>
+  <aside class="panel">
+    <div id="sections" class="sections">
+      <div id="panels"></div>
+      <details class="sec" id="export" data-sec="export">
+        <summary>export <span class="sum" id="ex-sum"></span></summary>
+        <div class="sec-body">
+          <p class="buttons">
+            <select id="ex-format" title="file format">
+              <option value="">darktable's format</option><option value="jpeg">JPEG</option>
+              <option value="tiff">TIFF</option><option value="png">PNG</option>
+              <option value="webp">WebP</option><option value="jpegxl">JPEG XL</option>
+            </select>
+            <select id="ex-size" title="longest side">
+              <option value="">darktable's size</option><option value="0">full size</option>
+              <option value="3840">3840 px</option><option value="2560">2560 px</option>
+              <option value="2048">2048 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option>
+            </select>
+          </p>
+          <p class="buttons">
+            <label title="JPEG/WebP/JPEG XL quality">quality <input id="ex-quality" type="number" min="1" max="100" placeholder="—" class="num"></label>
+            <label title="process at full resolution, then scale (slower, sharper)"><input id="ex-hq" type="checkbox"> high quality</label>
+            <button id="ex-go">export</button>
+          </p>
+          <p id="ex-result" class="status"></p>
+        </div>
+      </details>
+    </div>
+    <footer class="panel-foot">
+      <div id="hist-pop" class="hist-pop" hidden><ol id="history" class="history"></ol></div>
+      <button id="hist-line" class="hist-line" aria-expanded="false" aria-controls="hist-pop" title="show the whole history">
+        <span id="hist-text">history</span><span class="dim">▴</span></button>
+      <div class="foot-buttons">
+        <button id="undo" title="undo (⌘Z / Ctrl+Z)" aria-label="undo">↶</button>
+        <button id="redo" title="redo (⇧⌘Z / Ctrl+Y)" aria-label="redo">↷</button>
+        <button id="save" class="primary">save</button>
+        <button id="reload" class="secondary" title="reopen the photo as saved">discard</button>
+        <span class="menu">
+          <button id="more" class="secondary" aria-haspopup="true" aria-expanded="false" aria-label="more: export, start over">⋯</button>
+          <span id="more-menu" class="menu-list" hidden>
+            <button id="more-export" class="link">export…</button>
+            <button id="reset" class="link" title="delete the edit and apply darktable's defaults">start over</button>
+          </span>
+        </span>
       </div>
-      <p class="buttons">
-        <select id="aspect" title="aspect ratio of the crop">
-          <option value="free">free</option><option value="original">original</option>
-          <option value="1:1">square</option><option value="3:2">3:2</option><option value="4:3">4:3</option>
-          <option value="5:4">5:4</option><option value="7:5">7:5</option><option value="16:9">16:9</option>
-          <option value="1.91:1">1.91:1</option><option value="2:1">2:1</option><option value="65:24">65:24</option>
-        </select>
-        <button id="aspect-swap" title="portrait / landscape">⤾</button>
-        <button id="crop-edit" title="draw the crop on the whole photo">crop…</button>
-        <button id="crop-reset" class="secondary" title="remove the crop">no crop</button>
-      </p>
-      <p class="buttons" id="crop-done" hidden>
-        <button id="crop-apply">apply crop</button>
-        <button id="crop-cancel" class="secondary">cancel</button>
-      </p>
-    </section>
-    <p id="geo-missing" class="status" hidden></p>
-    <div id="panels"></div>
-    <section class="module" id="export">
-      <div class="head">export</div>
-      <p class="buttons">
-        <select id="ex-format" title="file format">
-          <option value="">darktable's format</option><option value="jpeg">JPEG</option>
-          <option value="tiff">TIFF</option><option value="png">PNG</option>
-          <option value="webp">WebP</option><option value="jpegxl">JPEG XL</option>
-        </select>
-        <select id="ex-size" title="longest side">
-          <option value="">darktable's size</option><option value="0">full size</option>
-          <option value="3840">3840 px</option><option value="2560">2560 px</option>
-          <option value="2048">2048 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option>
-        </select>
-      </p>
-      <p class="buttons">
-        <label title="JPEG/WebP/JPEG XL quality">quality <input id="ex-quality" type="number" min="1" max="100" placeholder="—" class="num"></label>
-        <label title="process at full resolution, then scale (slower, sharper)"><input id="ex-hq" type="checkbox"> high quality</label>
-        <button id="ex-go">export</button>
-      </p>
-      <p id="ex-result" class="status"></p>
-    </section>
-    <h4 class="history-head">history
-      <span class="undo-redo">
-        <button id="compare" class="secondary" title="compare the edit with the original (before/after)">⇆</button>
-        <button id="undo" class="secondary" title="undo (⌘Z / Ctrl+Z)">↶</button>
-        <button id="redo" class="secondary" title="redo (⇧⌘Z / Ctrl+Y)">↷</button>
-      </span>
-    </h4>
-    <ol id="history" class="history"></ol>
-    <p class="buttons">
-      <button id="save">save</button>
-      <button id="reload" class="secondary" title="reopen the photo as saved">discard unsaved</button>
-      <button id="reset" class="secondary" title="delete the edit and apply darktable's defaults">start over</button>
-    </p>
-  </div>
+    </footer>
+  </aside>
 </div>
 <script>
 (() => {
@@ -154,57 +169,106 @@
       const li = document.createElement('li');
       const b = document.createElement('button');
       b.className = 'link' + (it.num + 1 === h.history_end ? ' current' : '') + (it.applied ? '' : ' undone');
-      // darktable's own name for the step ("local contrast", "exposure • sky"); older engines give only the operation
-      const name = it.label || `${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}`;
-      b.textContent = `${it.num + 1} ${name}${it.enabled === false ? ' (off)' : ''}`;
+      b.textContent = `${it.num + 1} ${stepName(it)}${it.enabled === false ? ' (off)' : ''}`;
       b.onclick = () => goTo(it.num + 1);
       li.appendChild(b);
       ol.appendChild(li);
     });
     ol.lastChild && ol.querySelector('.current') && ol.querySelector('.current').scrollIntoView({block: 'nearest'});
+    const cur = h.items[h.history_end - 1];
+    $('#hist-text').textContent = h.history_end ? `step ${h.history_end} of ${h.items.length}: ${stepName(cur)}`
+                                                : `the original (${h.items.length} steps undone)`;
+  }
+  // darktable's own name for the step ("local contrast", "exposure • sky"); older engines give only the operation
+  const stepName = (it) => it.label || `${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}`;
+
+  // the right panel's sections: each module's section, its title, and which
+  // sections are open (kept per browser)
+  const SECTION = {exposure: 'basic', agx: 'basic', sigmoid: 'basic', colorbalancergb: 'color'};
+  const SECTIONS = ['basic', 'color'];
+  let opened;
+  try { opened = JSON.parse(localStorage.getItem('dr:open')) || {basic: true}; } catch (e) { opened = {basic: true}; }
+  function keepOpen(d) {
+    d.open = !!opened[d.dataset.sec];
+    d.addEventListener('toggle', () => {
+      opened[d.dataset.sec] = d.open;
+      try { localStorage.setItem('dr:open', JSON.stringify(opened)); } catch (e) {}
+    });
+  }
+  keepOpen($('#export'));
+
+  // a closed section's one-line summary: modules turned off, values off their default
+  function summary(mods) {
+    const out = [];
+    for (const m of mods) {
+      if (m.missing) continue;
+      if (!m.enabled) { out.push(m.title + ' off'); continue; }
+      for (const f of m.fields)
+        if (Math.abs(f.value - f.default) > 1e-6) out.push(`${f.label} ${fmt(f, f.value)}`);
+    }
+    return out.length ? out.slice(0, 2).join(' · ') + (out.length > 2 ? ' …' : '') : 'defaults';
   }
 
   function show(s) {
     state = s;
     const box = $('#panels');
     box.innerHTML = '';
-    s.modules.forEach((m) => {
-      const sec = document.createElement('section');
-      sec.className = 'module';
-      const head = document.createElement('label');
-      head.className = 'head';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.checked = !!m.enabled; cb.disabled = !!m.missing;
-      cb.onchange = async () => {
-        const r = await api('enable', {operation: m.operation, enabled: cb.checked});
-        if (r.ok) { dirty = true; show(await r.json()); preview(); }
-      };
-      head.append(cb, ' ' + m.title + (m.missing ? ' (not available)' : ''));
-      sec.appendChild(head);
-      m.fields.forEach((f) => {
-        const row = document.createElement('div');
-        row.className = 'field';
-        const lab = document.createElement('span');
-        lab.textContent = f.label; lab.title = 'double-click: back to default';
-        const val = document.createElement('button');
-        val.className = 'link val'; val.textContent = fmt(f, f.value); val.title = 'type a value';
-        const sl = document.createElement('input');
-        sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = (f.hi - f.lo) / 1000; sl.value = f.value;
-        const send = (v) => { f.value = v; val.textContent = fmt(f, v); queue(m.operation, f.name, v); };
-        sl.oninput = () => send(parseFloat(sl.value));
-        lab.ondblclick = () => { sl.value = f.default; send(f.default); };
-        val.onclick = () => {
-          const t = prompt(`${f.label}${f.unit ? ' (' + f.unit + ')' : ''}`, (f.value * f.factor).toFixed(f.digits));
-          if (t === null || isNaN(parseFloat(t))) return;
-          const v = parseFloat(t) / f.factor; sl.value = v; send(v);
-        };
-        row.append(lab, val, sl);
-        sec.appendChild(row);
-      });
-      box.appendChild(sec);
-    });
+    for (const name of SECTIONS) {
+      const mods = s.modules.filter((m) => (SECTION[m.operation] || 'basic') === name);
+      if (!mods.length) continue;
+      const d = document.createElement('details');
+      d.className = 'sec'; d.dataset.sec = name;
+      const sum = document.createElement('summary');
+      const line = document.createElement('span');
+      line.className = 'sum';
+      const resum = () => { line.textContent = summary(mods); };
+      resum();
+      sum.append(name, ' ', line);
+      const body = document.createElement('div');
+      body.className = 'sec-body';
+      d.append(sum, body);
+      keepOpen(d);
+      mods.forEach((m) => body.appendChild(modulePanel(m, resum)));
+      box.appendChild(d);
+    }
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
+  }
+
+  function modulePanel(m, resum) {
+    const sec = document.createElement('section');
+    sec.className = 'module';
+    const head = document.createElement('label');
+    head.className = 'head';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!m.enabled; cb.disabled = !!m.missing;
+    cb.onchange = async () => {
+      const r = await api('enable', {operation: m.operation, enabled: cb.checked});
+      if (r.ok) { dirty = true; show(await r.json()); preview(); }
+    };
+    head.append(cb, ' ' + m.title + (m.missing ? ' (not available)' : ''));
+    sec.appendChild(head);
+    m.fields.forEach((f) => {
+      const row = document.createElement('div');
+      row.className = 'field';
+      const lab = document.createElement('span');
+      lab.textContent = f.label; lab.title = 'double-click: back to default';
+      const val = document.createElement('button');
+      val.className = 'link val'; val.textContent = fmt(f, f.value); val.title = 'type a value';
+      const sl = document.createElement('input');
+      sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = (f.hi - f.lo) / 1000; sl.value = f.value;
+      const send = (v) => { f.value = v; val.textContent = fmt(f, v); resum(); queue(m.operation, f.name, v); };
+      sl.oninput = () => send(parseFloat(sl.value));
+      lab.ondblclick = () => { sl.value = f.default; send(f.default); };
+      val.onclick = () => {
+        const t = prompt(`${f.label}${f.unit ? ' (' + f.unit + ')' : ''}`, (f.value * f.factor).toFixed(f.digits));
+        if (t === null || isNaN(parseFloat(t))) return;
+        const v = parseFloat(t) / f.factor; sl.value = v; send(v);
+      };
+      row.append(lab, val, sl);
+      sec.appendChild(row);
+    });
+    return sec;
   }
 
   // ── crop & rotate ──────────────────────────────────────────────────────
@@ -216,6 +280,7 @@
 
   function showGeo(g) {
     $('#geo').hidden = !!g.missing;
+    $('#crop-apply').hidden = $('#crop-cancel').hidden = !!g.missing;
     if (g.missing) { $('#geo-missing').hidden = false; $('#geo-missing').textContent = 'crop & rotate needs a newer darktable-api: ' + g.missing; return; }
     $('#geo-missing').hidden = true;
     geo = g;
@@ -329,18 +394,22 @@
   $('#cropframe').addEventListener('pointercancel', endDrag);
 
   function setCropping(on) {
-    cropping = on;
-    $('#cropframe').hidden = !on;
-    $('#crop-done').hidden = !on;
-    $('#crop-edit').hidden = on;
-    if (on) { box = fitRatio({...geo.crop}); drawBox(); }
-    preview(on ? 'drag the box, then apply;' : '');
+    if (on && cmp) closeCompare();
+    cropping = on && !!geo;
+    $('#toolbar-crop').hidden = !on;
+    $('#tool-crop').setAttribute('aria-pressed', on);
+    $('#tool-crop').classList.toggle('on', on);
+    $('#cropframe').hidden = !cropping;
+    if (cropping) { box = fitRatio({...geo.crop}); drawBox(); }
+    if (geo) preview(on ? 'drag the box, then done;' : '');
   }
-  $('#crop-edit').onclick = () => setCropping(true);
+  $('#tool-crop').onclick = () => setCropping($('#toolbar-crop').hidden);
   $('#crop-cancel').onclick = () => setCropping(false);
+  // done: apply the box if it moved
   $('#crop-apply').onclick = () => {
-    const a = aspect();
-    queueGeo({crop: box, ...(a !== 'free' ? {aspect: a} : {})});
+    const a = aspect(), c = geo.crop;
+    if (['left', 'top', 'right', 'bottom'].some((k) => Math.abs(box[k] - c[k]) > 1e-4))
+      queueGeo({crop: box, ...(a !== 'free' ? {aspect: a} : {})});
     setCropping(false);
   };
   $('#crop-reset').onclick = () => queueGeo({crop: null});
@@ -444,12 +513,16 @@
     await $('#cmp-before').decode().catch(() => {});
     $('#cmp-label').textContent = label || `before: ${stepNo ? 'step ' + stepNo : 'the original'} · after: the current edit`;
     $('#cmp-bar').hidden = false;
+    $('#compare').setAttribute('aria-pressed', true);
+    $('#compare').classList.add('on');
     placeCompare();
   }
   function closeCompare() {
     cmp = null;
     $('#cmpframe').hidden = $('#cmp-side').hidden = $('#cmp-bar').hidden = true;
     $('#pv').hidden = false;
+    $('#compare').setAttribute('aria-pressed', false);
+    $('#compare').classList.remove('on');
   }
   function placeCompare() {
     if (!cmp) return;
@@ -481,7 +554,7 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => cmp ? closeCompare() : openCompare(0);
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); openCompare(0); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one
@@ -530,6 +603,29 @@
   }
   $('#alts-close').onclick = () => closeAlternatives(true);
 
+  $('#hist-line').onclick = () => {
+    const open = $('#hist-pop').hidden;
+    $('#hist-pop').hidden = !open;
+    $('#hist-line').setAttribute('aria-expanded', open);
+    if (open && $('#history .current')) $('#history .current').scrollIntoView({block: 'nearest'});
+  };
+  const menu = (open) => { $('#more-menu').hidden = !open; $('#more').setAttribute('aria-expanded', open); };
+  $('#more').onclick = (e) => { e.stopPropagation(); menu($('#more-menu').hidden); };
+  document.addEventListener('click', (e) => { if (!e.target.closest('.menu')) menu(false); });
+  $('#more-export').onclick = () => {
+    menu(false);
+    $('#export').open = true;
+    $('#export').scrollIntoView({block: 'nearest', behavior: 'smooth'});
+  };
+  const exSum = () => {
+    const f = $('#ex-format'), z = $('#ex-size');
+    $('#ex-sum').textContent = f.value || z.value
+      ? [f.value ? f.selectedOptions[0].text : '', z.value ? z.selectedOptions[0].text : ''].filter(Boolean).join(' · ')
+      : "darktable's settings";
+  };
+  $('#ex-format').onchange = $('#ex-size').onchange = exSum;
+  exSum();
+
   $('#undo').onclick = () => step(-1);
   $('#redo').onclick = () => step(1);
   $('#save').onclick = async () => {
@@ -540,6 +636,7 @@
   };
   $('#reload').onclick = () => { if (!dirty || confirm('Discard unsaved changes?')) open(true); };
   $('#reset').onclick = async () => {
+    menu(false);
     if (!confirm("Start over from darktable's defaults? This deletes the photo's whole edit.")) return;
     const r = await api('reset', {});
     if (!r.ok) { status('start over failed: ' + (await r.json()).detail); return; }
@@ -561,7 +658,10 @@
       return;
     }
     if (e.target.closest('input, select, textarea')) return;
-    if (cropping && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
+    if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
+    if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
+    if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
+    if (e.key === 'Escape' && cmp) { closeCompare(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];
     const a = go && document.getElementById(go);

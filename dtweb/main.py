@@ -29,6 +29,8 @@ HERE = Path(__file__).parent
 app = FastAPI(title="darktable-api-web")
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
+# the stylesheet's address changes with the file, so browsers don't keep an old one
+templates.env.globals["static_version"] = lambda name: int((HERE / "static" / name).stat().st_mtime)
 
 PAGE = 60
 THUMB_SIZE = 400

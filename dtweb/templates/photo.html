@@ -74,6 +74,7 @@
     <div class="panel-head">
       <canvas id="histo" class="histo" title="histogram of the preview: click for linear / logarithmic"></canvas>
       <p id="histo-clip" class="histo-clip"></p>
+      {% if shot %}<p class="shot">{% for line in shot %}<span>{{ line }}</span>{% endfor %}</p>{% endif %}
     </div>
     <div id="sections" class="sections">
       <div id="panels"></div>

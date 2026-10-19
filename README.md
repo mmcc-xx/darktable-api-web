@@ -30,7 +30,8 @@ owner.
   time; the active tool's controls in a bar under the toolbar) and a panel
   at the right. At the panel's top, an RGB + luminance histogram of the
   preview (click: logarithmic / linear) with the clipped highlight and
-  shadow shares. Live preview from darktable's pipeline with sliders for
+  shadow shares, then the camera, date, lens and exposure (shutter,
+  aperture, ISO, focal length, bias). Live preview from darktable's pipeline with sliders for
   exposure, AgX (or sigmoid, for photos edited with it) and color balance
   rgb in collapsible sections (basic, color, export), each summing up its
   settings in one line when closed; module on/off. Pinned under the panel:

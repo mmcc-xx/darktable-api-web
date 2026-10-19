@@ -194,15 +194,39 @@ async def _neighbours(image_id: int, f: dict) -> tuple[int | None, int | None, i
     return (ids[k - 1] if k else None), (ids[k + 1] if k + 1 < len(ids) else None), k + 1, len(ids)
 
 
+def _shot(e: dict | None) -> list[str]:
+    """Camera, lens and exposure lines for the panel head, from image_info's exif."""
+    e = e or {}
+    maker, model = (e.get("maker") or "").strip(), (e.get("model") or "").strip()
+    camera = model if model.lower().startswith(maker.lower().split()[0] if maker else "") else f"{maker} {model}".strip()
+    taken = e.get("taken") or ""
+    if taken:
+        taken = taken[:10].replace(":", "-") + taken[10:16]
+    t, parts = e.get("exposure_time") or 0, []
+    if t:
+        parts.append(f"1/{round(1 / t)} s" if t < 0.4 else f"{t:g} s")
+    if e.get("aperture"):
+        parts.append(f"f/{e['aperture']:.1f}".replace(".0", ""))
+    if e.get("iso"):
+        parts.append(f"ISO {e['iso']:.0f}")
+    if e.get("focal_length"):
+        parts.append(f"{e['focal_length']:.0f} mm")
+    if e.get("exposure_bias"):
+        parts.append(f"{e['exposure_bias']:+.1f} EV")
+    lines = [" · ".join(x for x in (camera, taken) if x), (e.get("lens") or "").strip(), " · ".join(parts)]
+    return [x for x in lines if x]
+
+
 @app.get("/photo/{image_id}", response_class=HTMLResponse)
 async def photo_page(request: Request, image_id: int):
     f = _filters(request)
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
-           "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS}
+           "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": []}
     if lib.get("state") == "owned":
         try:
-            ctx["img"] = (await engine.call("image_info", imgid=image_id))["image"]
+            info = await engine.call("image_info", imgid=image_id)
+            ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
         except EngineError as exc:
             ctx["error"] = str(exc)

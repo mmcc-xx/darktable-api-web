@@ -186,3 +186,19 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .look:hover { color: var(--text); }
 .look.on { border-color: var(--accent); color: var(--text); }
 .clipov { position: absolute; pointer-events: none; image-rendering: pixelated; }
+
+/* rgb levels under the histogram, and the pickers that click the photo */
+.lv { margin-top: .25rem; font-size: .75rem; }
+.lv-track { position: relative; height: 12px; margin: 5px 4px 3px; background: linear-gradient(to right, #000, #fff); border-radius: 2px; touch-action: none; }
+.lv.off .lv-track { opacity: .45; }
+.lv-h { position: absolute; top: -3px; width: 8px; height: 18px; margin-left: -4px; cursor: ew-resize; border-radius: 2px; }
+.lv-h.b { background: #111; border: 1px solid #ccc; } .lv-h.g { background: #808080; border: 1px solid #222; }
+.lv-h.w { background: #fafafa; border: 1px solid #222; }
+.lv-row { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .5rem; margin-top: .25rem; }
+.lv-row label { display: inline-flex; align-items: center; gap: .25rem; }
+.lv-picks { display: inline-flex; align-items: center; gap: .2rem; color: var(--dim); }
+.lv-picks button { font-size: .7rem; padding: 0 .35rem; }
+#lv-reset { margin-left: auto; font-size: .75rem; }
+#wb .status { margin: -.1rem 0 .3rem; }
+#wb > button { font-size: .8rem; padding: .15rem .5rem; margin-top: -.2rem; }
+.view.picking, .view.picking img { cursor: crosshair; }

@@ -75,6 +75,18 @@
   <aside class="panel">
     <div class="panel-head">
       <canvas id="histo" class="histo" title="histogram of the preview: click for linear / logarithmic"></canvas>
+      <div id="lv" class="lv" hidden>
+        <div id="lv-track" class="lv-track" title="rgb levels: drag black, gray and white (values of its input, before the tone mapper, so they don't line up with the histogram); double-click a handle: back to its default">
+          <span class="lv-h b" data-h="0"></span><span class="lv-h g" data-h="1"></span><span class="lv-h w" data-h="2"></span>
+        </div>
+        <div class="lv-row">
+          <label title="rgb levels on / off"><input type="checkbox" id="lv-on"> levels</label>
+          <span id="lv-val" class="dim"></span>
+          <span class="lv-picks" title="click one, then click the photo where it should be black, middle gray or white">pick
+            <button data-pick="pickers/black" data-label="black point">black</button><button data-pick="pickers/gray" data-label="gray point">gray</button><button data-pick="pickers/white" data-label="white point">white</button></span>
+          <button id="lv-reset" class="link dim" title="levels back to 0 / 0.5 / 1">reset</button>
+        </div>
+      </div>
       <p id="histo-clip" class="histo-clip"></p>
       {% if shot %}<p class="shot">{% for line in shot %}<span>{{ line }}</span>{% endfor %}</p>{% endif %}
     </div>
@@ -208,8 +220,9 @@
   keepOpen($('#export'));
 
   // a closed section's one-line summary: modules turned off, values off their default
-  function summary(mods) {
+  function summary(mods, wb) {
     const out = [];
+    if (wb && !wb.missing && !wb.bypass && wb.enabled) out.push(`${fmtT(wb.temperature)} ${fmtTint(wb.tint)}`);
     for (const m of mods) {
       if (m.missing) continue;
       if (!m.enabled) { out.push(m.title + ' off'); continue; }
@@ -231,21 +244,184 @@
       const sum = document.createElement('summary');
       const line = document.createElement('span');
       line.className = 'sum';
-      const resum = () => { line.textContent = summary(mods); };
+      const resum = () => { line.textContent = summary(mods, name === 'basic' && s.wb); };
       resum();
       sum.append(name, ' ', line);
       const body = document.createElement('div');
       body.className = 'sec-body';
       d.append(sum, body);
       keepOpen(d);
-      mods.forEach((m) => body.appendChild(modulePanel(m, resum)));
+      mods.forEach((m) => {
+        body.appendChild(modulePanel(m, resum));
+        // white balance comes after exposure, before the tone mapper (the pipe's order)
+        if (m.operation === 'exposure' && s.wb) body.appendChild(wbPanel(s.wb, resum));
+      });
       box.appendChild(d);
     }
     box.appendChild(monoSection(s.mono));
     if (s.others && s.others.length) box.appendChild(othersSection(s.others));
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
+    drawLevels();
   }
+
+  // ── white balance: color calibration's illuminant as temperature and
+  // tint (the engine converts to its x, y); a click on a neutral spot sets it
+  const T_LO = 2000, T_HI = 12000;
+  const fmtT = (t) => `${Math.round(t / 10) * 10} K`, fmtTint = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
+  function wbPanel(wb, resum) {
+    const sec = document.createElement('section');
+    sec.className = 'module'; sec.id = 'wb';
+    const head = document.createElement('label');
+    head.className = 'head';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!wb.enabled; cb.disabled = !!wb.missing;
+    cb.onchange = async () => {
+      const r = await api('enable', {operation: 'channelmixerrgb', instance: 0, enabled: cb.checked});
+      if (r.ok) { dirty = true; show(await r.json()); preview(); }
+    };
+    head.append(cb, ' white balance');
+    head.title = 'color calibration: the light the photo was taken in';
+    sec.appendChild(head);
+    if (wb.missing || wb.bypass) {
+      const p = document.createElement('p');
+      p.className = 'status';
+      p.textContent = wb.missing ? 'not available: ' + wb.missing
+        : "this edit's white balance is in darktable's white balance module (color calibration's adaptation is off): ask Claude to change it";
+      sec.appendChild(p);
+      return sec;
+    }
+    const ill = document.createElement('p');
+    ill.className = 'status'; ill.id = 'wb-ill';
+    ill.textContent = 'illuminant: ' + wb.illuminant;
+    sec.appendChild(ill);
+    // the temperature slider is logarithmic: a step is about the same change of color anywhere
+    const lg = (t) => Math.log(Math.max(T_LO, Math.min(T_HI, t)));
+    const fields = [
+      {key: 'temperature', label: 'temperature', lo: lg(T_LO), hi: lg(T_HI), to: Math.exp, from: lg, fmt: fmtT, def: 5000,
+       title: "the light's color: higher makes the photo warmer"},
+      {key: 'tint', label: 'tint', lo: -50, hi: 50, to: (v) => v, from: (v) => v, fmt: fmtTint, def: 0,
+       title: '+ makes the photo more magenta, − more green'},
+    ];
+    for (const f of fields) {
+      const row = document.createElement('div');
+      row.className = 'field';
+      const lab = document.createElement('span');
+      lab.textContent = f.label; lab.title = f.title + ' (double-click: ' + f.fmt(f.def) + ')';
+      const val = document.createElement('button');
+      val.className = 'link val'; val.textContent = f.fmt(wb[f.key]); val.title = 'type a value';
+      const sl = document.createElement('input');
+      sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = (f.hi - f.lo) / 1000; sl.value = f.from(wb[f.key]);
+      const send = (v) => {
+        wb[f.key] = v; val.textContent = f.fmt(v); resum();
+        enqueue('wb', {temperature: wb.temperature, tint: wb.tint});
+      };
+      sl.oninput = () => send(f.to(parseFloat(sl.value)));
+      lab.ondblclick = () => { sl.value = f.from(f.def); send(f.def); };
+      val.onclick = () => {
+        const t = prompt(f.label + (f.key === 'temperature' ? ' (K)' : ''), f.key === 'temperature' ? Math.round(wb[f.key]) : wb[f.key].toFixed(1));
+        if (t === null || isNaN(parseFloat(t))) return;
+        const v = parseFloat(t); sl.value = f.from(v); send(v);
+      };
+      row.append(lab, val, sl);
+      sec.appendChild(row);
+    }
+    const pick = document.createElement('button');
+    pick.dataset.pick = 'picker'; pick.dataset.op = 'channelmixerrgb'; pick.dataset.label = 'neutral spot';
+    pick.textContent = 'pick a neutral spot';
+    pick.title = 'then click something in the photo that should be gray or white (Esc: cancel)';
+    pick.onclick = () => togglePick(pick);
+    sec.appendChild(pick);
+    return sec;
+  }
+
+  // ── pickers: a button arms one, the next click on the photo samples a
+  // small box there (as darktable's picker, one history step)
+  let picking = null;
+  function togglePick(btn) {
+    setPicking(picking && picking.btn === btn ? null : btn);
+  }
+  function setPicking(btn) {
+    if (btn && cropping) setCropping(false);
+    if (btn && cmp) closeCompare();
+    picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
+    document.querySelectorAll('[data-pick]').forEach((b) => {
+      b.classList.toggle('on', !!picking && b === btn);
+      b.setAttribute('aria-pressed', !!picking && b === btn);
+    });
+    $('.view').classList.toggle('picking', !!picking);
+    if (picking) status(`click the photo: the ${picking.label} (Esc: cancel)`);
+  }
+  $('.view').addEventListener('click', (e) => {
+    if (!picking || showing) return;
+    const r = imgRect(), v = $('.view').getBoundingClientRect();
+    const x = (e.clientX - v.left - r.x) / r.w, y = (e.clientY - v.top - r.y) / r.h;
+    if (x < 0 || y < 0 || x > 1 || y > 1) return;
+    const k = 0.015, c = (a) => Math.max(0, Math.min(1, a));
+    const p = picking;
+    setPicking(null);
+    status(`picking the ${p.label}…`);
+    enqueue('pick', {operation: p.operation, instance: 0, control: p.control,
+                     box: {left: c(x - k), top: c(y - k), right: c(x + k), bottom: c(y + k)}});
+  });
+
+  // ── rgb levels under the histogram: black, gray and white of the first
+  // channel (the one "RGB, linked channels" uses for all three)
+  function drawLevels() {
+    const L = state && state.levels;
+    $('#lv').hidden = !L || !!L.missing;
+    if ($('#lv').hidden) return;
+    const lv = L.levels[0];
+    $('#lv-on').checked = !!L.enabled;
+    $('#lv').classList.toggle('off', !L.enabled);
+    $('#lv-track').hidden = !L.linked;
+    $('#lv-val').textContent = L.linked ? lv.map((v) => v.toFixed(2)).join(' · ') : 'per channel: ask Claude';
+    $('.lv-picks').hidden = !L.linked;
+    document.querySelectorAll('.lv-h').forEach((h) => { h.style.left = (Math.max(0, Math.min(1, lv[+h.dataset.h])) * 100) + '%'; });
+  }
+  function sendLevels(lv) {
+    const L = state.levels;
+    L.levels = [lv, ...L.levels.slice(1)];
+    drawLevels();
+    queue('rgblevels', 'levels', L.levels);
+  }
+  // darktable's handle limits (rgblevels.c): 0.05 apart; moving black or
+  // white keeps gray at the same place between them
+  function moveHandle(lv, h, pos, ratio) {
+    let lo = 0, hi = 1;
+    if (h === 0) hi = Math.min(lv[2] - 0.05 / ratio, (lv[2] * (1 - ratio) - 0.05) / (1 - ratio), 1);
+    if (h === 1) { lo = lv[0] + 0.05; hi = lv[2] - 0.05; }
+    if (h === 2) lo = Math.max(0.05 / ratio + lv[0], (lv[0] * (1 - ratio) + 0.05) / (1 - ratio), 0);
+    const out = [...lv];
+    out[h] = Math.min(hi, Math.max(lo, pos));
+    if (h !== 1) out[1] = out[0] + (out[2] - out[0]) * ratio;
+    return out;
+  }
+  document.querySelectorAll('.lv-h').forEach((el) => {
+    const h = +el.dataset.h;
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const lv0 = state.levels.levels[0], ratio = (lv0[1] - lv0[0]) / (lv0[2] - lv0[0]);
+      el.onpointermove = (ev) => {
+        const r = $('#lv-track').getBoundingClientRect();
+        sendLevels(moveHandle(state.levels.levels[0], h, (ev.clientX - r.left) / r.width, ratio));
+      };
+      el.onpointerup = el.onpointercancel = () => { el.onpointermove = null; };
+    });
+    el.addEventListener('dblclick', () => {
+      const lv = [...state.levels.levels[0]], def = state.levels.default;
+      lv[h] = def[h];
+      if (lv[0] < lv[1] && lv[1] < lv[2]) sendLevels(lv);
+      else sendLevels([...def]);
+    });
+  });
+  $('#lv-on').onchange = async () => {
+    const r = await api('enable', {operation: 'rgblevels', enabled: $('#lv-on').checked});
+    if (r.ok) { dirty = true; show(await r.json()); preview(); }
+  };
+  $('#lv-reset').onclick = () => sendLevels([...state.levels.default]);
+  document.querySelectorAll('.lv-picks [data-pick]').forEach((b) => b.onclick = () => togglePick(b));
 
   function modulePanel(m, resum) {
     const sec = document.createElement('section');
@@ -576,12 +752,13 @@
   // one change in flight; newer slider values replace the waiting one
   // (only a change of the same kind: a rotation isn't dropped for a slider)
   let waiting = [];
-  const DONE = {set: 'set', geometry: 'crop/rotate', history_end: 'undo/redo'};
+  const DONE = {set: 'set', geometry: 'crop/rotate', history_end: 'undo/redo', wb: 'white balance', pick: 'picker'};
   function queue(op, name, v) { enqueue('set', {operation: op, values: {[name]: v}}); }
   function queueGeo(body) { enqueue('geometry', body); }
   function enqueue(path, body) {
     const key = path === 'set' ? 'set ' + body.operation + ' ' + Object.keys(body.values)
-              : path === 'geometry' ? 'geometry ' + Object.keys(body).sort() : 'history';
+              : path === 'geometry' ? 'geometry ' + Object.keys(body).sort()
+              : path === 'pick' ? 'pick ' + performance.now() : path === 'wb' ? 'wb' : 'history';
     waiting = waiting.filter((w) => w.key !== key);
     waiting.push({key, path, body});
     pending = true;
@@ -597,11 +774,21 @@
       if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
       dirty = true;
       const s = await r.json();
-      if (path === 'history_end') show(s);
+      if (path === 'history_end' || path === 'pick') show(s);
       else renderHistory(s.history);
       if (path === 'geometry') showGeo(s.geometry);
       const m = path === 'set' && state.modules.find((x) => x.operation === p.operation);
       if (m && !m.enabled && s.enabled) { m.enabled = true; state.history = s.history; show(state); }
+      // a slider switched the module on: show it on (not while more values wait)
+      if (path === 'set' && p.operation === 'rgblevels' && state.levels && !state.levels.enabled && s.enabled) {
+        state.levels.enabled = true; drawLevels();
+      }
+      if (path === 'wb' && !waiting.some((w) => w.key === 'wb')) {
+        const was = state.wb;
+        state.wb = {...s.wb, temperature: was.temperature, tint: was.tint};
+        if ($('#wb-ill')) $('#wb-ill').textContent = 'illuminant: ' + s.wb.illuminant;
+        if (!was.enabled && s.wb.enabled) { state.history = s.history; state.wb = s.wb; show(state); }
+      }
       if (!waiting.length) await preview(`${DONE[path]} ${Math.round(performance.now() - t)} ms,`);
     }
     endTarget = null;
@@ -920,6 +1107,7 @@
     }
     if (e.target.closest('input, select, textarea')) return;
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && k === 'd') { e.preventDefault(); duplicate(false); return; }
+    if (picking && e.key === 'Escape') { e.preventDefault(); setPicking(null); status('picker cancelled'); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }

@@ -15,6 +15,7 @@ from pathlib import Path
 import asyncio
 import base64
 import json
+import math
 import os
 import secrets
 import shlex
@@ -291,7 +292,7 @@ PLUMBING = {"rawprepare", "temperature", "highlights", "demosaic", "demosaicscal
 def _others(mods: list[dict], mono: dict | None) -> list[dict]:
     """Modules in the edit's history that no panel shows (often added by an
     AI or a preset): label, instance, on/off."""
-    shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0)}
+    shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0), ("rgblevels", 0)}
     if mono:
         shown.add(("channelmixerrgb", mono["instance"]))
     return [{"operation": m["operation"], "instance": m["instance"], "label": m["label"], "enabled": m["enabled"]}
@@ -328,7 +329,113 @@ async def _state(image_id: int) -> dict:
         geometry = {"missing": str(exc)}
     mono = await _mono(image_id)
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
-            "geometry": geometry, "mono": mono, "others": _others(mods, mono)}
+            "geometry": geometry, "mono": mono, "others": _others(mods, mono),
+            "wb": await _wb(image_id), "levels": await _levels(image_id)}
+
+
+# ── white balance: color calibration's illuminant (its first instance) as a
+# temperature and a tint, the distance from the Planckian locus (CIE 1960
+# uv, × 1000; + is light greener than a black body, so the photo goes
+# magenta). Set as a custom illuminant; its picker sets one from an area
+def _locus(t: float) -> tuple[float, float]:
+    """The Planckian locus in uv (Krystek 1985)."""
+    u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t * t) / (1 + 8.42420235e-4 * t + 7.08145163e-7 * t * t)
+    v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t * t) / (1 - 2.89741816e-5 * t + 1.61456053e-7 * t * t)
+    return u, v
+
+
+def _normal(t: float) -> tuple[float, float]:
+    """The locus's unit normal at t, toward green (+v)."""
+    (u0, v0), (u1, v1) = _locus(t * 0.999), _locus(t * 1.001)
+    n = math.hypot(u1 - u0, v1 - v0)
+    nu, nv = (v0 - v1) / n, (u1 - u0) / n
+    return (nu, nv) if nv > 0 else (-nu, -nv)
+
+
+def wb_to_xy(temperature: float, tint: float) -> tuple[float, float]:
+    u, v = _locus(temperature)
+    nu, nv = _normal(temperature)
+    u, v = u + tint / 1000 * nu, v + tint / 1000 * nv
+    d = 2 * u - 8 * v + 4
+    return 3 * u / d, 2 * v / d
+
+
+def xy_to_wb(x: float, y: float) -> tuple[float, float]:
+    """Temperature (the locus's closest point) and tint of a chromaticity."""
+    d = -2 * x + 12 * y + 3
+    u, v = 4 * x / d, 6 * y / d
+    dist = lambda lt: math.dist((u, v), _locus(math.exp(lt)))
+    a, b, g = math.log(1000), math.log(40000), (math.sqrt(5) - 1) / 2
+    for _ in range(60):                    # golden section on log T
+        c, e = b - g * (b - a), a + g * (b - a)
+        a, b = (a, e) if dist(c) < dist(e) else (c, b)
+    t = math.exp((a + b) / 2)
+    (lu, lv), (nu, nv) = _locus(t), _normal(t)
+    return t, ((u - lu) * nu + (v - lv) * nv) * 1000
+
+
+async def _wb(image_id: int) -> dict:
+    try:
+        g = await engine.edit(image_id, "module_get", operation="channelmixerrgb", instance=0)
+    except EngineError as exc:
+        return {"missing": str(exc)}
+    f = {x["name"]: x for x in g["fields"]}
+    t, tint = xy_to_wb(f["x"]["value"], f["y"]["value"])
+    ill = f["illuminant"]
+    label = next((v["label"] for v in ill.get("values", []) if v["name"] == ill["value"]), ill["value"])
+    return {"enabled": g["enabled"], "temperature": t, "tint": tint, "illuminant": label,
+            # adaptation "none (bypass)": the white balance module does it, and the picker is hidden
+            "bypass": f["adaptation"]["value"] == "DT_ADAPTATION_RGB"}
+
+
+class WbBody(BaseModel):
+    temperature: float
+    tint: float
+
+
+@app.post("/api/photo/{image_id}/wb")
+async def photo_wb(image_id: int, body: WbBody):
+    x, y = wb_to_xy(max(1667.0, min(body.temperature, 25000.0)), max(-60.0, min(body.tint, 60.0)))
+    try:
+        r = await engine.edit(image_id, "module_set", operation="channelmixerrgb", instance=0,
+                              values={"illuminant": "DT_ILLUMINANT_CUSTOM", "x": x, "y": y})
+        return {**r, "history": await engine.edit(image_id, "history_list"), "wb": await _wb(image_id)}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+# ── rgb levels: black, gray and white of its first channel, the one
+# "RGB, linked channels" applies to all three; values of its input (before
+# the tone mapper), 0..1
+async def _levels(image_id: int) -> dict:
+    try:
+        g = await engine.edit(image_id, "module_get", operation="rgblevels")
+    except EngineError as exc:
+        return {"missing": str(exc)}
+    f = {x["name"]: x for x in g["fields"]}
+    return {"enabled": g["enabled"], "levels": f["levels"]["value"], "default": f["levels"]["default"][0],
+            "linked": f["autoscale"]["value"] == "DT_IOP_RGBLEVELS_LINKED_CHANNELS"}
+
+
+class PickBody(BaseModel):
+    operation: str
+    instance: int = 0
+    control: str
+    box: dict
+
+
+@app.post("/api/photo/{image_id}/pick")
+async def photo_pick(image_id: int, body: PickBody):
+    """A module's color picker on an area of the photo as rendered
+    (fractions), as darktable's picker; one history step."""
+    try:
+        r = await engine.edit(image_id, "picker_apply", operation=body.operation, instance=body.instance,
+                              control=body.control, box=body.box)
+        if r.get("state") not in (None, "done"):
+            raise HTTPException(502, r.get("error") or f"the picker job {r.get('state')}")
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
 
 
 # ── black & white: a second color calibration instance with a gray mix, as

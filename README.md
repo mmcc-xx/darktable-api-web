@@ -31,9 +31,12 @@ owner.
   time; the active tool's controls in a bar under the toolbar) and a panel
   at the right. At the panel's top, an RGB + luminance histogram of the
   preview (click: logarithmic / linear) with the clipped highlight and
-  shadow shares, then the camera, date, lens and exposure (shutter,
+  shadow shares, rgb levels' black, gray and white handles under it (with
+  pickers: click *black*, *gray* or *white*, then the photo), then the
+  camera, date, lens and exposure (shutter,
   aperture, ISO, focal length, bias). Live preview from darktable's pipeline with sliders for
-  exposure, AgX (or sigmoid, for photos edited with it), the tone
+  exposure, white balance (color calibration's illuminant as temperature
+  and tint, and *pick a neutral spot*: click something gray in the photo), AgX (or sigmoid, for photos edited with it), the tone
   equalizer's nine bands (−8 EV to 0 EV) and color balance rgb in
   collapsible sections (basic, tone, color, export), each summing up its
   settings in one line when closed; module on/off. A black & white

@@ -203,9 +203,10 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 #wb > button { font-size: .8rem; padding: .15rem .5rem; margin-top: -.2rem; }
 .view.picking, .view.picking img { cursor: crosshair; }
 
-/* zoomed: the image at its own pixels, dragged to pan */
+/* zoomed: the image at its own pixels, dragged to pan (a finger too: the
+   browser leaves touches to the page; at fit a swipe still scrolls) */
 .view { overflow: hidden; }
-.view.zoomed { cursor: grab; }
+.view.zoomed { cursor: grab; touch-action: none; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 .view.zoomed.panning { cursor: grabbing; }
 .view.zoomed > img { object-fit: fill; }
 .zoom button { padding: .3rem .55rem; }

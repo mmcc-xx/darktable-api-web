@@ -237,18 +237,26 @@
     }
     return {x, y};
   }
-  // drag to pan: the image moves at once, the new region renders on release
+  // drag to pan: the image moves at once, the new region renders on release;
+  // one pointer at a time, so a second finger doesn't jump it (pinch is W21)
+  let panPointer = null;
+  // a mouse drag on the <img> would start the browser's image drag and cancel the pan
+  $('.view').addEventListener('dragstart', (e) => e.preventDefault());
   $('.view').addEventListener('pointerdown', (e) => {
-    if (!shown || picking || cropping || cmp || e.button !== 0) return;
+    if (!shown || picking || cropping || cmp || e.button !== 0 || panPointer !== null) return;
     const v = $('.view'), x0 = e.clientX, y0 = e.clientY, from = shown;
     v.setPointerCapture(e.pointerId);
     v.classList.add('panning');
+    panPointer = e.pointerId;
     let dx = 0, dy = 0;
     v.onpointermove = (ev) => {
+      if (ev.pointerId !== panPointer) return;
       dx = ev.clientX - x0; dy = ev.clientY - y0;
       $('#pv').style.transform = $('#clipov').style.transform = `translate(${dx}px, ${dy}px)`;
     };
-    v.onpointerup = v.onpointercancel = () => {
+    v.onpointerup = v.onpointercancel = (ev) => {
+      if (ev.pointerId !== panPointer) return;
+      panPointer = null;
       v.onpointermove = v.onpointerup = v.onpointercancel = null;
       v.classList.remove('panning');
       if (Math.abs(dx) + Math.abs(dy) < 3 || !full) return;

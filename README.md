@@ -111,10 +111,11 @@ owner.
   on the PATH or in `~/darktable-api-mcp/.venv`), linking the editing
   skills, and a prompt to start with. Claude's edits show up here live.
 - **Sharing the library with darktable:** darktable and the engine can't
-  have one library open at the same time. The header has *release to
-  darktable* (the engine closes the library; unsaved edits are kept), *take
-  back*, and *quit darktable and take back* (asks darktable to quit the
-  normal way, so it saves; never kills it).
+  have one library open at the same time. Use the darktable-api build of
+  darktable's window, which serves the library to the engine itself. If the
+  library was released to darktable (through the API), the header has
+  *take back* and *quit darktable and take back* (asks darktable to quit
+  the normal way, so it saves; never kills it).
 
 Measured on an Apple M1 (CPU only) with a 20 MP raw: a preview after a slider
 change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
@@ -202,7 +203,8 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_MCP` | `darktable-api-mcp` on the PATH, else `~/darktable-api-mcp/.venv/bin/darktable-api-mcp` | the MCP server the *Claude* dialog's command runs |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
-To open the copy in darktable's GUI: *release to darktable*, then
+To open the copy in darktable's GUI (it serves the library to the engine
+while open):
 
     /path/to/darktable/build/bin/darktable --configdir library-copy/config --cachedir library-copy/cache
 

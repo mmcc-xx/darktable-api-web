@@ -19,9 +19,7 @@
         {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% endif %}
         {% else %}{{ lib.detail }}{% endif %}
       </span>
-      {% if lib.state == 'owned' and lib.server != 'gui' %}
-        {% block release %}<button data-lib="release" title="close the library so darktable can open it">release to darktable</button>{% endblock %}
-      {% elif lib.state == 'released' %}
+      {% if lib.state == 'released' %}
         <button data-lib="acquire">take back</button>
         {% if lib.holder_pid %}<button data-lib="takeover" title="quit darktable the normal way, then take the library back">quit darktable and take back</button>{% endif %}
       {% endif %}

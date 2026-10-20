@@ -1179,11 +1179,9 @@ async def library_status():
 
 @app.post("/api/library/{action}")
 async def library_action(action: str):
-    """release: hand the library to darktable's GUI; acquire: take it back;
+    """acquire: take back a library released to darktable's GUI;
     takeover: quit that GUI the normal way, then take it back."""
     try:
-        if action == "release":
-            return await engine.library("library_release")
         if action == "acquire":
             return await engine.library("library_acquire")
         if action == "takeover":

@@ -10,8 +10,6 @@
 </nav>
 {% endblock %}
 {% block bodyclass %}darkroom-page{% endblock %}
-{# releasing the library belongs to the lighttable #}
-{% block release %}{% endblock %}
 {% block main %}
 {% if error %}<p class="banner">{{ error }}</p>
 {% elif lib.state == 'released' %}<p class="banner">The library is released to darktable. Take it back (top right) to edit.</p>

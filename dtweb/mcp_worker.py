@@ -1,9 +1,9 @@
 """
-dust_worker.py: dust detection and healing for the web app, run under
-darktable-api-mcp's Python (it has numpy, opencv and rawpy, the web app's
-doesn't) as
-    python -I dust_worker.py '{"op": "find", "image_id": 12}'
-It calls the MCP server's own functions, on the same engine as the web app
+mcp_worker.py: runs darktable-api-mcp's own functions for the web app (dust
+detection and healing, object removal with ai_fill), under the MCP's Python
+(it has numpy, opencv and rawpy, the web app's doesn't) as
+    python -I mcp_worker.py '{"op": "find", "image_id": 12}'
+It calls the MCP server's functions, on the same engine as the web app
 (DTAPI_BIN, DTAPI_CONFIGDIR, DTAPI_SOCKET), so it joins the photo's open
 edit, unsaved changes included, and the page sees its edits as events.
 Prints one JSON line: the result, or {"error": "..."}.
@@ -12,6 +12,10 @@ ops: find {rebuild_map}, heal {spots: [ids]},
      heal_at {x, y, radius}: a heal circle where the user clicked (x, y
      fractions of the photo as shown, radius a fraction of its shorter side)
      with a source this worker picks from a 100% render around it.
+     fill_models {}: the fill models (local and online, whether the online
+     ones have a key); image_id is ignored.
+     fill {shape: "circle"|"path", x, y, radius | points, model, prompt,
+     context}: ai_fill on the photo's open edit; returns its reply.
 """
 
 import asyncio
@@ -79,10 +83,37 @@ async def heal_at(server, n: int, req: dict) -> dict:
     return {**res, "source": [round(sx, 5), round(sy, 5)]}
 
 
+async def fill_models(server, n: int, req: dict) -> list:
+    from darktable_api_mcp import bfl
+    try:
+        bfl.api_key()
+        have = True
+    except bfl.BflError:
+        have = False
+    return ([{"id": "local", "label": "LaMa (on this machine)", "online": False}]
+            + [{"id": k, "label": v[1], "online": True, "available": have} for k, v in bfl.MODELS.items()])
+
+
+async def fill(server, n: int, req: dict) -> dict:
+    from mcp.server.fastmcp.exceptions import ToolError
+    await server.engine.open(n)
+    args = dict(shape=req["shape"], feather=0.005, context=float(req.get("context", 0.5)),
+                model=req.get("model", "local"), prompt=req.get("prompt", ""), name="erase")
+    if req["shape"] == "path":
+        args["points"] = req["points"]
+    else:
+        args.update(x=float(req["x"]), y=float(req["y"]), radius=float(req["radius"]))
+    try:
+        return _parse(await server.ai_fill(**args))
+    except ToolError as exc:
+        return {"error": str(exc)}
+
+
 async def main(req: dict) -> dict:
     from darktable_api_mcp import server
     n = int(req["image_id"])
-    op = {"find": find, "heal": heal, "heal_at": heal_at}.get(req.get("op"))
+    op = {"find": find, "heal": heal, "heal_at": heal_at, "fill_models": fill_models,
+          "fill": fill}.get(req.get("op"))
     if not op:
         raise RuntimeError(f"unknown op {req.get('op')!r}")
     return await op(server, n, req)

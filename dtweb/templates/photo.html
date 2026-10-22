@@ -20,6 +20,7 @@
     <div class="toolbar" role="toolbar" aria-label="photo tools">
       <button id="tool-crop" data-tool="crop" aria-pressed="false" title="crop, rotate and straighten">crop &amp; rotate</button>
       <button id="tool-dust" data-tool="dust" aria-pressed="false" title="find sensor dust, review the spots, click to heal (d)">dust</button>
+      <button id="tool-erase" data-tool="erase" aria-pressed="false" {% if not can_fill %}disabled {% endif %}title="{{ "remove an object: draw around it, or click for a round spot (e)" if can_fill else "erase needs darktable-api on darktable master (ai_fill); this engine doesn't have it" }}">erase</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
@@ -58,6 +59,15 @@
         <input type="range" id="dust-size" min="0.003" max="0.03" step="0.001" value="0.008"></span>
       <button id="dust-done" class="secondary" title="leave the dust tool (Esc)">done</button>
       <span id="dust-note" class="status" hidden></span>
+    </div>
+    <div id="toolbar-erase" class="toolbar-bar" hidden>
+      <span id="erase-status" class="status" role="status">draw around the object, or click for a round spot</span>
+      <select id="erase-model" title="what fills the area"></select>
+      <input id="erase-prompt" type="text" size="26" hidden>
+      <span class="size"><label id="erase-size-lab" for="erase-size" title="the circle a click on the photo fills">spot size</label>
+        <input type="range" id="erase-size" min="0.005" max="0.08" step="0.001" value="0.02"></span>
+      <button id="erase-done" class="secondary" title="leave the erase tool (Esc)">done</button>
+      <span id="erase-note" class="status" hidden>sends the area around the shape to Black Forest Labs and uses credits</span>
     </div>
     <div class="view">
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
@@ -157,6 +167,7 @@
 <script>
 (() => {
   const ID = {{ img.id }};
+  const CAN_FILL = {{ 'true' if can_fill else 'false' }};
   const api = (p, body) => fetch(`/api/photo/${ID}/${p}`, body === undefined ? {} : {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const $ = (s) => document.querySelector(s);
@@ -255,7 +266,7 @@
   // a mouse drag on the <img> would start the browser's image drag and cancel the pan
   $('.view').addEventListener('dragstart', (e) => e.preventDefault());
   $('.view').addEventListener('pointerdown', (e) => {
-    if (!shown || picking || cropping || cmp || e.button !== 0 || panPointer !== null) return;
+    if (!shown || picking || cropping || cmp || erase || e.button !== 0 || panPointer !== null) return;
     const v = $('.view'), x0 = e.clientX, y0 = e.clientY, from = shown;
     v.setPointerCapture(e.pointerId);
     v.classList.add('panning');
@@ -280,7 +291,7 @@
   });
   // double-click: 100% there, or back to fit
   $('.view').addEventListener('dblclick', (e) => {
-    if (picking || cropping || cmp || dust) return;
+    if (picking || cropping || cmp || dust || erase) return;
     if (zoom) { setZoom(0); return; }
     const p = photoPoint(e);
     if (p) setZoom(1, p);
@@ -486,6 +497,7 @@
   function setPicking(btn) {
     if (btn && cropping) setCropping(false);
     if (btn && dust) setDust(false);
+    if (btn && erase) setErase(false);
     if (btn && cmp) closeCompare();
     picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
     document.querySelectorAll('[data-pick]').forEach((b) => {
@@ -792,8 +804,8 @@
     if (!dustSpots.length) dustMsg('no dust found in this photo');
     status(`dust found in ${((performance.now() - t) / 1000).toFixed(1)} s`);
   }
-  // an edit made by the worker: show it like any other edit
-  async function dustRefresh() {
+  // an edit made by the worker (dust, erase): show it like any other edit
+  async function refreshEdit() {
     const r = await api('open', {});
     if (r.ok) { const s = await r.json(); dirty = true; show(s); }
     await preview();
@@ -811,7 +823,7 @@
       const skipped = (s.skipped || []).map((k) => `#${k.id}: ${k.why}`);
       note = `healed ${s.plan ? planned : ids.length - skipped.length}` + (skipped.length ? `, skipped ${skipped.join('; ')}` : '');
     } catch (e) { note = 'heal failed: ' + e.message; }
-    await dustRefresh();
+    await refreshEdit();
     dustBusy = false;
     if (!dust) return;
     await dustFind(false);
@@ -833,7 +845,7 @@
       note = 'healed a spot where you clicked';
     } catch (e) { note = 'heal failed: ' + e.message; }
     dustTemp = null;
-    await dustRefresh();
+    await refreshEdit();
     dustBusy = false;
     if (dust) dustSummary(note);
   }
@@ -850,6 +862,7 @@
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
       if (cmp) closeCompare();
+      if (erase) setErase(false);
     }
     dust = on;
     $('#toolbar-dust').hidden = !on;
@@ -865,6 +878,129 @@
   $('#dust-done').onclick = () => setDust(false);
   $('#dust-heal').onclick = dustHeal;
   $('#dust-again').onclick = (e) => { if (!dustBusy) dustFind(e.shiftKey); };
+
+  // ── erase: remove an object with ai_fill (the MCP's, run by
+  // dtweb/mcp_worker.py on the open edit). With the tool on, a drag draws a
+  // freehand outline that is filled from its surroundings; a click fills a
+  // round spot. Drawing wins over panning while the tool is on.
+  let erase = false, eraseBusy = false, eraseModels = null, eraseDraw = null, eraseOutline = null, eraseSure = false;
+  const eraseMsg = (t) => { $('#erase-status').textContent = t; };
+  const eraseModel = () => (eraseModels || []).find((m) => m.id === $('#erase-model').value);
+  try { const v = parseFloat(localStorage.getItem('dr:erasesize')); if (v >= 0.005 && v <= 0.08) $('#erase-size').value = v; } catch (e) {}
+  $('#erase-size').oninput = () => { try { localStorage.setItem('dr:erasesize', $('#erase-size').value); } catch (e) {} };
+  function eraseControls() {
+    const m = eraseModel(), p = $('#erase-prompt');
+    p.hidden = !m || !['flux', 'flux3'].includes(m.id);
+    p.placeholder = m && m.id === 'flux3' ? 'what to remove' : 'describe the scene';
+    $('#erase-note').hidden = !m || !m.online;
+    try { if (m) localStorage.setItem('dr:erasemodel', m.id); } catch (e) {}
+  }
+  $('#erase-model').onchange = eraseControls;
+  async function eraseLoadModels() {
+    if (eraseModels) return;
+    try {
+      eraseModels = await (await fetch('/api/fill/models')).json();
+    } catch (e) { eraseModels = [{id: 'local', label: 'LaMa (on this machine)', online: false}]; }
+    let last = 'local';
+    try { last = localStorage.getItem('dr:erasemodel') || 'local'; } catch (e) {}
+    $('#erase-model').replaceChildren(...eraseModels.map((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.online ? (m.id === 'flux-erase' ? 'FLUX Erase' : m.label) + ' (online, Black Forest Labs)' : m.label;
+      if (m.id === 'flux-erase') o.textContent = 'FLUX Erase (online, Black Forest Labs)';
+      if (m.online && !m.available) { o.disabled = true; o.textContent += ' (no API key)'; }
+      return o;
+    }));
+    const pick = eraseModels.find((m) => m.id === last && (!m.online || m.available));
+    $('#erase-model').value = pick ? pick.id : 'local';
+    eraseControls();
+  }
+  // a client point as photo fractions, clamped to the photo (works zoomed)
+  function erasePoint(e) {
+    const r = imgRect(), v = $('.view').getBoundingClientRect(), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1};
+    const x = Math.min(1, Math.max(0, (e.clientX - v.left - r.x) / r.w)), y = Math.min(1, Math.max(0, (e.clientY - v.top - r.y) / r.h));
+    return [R.left + x * (R.right - R.left), R.top + y * (R.bottom - R.top)];
+  }
+  const eraseCircle = (pt, radius, cls) => ({id: 'erase', kind: 'circle', x: pt[0], y: pt[1], r: radius * Math.min(1, 1 / photoAspect()), cls});
+  function eraseShow(d) {
+    ov.set(d ? [{id: 'erase', kind: 'polygon', points: d.pts, cls: 'lasso'}] : []);
+  }
+  async function eraseFill(body, outline) {
+    const m = eraseModel();
+    if (!m || eraseBusy) return;
+    if (m.online && !eraseSure) {
+      if (!confirm('Send the area around the shape to Black Forest Labs? It uses credits.')) { ov.set([]); return; }
+      eraseSure = true;
+    }
+    eraseBusy = true;
+    ov.set([outline]);
+    eraseMsg(`filling with ${m.id === 'local' ? 'LaMa' : m.label}… ${m.online ? '(online: up to a minute)' : ''}`);
+    const prompt = $('#erase-prompt').hidden ? '' : $('#erase-prompt').value;
+    let r, s;
+    try { r = await api('fill', {...body, model: m.id, prompt, context: 0.5}); s = await r.json(); } catch (e) { r = null; }
+    eraseBusy = false;
+    if (!erase) return;
+    ov.set([]);
+    if (!r || !r.ok) { eraseMsg('fill failed: ' + (s && s.detail || 'no answer')); return; }
+    await refreshEdit();
+    eraseMsg(`filled (${s.process_ms} ms)` + (s.warning ? ' ' + s.warning : ''));
+  }
+  function eraseEnd(d) {
+    const xs = d.px.map((p) => p[0]), ys = d.px.map((p) => p[1]);
+    const box = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    if (d.pts.length >= 3 && box > 10) {
+      let pts = d.pts;
+      if (pts.length > 60) { const k = Math.ceil(pts.length / 60); pts = pts.filter((_, i) => i % k === 0); }
+      eraseFill({shape: 'path', points: pts.map((p) => p.map((v) => +v.toFixed(5)))}, {id: 'erase', kind: 'polygon', points: pts, cls: 'lasso'});
+    } else {
+      const radius = +$('#erase-size').value, pt = d.pts[0];
+      eraseFill({shape: 'circle', x: +pt[0].toFixed(5), y: +pt[1].toFixed(5), radius}, eraseCircle(pt, radius, 'lasso'));
+    }
+  }
+  $('.view').addEventListener('pointerdown', (e) => {
+    if (!erase || eraseBusy || e.button !== 0 || eraseDraw) return;
+    e.preventDefault();
+    const v = $('.view');
+    v.setPointerCapture(e.pointerId);
+    const d = eraseDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]]};
+    const move = (ev) => {
+      if (ev.pointerId !== d.id || eraseDraw !== d) return;
+      const last = d.px[d.px.length - 1];
+      if (Math.hypot(ev.clientX - last[0], ev.clientY - last[1]) < 4) return;
+      d.px.push([ev.clientX, ev.clientY]); d.pts.push(erasePoint(ev));
+      if (d.pts.length >= 2) eraseShow(d);
+    };
+    v.addEventListener('pointermove', move);
+    const finish = (ev, ok) => {
+      if (ev.pointerId !== d.id) return;
+      v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
+      eraseDraw = null;
+      if (!erase) return;
+      if (ok) eraseEnd(d); else ov.set([]);
+    };
+    const up = (ev) => finish(ev, true), cancel = (ev) => finish(ev, false);
+    v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
+  });
+  function setErase(on) {
+    if (on === erase || (on && !CAN_FILL)) return;
+    if (on) {
+      if (cropping) setCropping(false);
+      if (picking) setPicking(null);
+      if (cmp) closeCompare();
+      if (dust) setDust(false);
+    }
+    erase = on;
+    $('#toolbar-erase').hidden = !on;
+    $('#tool-erase').setAttribute('aria-pressed', on);
+    $('#tool-erase').classList.toggle('on', on);
+    $('.view').classList.toggle('erasing', on);
+    ov.interactive(false);
+    ov.show(on);
+    if (on) { eraseMsg('draw around the object, or click for a round spot'); eraseLoadModels(); }
+    else { eraseDraw = null; ov.set([]); }
+  }
+  $('#tool-erase').onclick = () => setErase(!erase);
+  $('#erase-done').onclick = () => setErase(false);
 
   // ── crop & rotate ──────────────────────────────────────────────────────
   // geo: the engine's geometry_get. while cropping, the preview shows the
@@ -991,6 +1127,7 @@
   function setCropping(on) {
     if (on && cmp) closeCompare();
     if (on && dust) setDust(false);
+    if (on && erase) setErase(false);
     if (on && zoom) markZoom(0);
     cropping = on && !!geo;
     $('#toolbar-crop').hidden = !on;
@@ -1264,7 +1401,7 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); openCompare(0); };
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); openCompare(0); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one
@@ -1402,12 +1539,14 @@
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && k === 'd') { e.preventDefault(); duplicate(false); return; }
     if (picking && e.key === 'Escape') { e.preventDefault(); setPicking(null); status('picker cancelled'); return; }
     if (dust && e.key === 'Escape') { e.preventDefault(); setDust(false); return; }
+    if (erase && e.key === 'Escape') { e.preventDefault(); setErase(false); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
     if (e.key === 'Escape' && cmp) { closeCompare(); return; }
     if (k === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cropping) { e.preventDefault(); fullScreen(); return; }
     if (k === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setDust(!dust); return; }
+    if (k === 'e' && CAN_FILL && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setErase(!erase); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];

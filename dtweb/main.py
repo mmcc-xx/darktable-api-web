@@ -377,9 +377,11 @@ async def photo_page(request: Request, image_id: int):
     f = _filters(request)
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
-           "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": []}
+           "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
+           "can_fill": False}
     if lib.get("state") == "owned":
         try:
+            ctx["can_fill"] = await engine.supports("ai_fill")
             info = await engine.call("image_info", imgid=image_id)
             ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
@@ -771,14 +773,15 @@ async def photo_reset(image_id: int):
 
 
 
-# ── dust: detection and healing run in darktable-api-mcp's Python (numpy,
-# opencv and rawpy are its dependencies), a worker per request, on the same
-# engine as this app, so it works on the open edit and the page sees the changes
-_dust_lock = asyncio.Lock()
+# ── dust and erase: detection, healing and fills run in darktable-api-mcp's
+# Python (numpy, opencv and rawpy are its dependencies), a worker per request,
+# on the same engine as this app, so it works on the open edit and the page
+# sees the changes
+_mcp_lock = asyncio.Lock()
 DUST_TIMEOUT_S = 300
 
 
-async def _dust(op: str, image_id: int, **params) -> dict:
+async def _mcp_worker(op: str, image_id: int, **params) -> dict:
     mcp = _mcp_program()
     py = os.environ.get("DTAPI_MCP_PYTHON") or (str(Path(mcp).parent / "python") if mcp else None)
     if not py or not Path(py).exists():
@@ -786,16 +789,16 @@ async def _dust(op: str, image_id: int, **params) -> dict:
                                  "(pip install 'darktable-api-mcp[dust]')")
     env = {**os.environ, "DTAPI_BIN": str(BIN), "DTAPI_CONFIGDIR": str(CONFIG), "DTAPI_SOCKET": str(SOCKET)}
     req = json.dumps({"op": op, "image_id": image_id, **params})
-    async with _dust_lock:
+    async with _mcp_lock:
         proc = await asyncio.create_subprocess_exec(
-            py, "-I", str(HERE / "dust_worker.py"), req, env=env,
+            py, "-I", str(HERE / "mcp_worker.py"), req, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), DUST_TIMEOUT_S)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            raise HTTPException(502, f"dust detection took more than {DUST_TIMEOUT_S} s")
+            raise HTTPException(502, f"the worker took more than {DUST_TIMEOUT_S} s")
     lines = out.decode(errors="replace").strip().splitlines()
     try:
         r = json.loads(lines[-1])
@@ -825,17 +828,58 @@ class DustHealAtBody(BaseModel):
 async def dust_find(image_id: int, body: DustFindBody):
     """Dust on the photo: the roll's map rated for this photo (the MCP's
     find_dust_spots), each spot with its size on the photo (r_photo)."""
-    return await _dust("find", image_id, rebuild_map=body.rebuild)
+    return await _mcp_worker("find", image_id, rebuild_map=body.rebuild)
 
 
 @app.post("/api/photo/{image_id}/dust/heal")
 async def dust_heal(image_id: int, body: DustHealBody):
-    return await _dust("heal", image_id, spots=body.spots)
+    return await _mcp_worker("heal", image_id, spots=body.spots)
 
 
 @app.post("/api/photo/{image_id}/dust/heal_at")
 async def dust_heal_at(image_id: int, body: DustHealAtBody):
-    return await _dust("heal_at", image_id, x=body.x, y=body.y, radius=body.radius)
+    return await _mcp_worker("heal_at", image_id, x=body.x, y=body.y, radius=body.radius)
+
+
+_fill_models: list | None = None
+
+
+@app.get("/api/fill/models")
+async def fill_models():
+    """The models ai_fill can use: local, and Black Forest Labs' online ones
+    (available: an API key is set). Cached for the app's life."""
+    global _fill_models
+    if _fill_models is None:
+        _fill_models = await _mcp_worker("fill_models", 0)
+    return _fill_models
+
+
+class FillBody(BaseModel):
+    shape: str
+    x: float | None = None
+    y: float | None = None
+    radius: float | None = None
+    points: list[list[float]] | None = None
+    model: str = "local"
+    prompt: str = ""
+    context: float = 0.5
+
+
+@app.post("/api/photo/{image_id}/fill")
+async def fill(image_id: int, body: FillBody):
+    """Remove an object: ai_fill a circle (x, y, radius as a fraction of the
+    shorter side) or a path (points, photo fractions)."""
+    if body.model not in {m["id"] for m in await fill_models()}:
+        raise HTTPException(422, f"unknown fill model {body.model!r}")
+    if body.shape == "path":
+        if not body.points or not 3 <= len(body.points) <= 60 or any(len(p) != 2 for p in body.points):
+            raise HTTPException(422, "a path needs 3 to 60 points [x, y]")
+    elif body.shape == "circle":
+        if body.x is None or body.y is None or not body.radius or body.radius <= 0:
+            raise HTTPException(422, "a circle needs x, y and radius")
+    else:
+        raise HTTPException(422, "shape must be circle or path")
+    return await _mcp_worker("fill", image_id, **body.model_dump())
 
 
 class ExportBody(BaseModel):

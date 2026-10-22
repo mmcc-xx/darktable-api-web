@@ -328,3 +328,12 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .fullview.idle .fv-ui { opacity: 0; pointer-events: none; }
 .ctl .full { padding-left: .3rem; }
 .ctl .full:hover { color: var(--accent); }
+.photo-ov .area { stroke: #3ab8ff; stroke-width: 2; fill: rgba(58, 184, 255, .14); }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 4px 0 0 4px; }
+.seg button:last-child { border-radius: 0 4px 4px 0; }
+.area-box { margin: 0 0 .9rem; padding-bottom: .3rem; border-bottom: 1px dashed var(--line); }
+.area-head { display: flex; align-items: baseline; gap: .6rem; margin-bottom: .3rem; font-size: .9rem; }
+.area-head strong { flex: 1; }
+.area-head .on { color: var(--accent); }

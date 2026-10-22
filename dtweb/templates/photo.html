@@ -21,6 +21,7 @@
       <button id="tool-crop" data-tool="crop" aria-pressed="false" title="crop, rotate and straighten">crop &amp; rotate</button>
       <button id="tool-dust" data-tool="dust" aria-pressed="false" title="find sensor dust, review the spots, click to heal (d)">dust</button>
       <button id="tool-erase" data-tool="erase" aria-pressed="false" {% if not can_fill %}disabled {% endif %}title="{{ "remove an object: draw around it, or click for a round spot (e)" if can_fill else "erase needs darktable-api on darktable master (ai_fill); this engine doesn't have it" }}">erase</button>
+      <button id="tool-area" data-tool="area" aria-pressed="false" {% if not can_mask %}disabled {% endif %}title="{{ "adjust the sky or the subject on its own: click it on the photo (a)" if can_mask else "sky / subject needs darktable-api on darktable master (mask_ai); this engine doesn't have it" }}">sky / subject</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
@@ -59,6 +60,12 @@
         <input type="range" id="dust-size" min="0.003" max="0.03" step="0.001" value="0.008"></span>
       <button id="dust-done" class="secondary" title="leave the dust tool (Esc)">done</button>
       <span id="dust-note" class="status" hidden></span>
+    </div>
+    <div id="toolbar-area" class="toolbar-bar" hidden>
+      <span class="seg" role="group" aria-label="the next area"><button id="area-sky" class="secondary" aria-pressed="false" title="the next area is the sky">sky</button><button id="area-subject" class="secondary on" aria-pressed="true" title="the next area is the subject">subject</button></span>
+      <span id="area-status" class="status" role="status">click on the subject</span>
+      <button id="area-exclude" class="secondary" aria-pressed="false" title="the next click removes that spot from the area just made (Alt-click does the same; Shift-click adds a spot)">exclude</button>
+      <button id="area-done" class="secondary" title="leave the sky / subject tool (Esc)">done</button>
     </div>
     <div id="toolbar-erase" class="toolbar-bar" hidden>
       <span id="erase-status" class="status" role="status">draw around the object, or click for a round spot</span>
@@ -168,6 +175,7 @@
 (() => {
   const ID = {{ img.id }};
   const CAN_FILL = {{ 'true' if can_fill else 'false' }};
+  const CAN_MASK = {{ 'true' if can_mask else 'false' }};
   const api = (p, body) => fetch(`/api/photo/${ID}/${p}`, body === undefined ? {} : {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const $ = (s) => document.querySelector(s);
@@ -291,7 +299,7 @@
   });
   // double-click: 100% there, or back to fit
   $('.view').addEventListener('dblclick', (e) => {
-    if (picking || cropping || cmp || dust || erase) return;
+    if (picking || cropping || cmp || dust || erase || area) return;
     if (zoom) { setZoom(0); return; }
     const p = photoPoint(e);
     if (p) setZoom(1, p);
@@ -412,10 +420,13 @@
       box.appendChild(d);
     }
     box.appendChild(monoSection(s.mono));
+    const as = areaSection();
+    if (as) box.appendChild(as);
     if (s.others && s.others.length) box.appendChild(othersSection(s.others));
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
     drawLevels();
+    areaSync();
   }
 
   // ── white balance: color calibration's illuminant as temperature and
@@ -498,6 +509,7 @@
     if (btn && cropping) setCropping(false);
     if (btn && dust) setDust(false);
     if (btn && erase) setErase(false);
+    if (btn && area) setArea(false);
     if (btn && cmp) closeCompare();
     picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
     document.querySelectorAll('[data-pick]').forEach((b) => {
@@ -580,7 +592,7 @@
   $('#lv-reset').onclick = () => sendLevels([...state.levels.default]);
   document.querySelectorAll('.lv-picks [data-pick]').forEach((b) => b.onclick = () => togglePick(b));
 
-  function modulePanel(m, resum) {
+  function modulePanel(m, resum, bare) {
     const sec = document.createElement('section');
     sec.className = 'module';
     const head = document.createElement('label');
@@ -588,11 +600,11 @@
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.checked = !!m.enabled; cb.disabled = !!m.missing;
     cb.onchange = async () => {
-      const r = await api('enable', {operation: m.operation, enabled: cb.checked});
+      const r = await api('enable', {operation: m.operation, instance: m.instance || 0, enabled: cb.checked});
       if (r.ok) { dirty = true; show(await r.json()); preview(); }
     };
     head.append(cb, ' ' + m.title + (m.missing ? ' (not available)' : ''));
-    sec.appendChild(head);
+    if (!bare) sec.appendChild(head);
     m.fields.forEach((f) => {
       const row = document.createElement('div');
       row.className = 'field';
@@ -602,7 +614,7 @@
       val.className = 'link val'; val.textContent = fmt(f, f.value); val.title = 'type a value';
       const sl = document.createElement('input');
       sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = (f.hi - f.lo) / 1000; sl.value = f.value;
-      const send = (v) => { f.value = v; val.textContent = fmt(f, v); resum(); queue(m.operation, f.name, v); };
+      const send = (v) => { f.value = v; val.textContent = fmt(f, v); resum(); queue(m.operation, f.name, v, m.instance); };
       sl.oninput = () => send(parseFloat(sl.value));
       lab.ondblclick = () => { sl.value = f.default; send(f.default); };
       val.onclick = () => {
@@ -849,7 +861,8 @@
     dustBusy = false;
     if (dust) dustSummary(note);
   }
-  ov.onclick((it, pt) => {
+  ov.onclick((it, pt, ev) => {
+    if (area) { if (pt) areaClick(pt, ev); return; }
     if (!dust || dustBusy) return;
     if (it) {
       const s = dustSpots.find((p) => p.id === it.id);
@@ -863,6 +876,7 @@
       if (picking) setPicking(null);
       if (cmp) closeCompare();
       if (erase) setErase(false);
+      if (area) setArea(false);
     }
     dust = on;
     $('#toolbar-dust').hidden = !on;
@@ -872,7 +886,7 @@
     ov.interactive(on);
     ov.show(on);
     if (on) dustFind(false);
-    else { dustGen++; dustBusy = false; dustTemp = null; dustSpots = []; ov.set([]); }
+    else { dustGen++; dustBusy = false; dustTemp = null; dustSpots = []; ov.set([]); areaDraw(); }
   }
   $('#tool-dust').onclick = () => setDust(!dust);
   $('#dust-done').onclick = () => setDust(false);
@@ -988,6 +1002,7 @@
       if (picking) setPicking(null);
       if (cmp) closeCompare();
       if (dust) setDust(false);
+      if (area) setArea(false);
     }
     erase = on;
     $('#toolbar-erase').hidden = !on;
@@ -997,10 +1012,171 @@
     ov.interactive(false);
     ov.show(on);
     if (on) { eraseMsg('draw around the object, or click for a round spot'); eraseLoadModels(); }
-    else { eraseDraw = null; ov.set([]); }
+    else { eraseDraw = null; ov.set([]); areaDraw(); }
   }
   $('#tool-erase').onclick = () => setErase(!erase);
   $('#erase-done').onclick = () => setErase(false);
+
+  // ── areas: the sky or the subject on its own. A click on the photo asks
+  // darktable's AI object mask for that area (POST area); the engine gives
+  // it an exposure and a color balance rgb instance of its own, named after
+  // it, and the panel section "areas" holds their sliders. areas: [{label,
+  // exposure, colorbalancergb (instance numbers), outline, show, ev, color}]
+  let area = false, areas = [], areasKey = null, areasSyncing = false, areaBusy = false;
+  let areaLabel = 'subject', areaLast = null, areaHover = null, areaExclude = false;
+  const areaMsg = (t) => { $('#area-status').textContent = t; };
+  function setAreaLabel(l) {
+    areaLabel = l;
+    for (const k of ['sky', 'subject']) { $('#area-' + k).classList.toggle('on', k === l); $('#area-' + k).setAttribute('aria-pressed', k === l); }
+    if (!areaLast && !areaBusy) areaMsg('click on the ' + l);
+  }
+  $('#area-sky').onclick = () => setAreaLabel('sky');
+  $('#area-subject').onclick = () => setAreaLabel('subject');
+  $('#area-exclude').onclick = () => {
+    areaExclude = !areaExclude;
+    $('#area-exclude').classList.toggle('on', areaExclude); $('#area-exclude').setAttribute('aria-pressed', areaExclude);
+  };
+  // outlines on the photo: all while the tool is on, else the shown ones and the hovered row's
+  function areaDraw() {
+    if (dust || erase || cropping || cmp) return;
+    const items = [];
+    for (const a of areas)
+      if (area || a.show || areaHover === a.exposure)
+        a.outline.forEach((pts, i) => items.push({id: 'area' + a.exposure + '.' + i, kind: 'polygon', points: pts, cls: 'area', title: a.label}));
+    ov.set(items);
+    ov.show(area || items.length > 0);
+  }
+  async function areaClick(pt, ev) {
+    if (areaBusy) return;
+    const p = [+pt.x.toFixed(5), +pt.y.toFixed(5)];
+    const refine = areaLast && (areaExclude || ev.altKey || ev.shiftKey);
+    let body;
+    if (refine) {
+      const last = areaLast, exclude = (areaExclude || ev.altKey) && !ev.shiftKey;
+      body = {label: last.label, include: exclude ? last.include : [...last.include, p], exclude: exclude ? [...last.exclude, p] : last.exclude,
+              replace: {exposure: last.exposure, colorbalancergb: last.colorbalancergb}};
+    } else body = {label: areaLabel, include: [p], exclude: []};
+    areaBusy = true;
+    areaMsg(`finding the ${body.label}… the first time on a photo takes a few seconds`);
+    ov.set([{id: 'temp', kind: 'circle', x: p[0], y: p[1], r: 0.01 * Math.min(1, 1 / photoAspect()), cls: 'temp', title: 'finding…'}]);
+    const t = performance.now();
+    let r, s;
+    try { r = await api('area', body); s = await r.json(); } catch (e) { r = null; }
+    areaBusy = false;
+    if (!r || !r.ok) { areaMsg('not found: ' + (s && s.detail || 'no answer')); areaDraw(); return; }
+    const secs = ((performance.now() - t) / 1000).toFixed(1);
+    const name = refine ? areaLast.name : s.label;
+    areaLast = {label: body.label, name, include: body.include, exclude: body.exclude, exposure: s.exposure, colorbalancergb: s.colorbalancergb};
+    const old = areas.find((a) => a.exposure === s.exposure);
+    const entry = {label: name, exposure: s.exposure, colorbalancergb: s.colorbalancergb, outline: s.outline, ev: s.ev, color: s.color,
+                   enabled: s.enabled, show: old ? old.show : false};
+    areas = old ? areas.map((a) => (a === old ? entry : a)) : [...areas, entry];
+    areaDraw();
+    areaMsg(`${name}: ${Math.round((s.area || 0) * 100)}% of the photo (${secs} s) · Alt-click or "exclude": take a spot out, Shift-click: add one`);
+    await refreshEdit();
+    const sec = document.querySelector('details[data-sec="areas"]');
+    if (sec) sec.open = true;
+  }
+  function areaSection() {
+    if (!areas.length && !area) return null;
+    const d = document.createElement('details');
+    d.className = 'sec'; d.dataset.sec = 'areas';
+    const sum = document.createElement('summary');
+    const line = document.createElement('span');
+    line.className = 'sum';
+    line.textContent = areas.length ? areas.map((a) => a.label).join(' · ') : 'none yet';
+    sum.append('areas ', line);
+    const body = document.createElement('div');
+    body.className = 'sec-body';
+    if (!areas.length) { const n = document.createElement('p'); n.className = 'status'; n.textContent = 'click the sky or the subject on the photo'; body.append(n); }
+    for (const a of areas) {
+      const box = document.createElement('section');
+      box.className = 'area-box';
+      const head = document.createElement('div');
+      head.className = 'area-head';
+      const name = document.createElement('strong');
+      name.textContent = a.label;
+      const shown = document.createElement('button');
+      shown.className = 'link'; shown.textContent = 'show'; shown.setAttribute('aria-pressed', !!a.show);
+      shown.title = 'draw this area’s outline on the photo';
+      shown.classList.toggle('on', !!a.show);
+      shown.onclick = () => { a.show = !a.show; shown.setAttribute('aria-pressed', a.show); shown.classList.toggle('on', a.show); areaDraw(); };
+      const rm = document.createElement('button');
+      rm.className = 'link'; rm.textContent = '✕'; rm.title = 'remove this area and its two adjustments'; rm.setAttribute('aria-label', 'remove ' + a.label);
+      rm.onclick = async () => {
+        if (busy || areaBusy) { status('wait for the last change to finish'); return; }
+        const r = await api('area/remove', {exposure: a.exposure, colorbalancergb: a.colorbalancergb});
+        if (!r.ok) { status('not removed: ' + (await r.json()).detail); return; }
+        areas = areas.filter((x) => x !== a);
+        if (areaLast && areaLast.exposure === a.exposure) areaLast = null;
+        if (areaHover === a.exposure) areaHover = null;
+        areaDraw();
+        await refreshEdit();
+      };
+      head.append(name, shown, rm);
+      box.append(head);
+      const fields = (list, op, inst) => modulePanel({operation: op, instance: inst, title: '', enabled: true, fields: list}, () => {}, true);
+      box.append(fields([{name: 'exposure', label: 'exposure', ...a.ev, factor: 1, unit: 'EV', digits: 2}], 'exposure', a.exposure));
+      box.append(fields(a.color.map((c) => ({...c, label: c.name.replace('_global', '').replace('_', ' '), factor: 100, unit: '%', digits: 0})),
+                        'colorbalancergb', a.colorbalancergb));
+      box.addEventListener('mouseenter', () => { areaHover = a.exposure; areaDraw(); });
+      box.addEventListener('mouseleave', () => { areaHover = null; areaDraw(); });
+      body.append(box);
+    }
+    d.append(sum, body);
+    keepOpen(d);
+    return d;
+  }
+  // put the areas section where it belongs (after black & white), or take it away
+  function areaPlace() {
+    const old = document.querySelector('details[data-sec="areas"]'), fresh = areaSection();
+    if (old && fresh) { fresh.open = old.open; old.replaceWith(fresh); }
+    else if (old) old.remove();
+    else if (fresh) { const bw = document.querySelector('details[data-sec="bw"]'); if (bw) bw.after(fresh); }
+  }
+  // the areas in the edit, read again whenever the edit's history changed
+  // (undo, another client, discard); a slider doesn't change the key
+  async function areaSync() {
+    if (!CAN_MASK || !state || areasSyncing) return;
+    const key = () => state.history.history_end + ':' + state.history.items.length;
+    if (key() === areasKey) return;
+    areasSyncing = true;
+    const k = key();
+    try {
+      const r = await api('areas');
+      if (r.ok) {
+        const list = (await r.json()).areas;
+        areas = list.map((a) => ({...a, show: !!(areas.find((o) => o.exposure === a.exposure) || {}).show}));
+        areasKey = k;
+        if (areaLast && !areas.some((a) => a.exposure === areaLast.exposure)) areaLast = null;
+        areaPlace();
+        areaDraw();
+      }
+    } catch (e) { /* the next change tries again */ }
+    areasSyncing = false;
+    if (state && areasKey !== key()) areaSync();
+  }
+  function setArea(on) {
+    if (on === area || (on && !CAN_MASK)) return;
+    if (on) {
+      if (cropping) setCropping(false);
+      if (picking) setPicking(null);
+      if (cmp) closeCompare();
+      if (dust) setDust(false);
+      if (erase) setErase(false);
+    }
+    area = on;
+    $('#toolbar-area').hidden = !on;
+    $('#tool-area').setAttribute('aria-pressed', on);
+    $('#tool-area').classList.toggle('on', on);
+    $('.view').classList.toggle('dusting', on);
+    ov.interactive(on);
+    if (on) { areaMsg('click on the ' + areaLabel); areaLast = null; }
+    areaDraw();
+    areaPlace();
+  }
+  $('#tool-area').onclick = () => setArea(!area);
+  $('#area-done').onclick = () => setArea(false);
 
   // ── crop & rotate ──────────────────────────────────────────────────────
   // geo: the engine's geometry_get. while cropping, the preview shows the
@@ -1128,6 +1304,7 @@
     if (on && cmp) closeCompare();
     if (on && dust) setDust(false);
     if (on && erase) setErase(false);
+    if (on && area) setArea(false);
     if (on && zoom) markZoom(0);
     cropping = on && !!geo;
     $('#toolbar-crop').hidden = !on;
@@ -1168,10 +1345,10 @@
   // (only a change of the same kind: a rotation isn't dropped for a slider)
   let waiting = [];
   const DONE = {set: 'set', geometry: 'crop/rotate', history_end: 'undo/redo', wb: 'white balance', pick: 'picker'};
-  function queue(op, name, v) { enqueue('set', {operation: op, values: {[name]: v}}); }
+  function queue(op, name, v, instance) { enqueue('set', {operation: op, ...(instance ? {instance} : {}), values: {[name]: v}}); }
   function queueGeo(body) { enqueue('geometry', body); }
   function enqueue(path, body) {
-    const key = path === 'set' ? 'set ' + body.operation + ' ' + Object.keys(body.values)
+    const key = path === 'set' ? 'set ' + body.operation + (body.instance || '') + ' ' + Object.keys(body.values)
               : path === 'geometry' ? 'geometry ' + Object.keys(body).sort()
               : path === 'pick' ? 'pick ' + performance.now() : path === 'wb' ? 'wb' : 'history';
     waiting = waiting.filter((w) => w.key !== key);
@@ -1192,10 +1369,10 @@
       if (path === 'history_end' || path === 'pick') show(s);
       else renderHistory(s.history);
       if (path === 'geometry') { showGeo(s.geometry); full = null; }
-      const m = path === 'set' && state.modules.find((x) => x.operation === p.operation);
+      const m = path === 'set' && !p.instance && state.modules.find((x) => x.operation === p.operation);
       if (m && !m.enabled && s.enabled) { m.enabled = true; state.history = s.history; show(state); }
       // a slider switched the module on: show it on (not while more values wait)
-      if (path === 'set' && p.operation === 'rgblevels' && state.levels && !state.levels.enabled && s.enabled) {
+      if (path === 'set' && !p.instance && p.operation === 'rgblevels' && state.levels && !state.levels.enabled && s.enabled) {
         state.levels.enabled = true; drawLevels();
       }
       if (path === 'wb' && !waiting.some((w) => w.key === 'wb')) {
@@ -1401,7 +1578,7 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); openCompare(0); };
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (area) setArea(false); openCompare(0); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one
@@ -1540,6 +1717,7 @@
     if (picking && e.key === 'Escape') { e.preventDefault(); setPicking(null); status('picker cancelled'); return; }
     if (dust && e.key === 'Escape') { e.preventDefault(); setDust(false); return; }
     if (erase && e.key === 'Escape') { e.preventDefault(); setErase(false); return; }
+    if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
@@ -1547,6 +1725,7 @@
     if (k === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cropping) { e.preventDefault(); fullScreen(); return; }
     if (k === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setDust(!dust); return; }
     if (k === 'e' && CAN_FILL && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setErase(!erase); return; }
+    if (k === 'a' && CAN_MASK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setArea(!area); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];

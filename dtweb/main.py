@@ -378,10 +378,11 @@ async def photo_page(request: Request, image_id: int):
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
            "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
-           "can_fill": False}
+           "can_fill": False, "can_mask": False}
     if lib.get("state") == "owned":
         try:
             ctx["can_fill"] = await engine.supports("ai_fill")
+            ctx["can_mask"] = await engine.supports("mask_ai")
             info = await engine.call("image_info", imgid=image_id)
             ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
@@ -402,6 +403,7 @@ def _others(mods: list[dict], mono: dict | None) -> list[dict]:
     shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0), ("rgblevels", 0)}
     if mono:
         shown.add(("channelmixerrgb", mono["instance"]))
+    shown |= _area_names(mods)
     return [{"operation": m["operation"], "instance": m["instance"], "label": m["label"], "enabled": m["enabled"]}
             for m in mods if m.get("in_history") and m["operation"] not in PLUMBING
             and (m["operation"], m["instance"]) not in shown]
@@ -691,13 +693,183 @@ async def photo_open(image_id: int, fresh: bool = False):
 class SetBody(BaseModel):
     operation: str
     values: dict
+    instance: int = 0
 
 
 @app.post("/api/photo/{image_id}/set")
 async def photo_set(image_id: int, body: SetBody):
     try:
-        r = await engine.edit(image_id, "module_set", operation=body.operation, values=body.values)
+        r = await engine.edit(image_id, "module_set", operation=body.operation, instance=body.instance,
+                              values=body.values)
         return {**r, "history": await engine.edit(image_id, "history_list")}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+# ── areas: the sky or the subject on its own. darktable's AI object mask
+# (mask_ai) finds the area from a click; a new exposure and a new color
+# balance rgb instance, both named after it, work on that area only
+AREA_LABELS = ("sky", "subject")
+AREA_COLOR = [("vibrance", -1.0, 1.0), ("contrast", -1.0, 1.0), ("saturation_global", -1.0, 1.0)]
+AREA_OUTLINE_POINTS = 200
+
+
+def _area_label(name: str) -> str | None:
+    base = (name or "").strip().lower().split(" ")[0]
+    return base if base in AREA_LABELS else None
+
+
+def _area_names(mods: list[dict]) -> set[tuple[str, int]]:
+    """The (operation, instance) of every sky / subject instance."""
+    return {(m["operation"], m["instance"]) for m in mods
+            if m["operation"] in ("exposure", "colorbalancergb") and m["instance"] > 0
+            and m.get("in_history") and _area_label(m.get("name"))}
+
+
+def _leaf_paths(shapes: list[dict]) -> list[dict]:
+    out = []
+    for sh in shapes:
+        if sh.get("members"):
+            out += _leaf_paths(sh["members"])
+        elif sh.get("type") == "path" and sh.get("active", True):
+            out.append(sh)
+    return out
+
+
+def _stride(pts: list, n: int = AREA_OUTLINE_POINTS) -> list:
+    if len(pts) <= n:
+        return pts
+    k = math.ceil(len(pts) / n)
+    return pts[::k]
+
+
+async def _outline(image_id: int, operation: str, instance: int) -> list[list[list[float]]]:
+    """The shapes on a module's mask as polygons in photo fractions."""
+    r = await engine.edit(image_id, "mask_list", operation=operation, instance=instance)
+    polys = []
+    for sh in _leaf_paths(r.get("shapes", [])):
+        raw = [(p.get("corner") if isinstance(p, dict) else p) for p in sh.get("points", [])]
+        raw = [p for p in raw if p and len(p) >= 2]
+        if len(raw) >= 3:
+            polys.append(_stride(raw))
+    if not polys:
+        return []
+    flat = [[p[0], p[1]] for poly in polys for p in poly]
+    img = (await engine.edit(image_id, "coords", points=flat, **{"from": "raw", "to": "image"}))["points"]
+    out, i = [], 0
+    for poly in polys:
+        out.append([[round(q[0], 5), round(q[1], 5)] for q in img[i:i + len(poly)]])
+        i += len(poly)
+    return out
+
+
+async def _area_values(image_id: int, exposure: int, color: int) -> dict:
+    ge = await engine.edit(image_id, "module_get", operation="exposure", instance=exposure)
+    gc = await engine.edit(image_id, "module_get", operation="colorbalancergb", instance=color)
+    ex = next(x for x in ge["fields"] if x["name"] == "exposure")
+    out = {"ev": {"value": ex["value"], "default": ex["default"], "lo": -2.0, "hi": 2.0},
+           "enabled": bool(ge["enabled"] and gc["enabled"])}
+    by = {x["name"]: x for x in gc["fields"]}
+    out["color"] = [{"name": n, "value": by[n]["value"], "default": by[n]["default"], "lo": lo, "hi": hi}
+                    for n, lo, hi in AREA_COLOR if n in by]
+    return out
+
+
+class AreaBody(BaseModel):
+    label: str = "subject"
+    include: list[list[float]]
+    exclude: list[list[float]] = []
+    replace: dict | None = None
+
+
+@app.post("/api/photo/{image_id}/area")
+async def photo_area(image_id: int, body: AreaBody):
+    """Find the sky or the subject at the clicked points and give it an
+    exposure and a color balance rgb instance of its own (or, with replace,
+    find it again from more points)."""
+    if body.label not in AREA_LABELS:
+        raise HTTPException(400, f"label: one of {', '.join(AREA_LABELS)}")
+    if not body.include:
+        raise HTTPException(400, "include: at least one point on the area")
+    if not await engine.supports("mask_ai"):
+        raise HTTPException(501, "this engine has no AI masks (mask_ai)")
+    points = ([{"x": p[0], "y": p[1], "include": True} for p in body.include]
+              + [{"x": p[0], "y": p[1], "include": False} for p in body.exclude])
+    t = time.monotonic()
+    try:
+        if body.replace:
+            ex, cb = int(body.replace["exposure"]), int(body.replace["colorbalancergb"])
+            for op, inst in (("exposure", ex), ("colorbalancergb", cb)):
+                for sh in (await engine.edit(image_id, "mask_list", operation=op, instance=inst)).get("shapes", []):
+                    await engine.edit(image_id, "mask_remove", operation=op, instance=inst, formid=sh["formid"])
+            name = None
+        else:
+            mods = (await engine.edit(image_id, "module_list"))["modules"]
+            taken = {(m.get("name") or "").strip().lower() for m in mods if m["operation"] in ("exposure", "colorbalancergb")}
+            name, n = body.label, 1
+            while name in taken:
+                n += 1
+                name = f"{body.label} {n}"
+            ex = (await engine.edit(image_id, "module_add", operation="exposure", instance=0))["instance"]
+            cb = (await engine.edit(image_id, "module_add", operation="colorbalancergb", instance=0))["instance"]
+            await engine.edit(image_id, "module_rename", operation="exposure", instance=ex, name=name)
+            await engine.edit(image_id, "module_rename", operation="colorbalancergb", instance=cb, name=name)
+            g = await engine.edit(image_id, "module_get", operation="exposure", instance=ex)
+            if abs(next(x["value"] for x in g["fields"] if x["name"] == "exposure")) > 1e-9:
+                await engine.edit(image_id, "module_set", operation="exposure", instance=ex, values={"exposure": 0.0})
+        try:
+            r = await engine.edit(image_id, "mask_ai", operation="exposure", instance=ex, points=points, combine="union")
+            await engine.edit(image_id, "mask_ai", operation="colorbalancergb", instance=cb, points=points, combine="union")
+        except EngineError:
+            if not body.replace:             # leave no half-made area behind
+                for op, inst in (("exposure", ex), ("colorbalancergb", cb)):
+                    try:
+                        await engine.edit(image_id, "module_remove", operation=op, instance=inst)
+                    except EngineError:
+                        pass
+            raise
+        outline = await _outline(image_id, "exposure", ex)
+        return {"exposure": ex, "colorbalancergb": cb, "label": name, "area": r.get("area"), "outline": outline,
+                "ms": round((time.monotonic() - t) * 1000), **await _area_values(image_id, ex, cb)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+@app.get("/api/photo/{image_id}/areas")
+async def photo_areas(image_id: int):
+    """The sky / subject areas in the edit: each with its outline and values."""
+    try:
+        mods = (await engine.edit(image_id, "module_list"))["modules"]
+        ex = {m.get("name", "").strip().lower(): m for m in mods if m["operation"] == "exposure" and m["instance"] > 0
+              and m.get("in_history") and _area_label(m.get("name"))}
+        cb = {m.get("name", "").strip().lower(): m for m in mods if m["operation"] == "colorbalancergb"
+              and m["instance"] > 0 and m.get("in_history") and _area_label(m.get("name"))}
+        areas = []
+        for name, e in ex.items():
+            c = cb.get(name)
+            if not c:
+                continue
+            outline = await _outline(image_id, "exposure", e["instance"])
+            if not outline:
+                continue                      # no AI mask on it: not an area
+            areas.append({"label": e["name"], "exposure": e["instance"], "colorbalancergb": c["instance"],
+                          "outline": outline, **await _area_values(image_id, e["instance"], c["instance"])})
+        return {"areas": areas}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class AreaRemoveBody(BaseModel):
+    exposure: int
+    colorbalancergb: int
+
+
+@app.post("/api/photo/{image_id}/area/remove")
+async def photo_area_remove(image_id: int, body: AreaRemoveBody):
+    try:
+        await engine.edit(image_id, "module_remove", operation="exposure", instance=body.exposure)
+        await engine.edit(image_id, "module_remove", operation="colorbalancergb", instance=body.colorbalancergb)
+        return {"history": await engine.edit(image_id, "history_list")}
     except EngineError as exc:
         raise _bad(exc)
 

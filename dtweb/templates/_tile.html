@@ -12,6 +12,7 @@
       {% for n in range(1, 6) %}<button class="star{% if not img.rejected and img.rating >= n %} on{% endif %}" data-rate="{{ n }}" title="{{ n }} (key {{ n }})">★</button>{% endfor %}
       {% for name in labels %}<button class="dot {{ name }}{% if loop.index0 in img.labels %} on{% endif %}" data-label="{{ loop.index0 }}" title="{{ name }} (F{{ loop.index }})"></button>{% endfor %}
       <button class="dup" data-dup title="duplicate: a virtual copy with the saved edit (⌘/Ctrl+D)">⧉</button>
+      <button class="full" data-full title="full screen (f)">⛶</button>
     </span>
   </figcaption>
 </figure>

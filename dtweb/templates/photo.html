@@ -22,6 +22,7 @@
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
+      <button id="full" title="full screen (f)">full screen</button>
       <span class="zoom" role="group" aria-label="zoom"><button data-zoom="0" class="on" aria-pressed="true" title="fit the photo in the window (double-click the photo: 100% there, again: fit)">fit</button><button data-zoom="1" aria-pressed="false" title="100%: one photo pixel per screen pixel; drag to pan">100%</button><button data-zoom="2" aria-pressed="false" title="200%; drag to pan">200%</button></span>
     </div>
     <!-- the active tool's controls; "done" returns to plain viewing -->
@@ -141,6 +142,7 @@
   </aside>
 </div>
 <script src="/static/meta.js?v={{ static_version('meta.js') }}"></script>
+<script src="/static/fullview.js?v={{ static_version('fullview.js') }}"></script>
 <script>
 (() => {
   const ID = {{ img.id }};
@@ -1225,6 +1227,19 @@
     preview('started over from the defaults,');
   };
 
+  // full screen view (static/fullview.js): this photo as the preview shows it, unsaved changes included
+  const QUERY = {{ query | tojson }};
+  function fullScreen() {
+    if (dtFull.isOpen) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.min(2560, Math.round(screen.width * dpr)), h = Math.min(2560, Math.round(screen.height * dpr));
+    const more = fetch('/api/collection?' + QUERY).then((r) => r.ok ? r.json() : null).then((d) => d && d.images);
+    dtFull.open({images: [{id: ID, version: '0', rating: {{ ('reject' if img.rejected else img.rating) | tojson }},
+                           name: {{ img.filename | tojson }}}],
+                 index: 0, more, query: QUERY, first: {id: ID, src: `/api/photo/${ID}/preview.jpg?w=${w}&h=${h}`}});
+  }
+  $('#full').onclick = fullScreen;
+
   addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
   document.addEventListener('keydown', (e) => {
     // a focused slider has no undo of its own; text fields keep theirs
@@ -1244,6 +1259,7 @@
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
     if (e.key === 'Escape' && cmp) { closeCompare(); return; }
+    if (k === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cropping) { e.preventDefault(); fullScreen(); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];

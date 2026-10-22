@@ -279,3 +279,32 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .imp-dirs:empty { display: none; }
 .imp-dirs button { text-align: left; overflow-wrap: anywhere; }
 .ex-line { display: block; }
+
+/* full screen view (static/fullview.js) */
+.fullview { position: fixed; inset: 0; z-index: 1000; background: #000; color: #ddd; touch-action: none;
+            user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; overflow: hidden; }
+.fullview.idle { cursor: none; }
+.fv-stage { position: absolute; inset: 0; touch-action: none; }
+.fullview.zoomed .fv-stage { cursor: grab; }
+.fv-layer { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.fv-base, .fv-sharp { position: absolute; display: block; max-width: none; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+.fv-bar { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: .4rem; padding: .4rem .8rem;
+          background: linear-gradient(rgba(0, 0, 0, .6), transparent); transition: opacity .3s; }
+.fv-top { top: 0; }
+.fv-bottom { bottom: 0; justify-content: center; background: linear-gradient(transparent, rgba(0, 0, 0, .6)); padding-bottom: calc(.4rem + env(safe-area-inset-bottom)); }
+.fv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-count { color: var(--dim); white-space: nowrap; }
+.fv-msg { color: var(--accent); margin-left: auto; margin-right: .4rem; }
+.fv-top .fv-btn:last-child { margin-left: auto; }
+.fv-msg:not(:empty) + .fv-btn { margin-left: 0; }
+.fv-btn { min-width: 44px; min-height: 44px; padding: 0; background: none; border: none; font-size: 1.4rem; line-height: 1; color: #888; }
+.fv-btn:hover { color: var(--accent); }
+.fv-btn.on { color: var(--accent); background: none; border: none; }
+.fv-rej.on { color: #d0534a; }
+.fv-nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 2.4rem; min-height: 88px; color: #aaa;
+          background: rgba(0, 0, 0, .25); border-radius: 6px; transition: opacity .3s; }
+.fv-prev { left: .3rem; }
+.fv-next { right: .3rem; }
+.fullview.idle .fv-ui { opacity: 0; pointer-events: none; }
+.ctl .full { padding-left: .3rem; }
+.ctl .full:hover { color: var(--accent); }

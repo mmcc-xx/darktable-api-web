@@ -309,18 +309,37 @@ def _tile(request: Request, img: dict):
 
 # ── photo page ───────────────────────────────────────────────────────────────
 
-async def _neighbours(image_id: int, f: dict) -> tuple[int | None, int | None, int, int]:
-    """Previous and next image in the filtered list, position and total."""
-    ids, offset, total = [], 0, 1
+async def _collection(f: dict) -> list[dict]:
+    """Every image of the filtered list (pages of 1000)."""
+    images, offset, total = [], 0, 1
     while offset < total:
         r = await engine.call("images_list", offset=offset, limit=1000, **_list_args(f))
         total = r["total"]
-        ids += [i["id"] for i in r["images"]]
+        images += r["images"]
         offset += 1000
+    return images
+
+
+async def _neighbours(image_id: int, f: dict) -> tuple[int | None, int | None, int, int]:
+    """Previous and next image in the filtered list, position and total."""
+    ids = [i["id"] for i in await _collection(f)]
     if image_id not in ids:
         return None, None, 0, len(ids)
     k = ids.index(image_id)
     return (ids[k - 1] if k else None), (ids[k + 1] if k + 1 < len(ids) else None), k + 1, len(ids)
+
+
+# the filtered list in short, for the full screen view
+@app.get("/api/collection")
+async def collection(request: Request):
+    try:
+        images = await _collection(_filters(request))
+    except EngineError as exc:
+        raise _bad(exc, 409)
+    return {"images": [
+        {"id": i["id"], "version": _version(i), "rating": "reject" if i.get("rejected") else i.get("rating", 0),
+         "name": i["filename"] + (f" ({i['version']})" if i.get("version") else ""),
+         **{k: i[k] for k in ("width", "height") if i.get(k)}} for i in images]}
 
 
 def _shot(e: dict | None) -> list[str]:

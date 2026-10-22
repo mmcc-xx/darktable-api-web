@@ -22,6 +22,7 @@
 {% endblock %}
 {% block main %}
 <script src="/static/meta.js?v={{ static_version('meta.js') }}"></script>
+<script src="/static/fullview.js?v={{ static_version('fullview.js') }}"></script>
 {% if error %}<p class="banner">{{ error }}</p>{% endif %}
 {% if lib.state == 'released' %}
 <p class="banner">The library is released to darktable. Take it back (top right) to browse and edit.</p>
@@ -314,6 +315,7 @@
       if (b.dataset.more) return loadMore(b);
       const tile = b.closest('.tile');
       if (b.hasAttribute('data-dup')) duplicate(tile);
+      else if (b.hasAttribute('data-full')) fullScreen(tile);
       else if (b.dataset.rate) rate([tile], b.dataset.rate);
       else if (b.dataset.label) label([tile], parseInt(b.dataset.label));
       return;
@@ -338,6 +340,24 @@
     const a = e.target.closest('a');
     if (a && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); open(a.closest('.tile')); }
   });
+
+  // ── full screen view (static/fullview.js): the filtered list, from the tile's photo;
+  // a rating made there comes back as the tile, a close shows the last photo
+  function fullScreen(t) {
+    if (!t || dtFull.isOpen) return;
+    const more = fetch(`/api/collection?${query}`).then((r) => r.ok ? r.json() : null).then((d) => d && d.images);
+    dtFull.open({images: [{id: +t.dataset.id, version: t.dataset.version, rating: t.dataset.rating, name: t.dataset.name}],
+      index: 0, more, query,
+      onRated(rid, html) {
+        const old = tileOf(rid);
+        if (!old) return;
+        const was = old === current;
+        old.outerHTML = html;
+        mark(tileOf(rid));
+        if (was) setCurrent(tileOf(rid), false);
+      },
+      onClose(cid) { const c = tileOf(cid); if (c) setCurrent(c, true); }});
+  }
 
   // ── the selection bar
   $('#sel-clear').onclick = clearSelection;
@@ -458,7 +478,8 @@
     op.onclick = () => remember(t);
     const dup = el('button', null, 'duplicate'); dup.onclick = () => duplicate(t);
     const ex = el('button', null, 'export…'); ex.onclick = () => openExport(img.id);
-    acts.append(op, dup, ex);
+    const fs = el('button', null, 'full screen'); fs.title = 'full screen (f)'; fs.onclick = () => fullScreen(t);
+    acts.append(op, dup, ex, fs);
     const ctl = el('p', 'ctl detail-ctl');
     const rej = el('button', 'rej' + (img.rejected ? ' on' : ''), '✕'); rej.title = 'reject (r)';
     rej.onclick = () => rate([t], 'reject');
@@ -511,6 +532,7 @@
     if (!ts.length) return;
     if (cmd && k === 'd') { e.preventDefault(); duplicateAll(ts); }
     else if (e.key === 'Enter' && current) { e.preventDefault(); open(current); }
+    else if (k === 'f' && !cmd && !e.altKey && !e.shiftKey && !e.repeat && current) { e.preventDefault(); fullScreen(current); }
     else if (cmd || e.altKey) return;
     else if (/^[0-5]$/.test(e.key)) { e.preventDefault(); rate(ts, e.key); }
     else if (k === 'r') { e.preventDefault(); rate(ts, 'reject'); }

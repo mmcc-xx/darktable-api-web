@@ -640,6 +640,57 @@ async def photo_mono_looks(image_id: int, size: int = 200):
     return {"looks": out}
 
 
+@app.get("/api/photo/{image_id}/mono_channels")
+async def photo_mono_channels(image_id: int, size: int = 1200):
+    """The edit rendered three times with the B&W instance on the luminance
+    preset and the gray mix [1,0,0], [0,1,0], [0,0,1] (as data URLs), so the
+    browser can preview any gray mix; the edit is unchanged."""
+    size = max(200, min(size, 2000))
+    try:
+        m = await _mono(image_id)
+        if not m:
+            raise HTTPException(409, "black & white is off")
+        with tempfile.TemporaryDirectory(prefix="dtweb_monoch_") as tmp:
+            variants = []
+            for k, name in enumerate("rgb"):
+                grey = [1.0 if i == k else 0.0 for i in range(3)] + [0.0]
+                variants.append({"label": name, "path": str(Path(tmp) / f"{name}.jpg"), "steps": [
+                    {"method": "preset_apply", "params": {"operation": "channelmixerrgb",
+                                                          "instance": m["instance"], "name": MONO_BASE}},
+                    {"method": "module_set", "params": {"operation": "channelmixerrgb",
+                                                        "instance": m["instance"], "values": {"grey": grey}}}]})
+            r = await engine.edit(image_id, "render_variants", width=size, height=size, quality=92, variants=variants)
+            out = []
+            for v, var in zip(r["variants"], variants):
+                if v.get("error"):
+                    raise HTTPException(502, v["error"])
+                out.append("data:image/jpeg;base64," + base64.b64encode(Path(var["path"]).read_bytes()).decode())
+    except EngineError as exc:
+        raise _bad(exc, 502)
+    return {"channels": out}
+
+
+class MixBody(BaseModel):
+    grey: list[float]
+
+
+@app.post("/api/photo/{image_id}/mono_mix")
+async def photo_mono_mix(image_id: int, body: MixBody):
+    """Set the B&W gray mix (R, G, B) on top of the luminance preset."""
+    if len(body.grey) != 3 or not all(math.isfinite(v) and -1 <= v <= 2 for v in body.grey):
+        raise HTTPException(400, "grey must be three numbers from -1 to 2")
+    try:
+        m = await _mono(image_id)
+        if not m:
+            raise HTTPException(409, "black & white is off")
+        await engine.edit(image_id, "preset_apply", operation="channelmixerrgb", instance=m["instance"], name=MONO_BASE)
+        await engine.edit(image_id, "module_set", operation="channelmixerrgb", instance=m["instance"],
+                          values={"grey": [*body.grey, 0.0]})
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
 def _current_look(m: dict) -> str | None:
     """The look whose gray mix the B&W instance has (film presets: their mix
     as darktable's source sets it)."""

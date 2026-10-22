@@ -700,7 +700,8 @@
     head.title = 'a second color calibration instance with a gray mix; the first keeps the white balance';
     const strip = document.createElement('div');
     strip.className = 'looks'; strip.id = 'looks';
-    body.append(head, strip);
+    const wheel = mixWheel(m);
+    body.append(head, strip, wheel);
     d.append(sum, body);
     keepOpen(d);
     d.addEventListener('toggle', () => d.open && loadLooks());
@@ -723,6 +724,10 @@
       cap.textContent = label;
       b.append(im, cap);
       b.onclick = () => applyLook(key, label);
+      if (MIXES[key]) {
+        b.addEventListener('pointerenter', (e) => e.pointerType === 'mouse' && mixHover(MIXES[key]));
+        b.addEventListener('pointerleave', (e) => e.pointerType === 'mouse' && mixEnd());
+      }
       strip.append(b);
     }
   }
@@ -757,6 +762,183 @@
     if (looksFor === before) looksFor = editKey();   // the thumbnails still hold
     drawLooks($('#looks'), s.mono);
     preview(`${label},`);
+  }
+
+  // ── gray mix wheel: hue = the color filter's color, distance from the
+  // center = its strength. The gray mix is linear in the module, so the
+  // edit rendered three times with the mix [1,0,0], [0,1,0], [0,0,1] lets
+  // the browser preview any mix by weighing them in linear light (exact if
+  // nothing nonlinear follows the B&W step, else an approximation: a click
+  // renders the real result)
+  const MIXES = {luminance: [0.475, 0.045, 0.172], red: [0.80, 0.20, 0.00], orange: [0.60, 0.35, 0.05],
+                 yellow: [0.45, 0.45, 0.10], green: [0.20, 0.65, 0.15], blue: [0.15, 0.25, 0.60]};
+  const WHEEL = 140, HUES = [0, 120, 240];
+  const mixWeights = (th, s) => HUES.map((h) => 1 / 3 + (2 / 3) * s * Math.cos((th - h) * Math.PI / 180));
+  function mixPolar(g) {   // [hue deg, strength 0..1] of a mix of the wheel's form, else null
+    const a = g.map((w) => (w - 1 / 3) * 1.5);
+    const x = (2 / 3) * a.reduce((t, v, i) => t + v * Math.cos(HUES[i] * Math.PI / 180), 0);
+    const y = (2 / 3) * a.reduce((t, v, i) => t + v * Math.sin(HUES[i] * Math.PI / 180), 0);
+    const s = Math.hypot(x, y), th = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    const back = mixWeights(th, s);
+    if (Math.abs(g[0] + g[1] + g[2] - 1) > 0.02 || back.some((v, i) => Math.abs(v - g[i]) > 0.02)) return null;
+    return [th, Math.min(1, s)];
+  }
+  const HUE_NAMES = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'magenta'];
+  function mixLabel(g) {
+    const p = mixPolar(g);
+    if (!p) return 'custom gray mix ' + g.map((v) => v.toFixed(2)).join(' / ');
+    if (p[1] < 0.03) return 'no filter (equal mix)';
+    const th = p[0], name = th < 15 || th >= 345 ? 'red' : th < 45 ? 'orange' : th < 90 ? 'yellow'
+      : th < 150 ? 'green' : th < 210 ? 'cyan' : th < 270 ? 'blue' : th < 330 ? 'magenta' : 'red';
+    return `${name} filter ${Math.round(p[1] * 100)} %`;
+  }
+  function wheelPaint(cv) {
+    const g = cv.getContext('2d'), R = WHEEL / 2, im = g.createImageData(WHEEL, WHEEL);
+    for (let y = 0; y < WHEEL; y++) for (let x = 0; x < WHEEL; x++) {
+      const dx = x + 0.5 - R, dy = y + 0.5 - R, r = Math.hypot(dx, dy) / R, o = (y * WHEEL + x) * 4;
+      if (r > 1) continue;
+      const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+      const f = (n) => { const k = (n + hue / 30) % 12; return 0.5 - 0.5 * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+      const t = r;   // saturation from the center out; white in the middle
+      im.data[o] = 255 * (1 - t + t * f(0)); im.data[o + 1] = 255 * (1 - t + t * f(8));
+      im.data[o + 2] = 255 * (1 - t + t * f(4)); im.data[o + 3] = 255;
+    }
+    g.putImageData(im, 0, 0);
+  }
+  function mixWheel(m) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mixwheel'; wrap.id = 'mixwheel';
+    wrap.hidden = !(m && m.enabled);
+    if (wrap.hidden) return wrap;
+    const box = document.createElement('div');
+    box.style.cssText = `position:relative;width:${WHEEL}px;height:${WHEEL}px;margin:.5rem auto .2rem`;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = WHEEL; cv.style.cssText = 'width:100%;height:100%;border-radius:50%;touch-action:none;cursor:crosshair';
+    cv.title = 'hover: preview a color filter on the photo; click: apply (angle = the filter\'s color, distance = strength)';
+    wheelPaint(cv);
+    const dot = document.createElement('div');
+    dot.style.cssText = 'position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;border:2px solid #000;box-shadow:0 0 0 1px #fff;pointer-events:none';
+    const label = document.createElement('div');
+    label.className = 'sum'; label.style.cssText = 'text-align:center;font-size:.85em';
+    const place = (g) => {
+      const p = mixPolar(g);
+      dot.hidden = !p;
+      if (p) { const R = WHEEL / 2; dot.style.left = R + R * p[1] * Math.cos(p[0] * Math.PI / 180) + 'px';
+               dot.style.top = R + R * p[1] * Math.sin(p[0] * Math.PI / 180) + 'px'; }
+      label.textContent = mixLabel(g);
+    };
+    place(m.grey);
+    const at = (e) => {
+      const r = cv.getBoundingClientRect(), R = r.width / 2;
+      const dx = e.clientX - r.left - R, dy = e.clientY - r.top - R;
+      const th = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360, s = Math.min(1, Math.hypot(dx, dy) / R);
+      return mixWeights(th, s).map((v) => Math.round(v * 1e4) / 1e4);
+    };
+    let down = false, kind = 'mouse';   // click has no pointerType in older Safari
+    const move = (e) => { const w = at(e); place(w); mixHover(w); };
+    cv.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'mouse' || down) move(e);
+    });
+    cv.addEventListener('pointerdown', (e) => {
+      kind = e.pointerType;
+      if (e.pointerType === 'mouse') return;
+      down = true; cv.setPointerCapture(e.pointerId); move(e);
+    });
+    const finish = (e, commit) => {
+      if (!down) return;
+      down = false;
+      if (commit) mixApply(at(e)); else { mixEnd(); place(state.mono.grey); }
+    };
+    cv.addEventListener('pointerup', (e) => finish(e, true));
+    cv.addEventListener('pointercancel', (e) => finish(e, false));
+    cv.addEventListener('click', (e) => { if (kind === 'mouse') mixApply(at(e)); });
+    cv.addEventListener('pointerleave', (e) => { if (!down) { mixEnd(); place(state.mono.grey); } });
+    box.append(cv, dot);
+    wrap.append(box, label);
+    return wrap;
+  }
+  async function mixApply(w) {
+    if (busy) { status('wait for the last change to finish'); return; }
+    status('applying the gray mix…');
+    const before = editKey();
+    const r = await api('mono_mix', {grey: w});
+    if (!r.ok) { mixEnd(); status('not applied: ' + (await r.json()).detail); return; }
+    dirty = true;
+    const s = await r.json();
+    show(s);
+    if (looksFor === before) looksFor = editKey();
+    drawLooks($('#looks'), s.mono);
+    await preview('gray mix,');
+    await $('#pv').decode().catch(() => {});
+    mixEnd();
+  }
+  // the channel images: the edit with the gray mix R, G, B alone, as linear gray
+  let chans = null, chansKey = null, chansLoading = null, mixCv = null, mixWant = null, mixRaf = 0;
+  const SRGB2LIN = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+  const LIN2SRGB = new Uint8Array(4096).map((_, i) => { const c = i / 4095; return Math.round(255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055)); });
+  const mixAllowed = () => state && state.mono && state.mono.enabled && !zoom && !cmp && !dust && !erase && !area && !cropping;
+  async function mixChannels() {
+    const key = editKey();
+    if (chans && chansKey === key) return chans;
+    if (chansLoading && chansLoading.key === key) return chansLoading.p;
+    const img = $('#pv');
+    const n = Math.max(img.naturalWidth, img.naturalHeight, 200);
+    const p = (async () => {
+      status('preparing the preview…');
+      const t = performance.now();
+      const r = await api('mono_channels?size=' + n);
+      if (!r.ok) throw new Error((await r.json()).detail);
+      const urls = (await r.json()).channels;
+      const out = [];
+      for (const u of urls) {
+        const im = new Image(); im.src = u; await im.decode();
+        const c = document.createElement('canvas'); c.width = im.naturalWidth; c.height = im.naturalHeight;
+        const g = c.getContext('2d', {willReadFrequently: true}); g.drawImage(im, 0, 0);
+        const d = g.getImageData(0, 0, c.width, c.height).data, f = new Float32Array(c.width * c.height);
+        for (let i = 0; i < f.length; i++) f[i] = SRGB2LIN[d[i * 4 + 1]];
+        out.push(f);
+      }
+      chans = {data: out, cw: 0, ch: 0};
+      const first = new Image(); first.src = urls[0]; await first.decode();
+      chans.cw = first.naturalWidth; chans.ch = first.naturalHeight;
+      chansKey = key;
+      status(`preview ready (${Math.round(performance.now() - t)} ms)`);
+      return chans;
+    })();
+    chansLoading = {key, p};
+    try { return await p; } finally { if (chansLoading && chansLoading.p === p) chansLoading = null; }
+  }
+  async function mixHover(w) {
+    if (!mixAllowed()) return;
+    mixWant = w;
+    let ch;
+    try { ch = await mixChannels(); } catch (e) { status('no preview: ' + e.message); return; }
+    if (mixWant !== w || !mixAllowed()) return;
+    if (mixRaf) return;
+    mixRaf = requestAnimationFrame(() => { mixRaf = 0; if (mixWant && mixAllowed()) mixDraw(ch, mixWant); });
+  }
+  function mixDraw(ch, w) {
+    if (!mixCv) {
+      mixCv = document.createElement('canvas');
+      mixCv.id = 'mixcv'; mixCv.style.cssText = 'position:absolute;pointer-events:none;image-rendering:auto';
+      $('.view').appendChild(mixCv);
+    }
+    if (mixCv.width !== ch.cw || mixCv.height !== ch.ch) { mixCv.width = ch.cw; mixCv.height = ch.ch; }
+    const r = imgRect();
+    Object.assign(mixCv.style, {left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px'});
+    const g = mixCv.getContext('2d'), im = g.createImageData(ch.cw, ch.ch), o = im.data;
+    const [a, b, c] = ch.data, n = ch.cw * ch.ch;
+    for (let i = 0; i < n; i++) {
+      let v = w[0] * a[i] + w[1] * b[i] + w[2] * c[i];
+      v = v < 0 ? 0 : v > 1 ? 1 : v;
+      const q = LIN2SRGB[(v * 4095 + 0.5) | 0];
+      o[i * 4] = o[i * 4 + 1] = o[i * 4 + 2] = q; o[i * 4 + 3] = 255;
+    }
+    g.putImageData(im, 0, 0);
+  }
+  function mixEnd() {
+    mixWant = null;
+    if (mixCv) { mixCv.remove(); mixCv = null; }
   }
 
   // ── dust: find the film roll's sensor dust in this photo, review the

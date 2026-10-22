@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .engine import BIN, CONFIG, EngineError, engine
+from .engine import BIN, CONFIG, SOCKET, EngineError, engine
 
 HERE = Path(__file__).parent
 app = FastAPI(title="darktable-api-web")
@@ -41,12 +41,19 @@ templates = Jinja2Templates(directory=HERE / "templates")
 templates.env.globals["static_version"] = lambda name: int((HERE / "static" / name).stat().st_mtime)
 
 
-def _connect() -> dict:
-    """The Connect Claude dialog's commands: the MCP server on this web app's
-    engine and library (DTAPI_MCP: the darktable-api-mcp program)."""
+def _mcp_program() -> str | None:
+    """The darktable-api-mcp program (DTAPI_MCP, else on the PATH, else the
+    checkout in the home folder)."""
     mcp = os.environ.get("DTAPI_MCP") or shutil.which("darktable-api-mcp")
     if not mcp and (Path.home() / "darktable-api-mcp/.venv/bin/darktable-api-mcp").exists():
         mcp = str(Path.home() / "darktable-api-mcp/.venv/bin/darktable-api-mcp")
+    return mcp
+
+
+def _connect() -> dict:
+    """The Connect Claude dialog's commands: the MCP server on this web app's
+    engine and library (DTAPI_MCP: the darktable-api-mcp program)."""
+    mcp = _mcp_program()
     env = [("DTAPI_BIN", BIN), ("DTAPI_CONFIGDIR", CONFIG)]
     if os.environ.get("DTAPI_SOCKET"):
         env.append(("DTAPI_SOCKET", os.environ["DTAPI_SOCKET"]))
@@ -761,6 +768,74 @@ async def photo_reset(image_id: int):
         return await _state(image_id)
     except EngineError as exc:
         raise _bad(exc, 502)
+
+
+
+# ── dust: detection and healing run in darktable-api-mcp's Python (numpy,
+# opencv and rawpy are its dependencies), a worker per request, on the same
+# engine as this app, so it works on the open edit and the page sees the changes
+_dust_lock = asyncio.Lock()
+DUST_TIMEOUT_S = 300
+
+
+async def _dust(op: str, image_id: int, **params) -> dict:
+    mcp = _mcp_program()
+    py = os.environ.get("DTAPI_MCP_PYTHON") or (str(Path(mcp).parent / "python") if mcp else None)
+    if not py or not Path(py).exists():
+        raise HTTPException(501, "dust needs darktable-api-mcp with its dust extras "
+                                 "(pip install 'darktable-api-mcp[dust]')")
+    env = {**os.environ, "DTAPI_BIN": str(BIN), "DTAPI_CONFIGDIR": str(CONFIG), "DTAPI_SOCKET": str(SOCKET)}
+    req = json.dumps({"op": op, "image_id": image_id, **params})
+    async with _dust_lock:
+        proc = await asyncio.create_subprocess_exec(
+            py, "-I", str(HERE / "dust_worker.py"), req, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), DUST_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(502, f"dust detection took more than {DUST_TIMEOUT_S} s")
+    lines = out.decode(errors="replace").strip().splitlines()
+    try:
+        r = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        tail = err.decode(errors="replace").strip().splitlines()[-3:]
+        raise HTTPException(502, "dust worker failed: " + (" / ".join(tail) or "no output"))
+    if isinstance(r, dict) and r.get("error"):
+        raise HTTPException(502, r["error"])
+    return r
+
+
+class DustFindBody(BaseModel):
+    rebuild: bool = False
+
+
+class DustHealBody(BaseModel):
+    spots: list[int]
+
+
+class DustHealAtBody(BaseModel):
+    x: float
+    y: float
+    radius: float
+
+
+@app.post("/api/photo/{image_id}/dust/find")
+async def dust_find(image_id: int, body: DustFindBody):
+    """Dust on the photo: the roll's map rated for this photo (the MCP's
+    find_dust_spots), each spot with its size on the photo (r_photo)."""
+    return await _dust("find", image_id, rebuild_map=body.rebuild)
+
+
+@app.post("/api/photo/{image_id}/dust/heal")
+async def dust_heal(image_id: int, body: DustHealBody):
+    return await _dust("heal", image_id, spots=body.spots)
+
+
+@app.post("/api/photo/{image_id}/dust/heal_at")
+async def dust_heal_at(image_id: int, body: DustHealAtBody):
+    return await _dust("heal_at", image_id, x=body.x, y=body.y, radius=body.radius)
 
 
 class ExportBody(BaseModel):

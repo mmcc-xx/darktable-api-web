@@ -187,6 +187,21 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .look.on { border-color: var(--accent); color: var(--text); }
 .clipov { position: absolute; pointer-events: none; image-rendering: pixelated; }
 
+/* shapes over the photo (static/overlay.js); dust spots: accepted, shown, hidden, healed */
+.photo-ov { position: absolute; overflow: hidden; pointer-events: none; }
+.photo-ov circle, .photo-ov polygon { fill: transparent; stroke-width: 2; }
+.photo-ov.live circle, .photo-ov.live polygon { pointer-events: all; cursor: pointer; }
+.photo-ov .accepted { stroke: #ff8c1a; }
+.photo-ov .shown { stroke: #f2d13a; stroke-dasharray: 5 3; }
+.photo-ov .hidden { stroke: rgba(190, 190, 190, .5); stroke-dasharray: 3 4; stroke-width: 1.5; }
+.photo-ov .done { stroke: #4cc36a; pointer-events: none !important; cursor: default !important; }
+.photo-ov .temp { stroke: #fff; stroke-dasharray: 2 3; }
+.view.dusting, .view.dusting.zoomed { cursor: crosshair; }
+.toolbar-bar .size { display: inline-flex; align-items: center; gap: .4rem; }
+.toolbar-bar .size input { width: 7rem; accent-color: var(--accent); }
+#dust-status { flex: 1 1 18rem; min-width: 0; }
+#dust-note { flex-basis: 100%; color: var(--dim); }
+
 /* rgb levels under the histogram, and the pickers that click the photo */
 .lv { margin-top: .25rem; font-size: .75rem; }
 .lv-track { position: relative; height: 12px; margin: 5px 4px 3px; background: linear-gradient(to right, #000, #fff); border-radius: 2px; touch-action: none; }

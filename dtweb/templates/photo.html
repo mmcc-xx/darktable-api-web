@@ -19,6 +19,7 @@
   <section class="stage">
     <div class="toolbar" role="toolbar" aria-label="photo tools">
       <button id="tool-crop" data-tool="crop" aria-pressed="false" title="crop, rotate and straighten">crop &amp; rotate</button>
+      <button id="tool-dust" data-tool="dust" aria-pressed="false" title="find sensor dust, review the spots, click to heal (d)">dust</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
@@ -48,6 +49,15 @@
       </span>
       <button id="crop-cancel" class="secondary" title="leave the crop as it was (Esc)">cancel</button>
       <button id="crop-apply" class="primary" title="apply the box (Enter)">done</button>
+    </div>
+    <div id="toolbar-dust" class="toolbar-bar" hidden>
+      <span id="dust-status" class="status" role="status"></span>
+      <button id="dust-heal" class="primary" disabled title="heal the spots circled in orange">heal 0</button>
+      <button id="dust-again" class="secondary" title="look for dust again (hold shift: read the whole film roll again)">find again</button>
+      <span class="size"><label id="dust-size-lab" for="dust-size" title="the circle a click on the photo heals">spot size</label>
+        <input type="range" id="dust-size" min="0.003" max="0.03" step="0.001" value="0.008"></span>
+      <button id="dust-done" class="secondary" title="leave the dust tool (Esc)">done</button>
+      <span id="dust-note" class="status" hidden></span>
     </div>
     <div class="view">
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
@@ -143,6 +153,7 @@
 </div>
 <script src="/static/meta.js?v={{ static_version('meta.js') }}"></script>
 <script src="/static/fullview.js?v={{ static_version('fullview.js') }}"></script>
+<script src="/static/overlay.js?v={{ static_version('overlay.js') }}"></script>
 <script>
 (() => {
   const ID = {{ img.id }};
@@ -189,6 +200,7 @@
       img.removeAttribute('style');
     }
     img.style.transform = $('#clipov').style.transform = '';
+    ov.place();
     if (url) URL.revokeObjectURL(url);
     url = URL.createObjectURL(blob);
     img.src = url;
@@ -253,6 +265,7 @@
       if (ev.pointerId !== panPointer) return;
       dx = ev.clientX - x0; dy = ev.clientY - y0;
       $('#pv').style.transform = $('#clipov').style.transform = `translate(${dx}px, ${dy}px)`;
+      ov.setTransform(`translate(${dx}px, ${dy}px)`);
     };
     v.onpointerup = v.onpointercancel = (ev) => {
       if (ev.pointerId !== panPointer) return;
@@ -267,7 +280,7 @@
   });
   // double-click: 100% there, or back to fit
   $('.view').addEventListener('dblclick', (e) => {
-    if (picking || cropping || cmp) return;
+    if (picking || cropping || cmp || dust) return;
     if (zoom) { setZoom(0); return; }
     const p = photoPoint(e);
     if (p) setZoom(1, p);
@@ -472,6 +485,7 @@
   }
   function setPicking(btn) {
     if (btn && cropping) setCropping(false);
+    if (btn && dust) setDust(false);
     if (btn && cmp) closeCompare();
     picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
     document.querySelectorAll('[data-pick]').forEach((b) => {
@@ -721,6 +735,137 @@
     preview(`${label},`);
   }
 
+  // ── dust: find the film roll's sensor dust in this photo, review the
+  // spots on the photo (click one to keep or leave it), heal the accepted
+  // ones; a click elsewhere on the photo heals a spot there. The detection
+  // and the healing run in the MCP server's Python (dtweb/dust_worker.py),
+  // on this photo's open edit. dustSpots: the engine's spots, each with
+  // `accepted`; `ov` draws them (static/overlay.js)
+  const ov = dtOverlay.create($('.view'), () => ({
+    rect: imgRect(), region: shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1}}));
+  ov.show(false);
+  $('#pv').addEventListener('load', () => ov.place());
+  new ResizeObserver(() => ov.place()).observe($('.view'));
+  let dust = false, dustSpots = [], dustBusy = false, dustGen = 0, dustTemp = null;
+  const dustMsg = (t) => { $('#dust-status').textContent = t; };
+  const dustSize = () => +$('#dust-size').value;
+  try { const v = parseFloat(localStorage.getItem('dr:dustsize')); if (v >= 0.003 && v <= 0.03) $('#dust-size').value = v; } catch (e) {}
+  $('#dust-size').oninput = () => { try { localStorage.setItem('dr:dustsize', dustSize()); } catch (e) {} };
+
+  function dustDraw() {
+    const items = dustSpots.filter((s) => s.on_photo).map((s) => ({
+      id: s.id, kind: 'circle', x: s.on_photo[0], y: s.on_photo[1], r: s.r_photo || 0.004,
+      cls: s.already_retouched ? 'done' : s.accepted ? 'accepted' : s.status === 'hidden' ? 'hidden' : 'shown',
+      title: `#${s.id} ${s.already_retouched ? 'already healed, ' : ''}${s.status}, ${Math.round(s.darkening_pct)} % darker, ${s.background} background`}));
+    if (dustTemp) items.push(dustTemp);
+    ov.set(items);
+    const on = dustSpots.filter((s) => s.on_photo && !s.already_retouched), n = on.filter((s) => s.accepted).length;
+    $('#dust-heal').textContent = 'heal ' + n;
+    $('#dust-heal').disabled = !n || dustBusy;
+    return {n, left: on.length - n};
+  }
+  function dustSummary(extra) {
+    const {n, left} = dustDraw();
+    const healed = dustSpots.filter((s) => s.already_retouched && s.on_photo).length, out = dustSpots.filter((s) => !s.on_photo).length;
+    const parts = [n && `${n} to heal`, left && `${left} left out`, healed && `${healed} already healed`, out && `${out} outside the crop`].filter(Boolean);
+    dustMsg((extra ? extra + ' · ' : '') + `${dustSpots.length} spot${dustSpots.length === 1 ? '' : 's'}${parts.length ? ': ' + parts.join(', ') : ''}`
+            + ' · click a spot to keep or leave it, click the photo to heal a spot it missed');
+  }
+  async function dustFind(rebuild) {
+    const gen = ++dustGen;
+    dustBusy = true;
+    dustSpots = []; dustDraw();
+    $('#dust-note').hidden = true;
+    dustMsg('looking for dust… (the first time on a film roll reads every raw: a minute or more)');
+    const t = performance.now();
+    let r, s;
+    try { r = await api('dust/find', {rebuild: !!rebuild}); s = await r.json(); }
+    catch (e) { r = null; }
+    if (gen !== dustGen || !dust) return;
+    dustBusy = false;
+    if (!r || !r.ok) { dustMsg('dust search failed: ' + (s && s.detail || 'no answer')); dustDraw(); return; }
+    dustSpots = s.spots.map((p) => ({...p, accepted: p.status === 'obvious' && !p.already_retouched}));
+    const notes = [s.dust_map && s.dust_map.note, typeof s.this_photo === 'string' ? s.this_photo : ''].filter(Boolean);
+    $('#dust-note').textContent = notes.join(' ');
+    $('#dust-note').hidden = !notes.length;
+    dustSummary(dustSpots.length ? '' : 'no dust found');
+    if (!dustSpots.length) dustMsg('no dust found in this photo');
+    status(`dust found in ${((performance.now() - t) / 1000).toFixed(1)} s`);
+  }
+  // an edit made by the worker: show it like any other edit
+  async function dustRefresh() {
+    const r = await api('open', {});
+    if (r.ok) { const s = await r.json(); dirty = true; show(s); }
+    await preview();
+  }
+  async function dustHeal() {
+    const ids = dustSpots.filter((s) => s.accepted && s.on_photo && !s.already_retouched).map((s) => s.id);
+    if (!ids.length || dustBusy) return;
+    dustBusy = true; dustDraw();
+    dustMsg(`healing ${ids.length} spot${ids.length === 1 ? '' : 's'}…`);
+    let note;
+    try {
+      const r = await api('dust/heal', {spots: ids}), s = await r.json();
+      if (!r.ok) throw new Error(s.detail);
+      const planned = (s.plan || s.healed || s.heals || []).length;
+      const skipped = (s.skipped || []).map((k) => `#${k.id}: ${k.why}`);
+      note = `healed ${s.plan ? planned : ids.length - skipped.length}` + (skipped.length ? `, skipped ${skipped.join('; ')}` : '');
+    } catch (e) { note = 'heal failed: ' + e.message; }
+    await dustRefresh();
+    dustBusy = false;
+    if (!dust) return;
+    await dustFind(false);
+    if (dust) dustSummary(note);
+  }
+  // a click on the photo: a heal circle there, its source chosen by the worker
+  function photoAspect() { const r = imgRect(); return full && shown ? full.w / full.h : r.w / r.h; }
+  async function dustHealAt(pt) {
+    if (dustBusy) return;
+    const radius = dustSize();
+    dustBusy = true;
+    dustTemp = {id: 'temp', kind: 'circle', x: pt.x, y: pt.y, r: radius * Math.min(1, 1 / photoAspect()), cls: 'temp', title: 'healing here…'};
+    dustDraw();
+    dustMsg('healing a spot there…');
+    let note;
+    try {
+      const r = await api('dust/heal_at', {x: pt.x, y: pt.y, radius}), s = await r.json();
+      if (!r.ok) throw new Error(s.detail);
+      note = 'healed a spot where you clicked';
+    } catch (e) { note = 'heal failed: ' + e.message; }
+    dustTemp = null;
+    await dustRefresh();
+    dustBusy = false;
+    if (dust) dustSummary(note);
+  }
+  ov.onclick((it, pt) => {
+    if (!dust || dustBusy) return;
+    if (it) {
+      const s = dustSpots.find((p) => p.id === it.id);
+      if (s && !s.already_retouched) { s.accepted = !s.accepted; dustSummary(); }
+    } else if (pt) dustHealAt(pt);
+  });
+  function setDust(on) {
+    if (on === dust) return;
+    if (on) {
+      if (cropping) setCropping(false);
+      if (picking) setPicking(null);
+      if (cmp) closeCompare();
+    }
+    dust = on;
+    $('#toolbar-dust').hidden = !on;
+    $('#tool-dust').setAttribute('aria-pressed', on);
+    $('#tool-dust').classList.toggle('on', on);
+    $('.view').classList.toggle('dusting', on);
+    ov.interactive(on);
+    ov.show(on);
+    if (on) dustFind(false);
+    else { dustGen++; dustBusy = false; dustTemp = null; dustSpots = []; ov.set([]); }
+  }
+  $('#tool-dust').onclick = () => setDust(!dust);
+  $('#dust-done').onclick = () => setDust(false);
+  $('#dust-heal').onclick = dustHeal;
+  $('#dust-again').onclick = (e) => { if (!dustBusy) dustFind(e.shiftKey); };
+
   // ── crop & rotate ──────────────────────────────────────────────────────
   // geo: the engine's geometry_get. while cropping, the preview shows the
   // whole photo (uncropped) and box is the crop being drawn, in fractions
@@ -845,6 +990,7 @@
 
   function setCropping(on) {
     if (on && cmp) closeCompare();
+    if (on && dust) setDust(false);
     if (on && zoom) markZoom(0);
     cropping = on && !!geo;
     $('#toolbar-crop').hidden = !on;
@@ -1118,7 +1264,7 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); openCompare(0); };
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); openCompare(0); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one
@@ -1255,11 +1401,13 @@
     if (e.target.closest('input, select, textarea')) return;
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && k === 'd') { e.preventDefault(); duplicate(false); return; }
     if (picking && e.key === 'Escape') { e.preventDefault(); setPicking(null); status('picker cancelled'); return; }
+    if (dust && e.key === 'Escape') { e.preventDefault(); setDust(false); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
     if (e.key === 'Escape' && cmp) { closeCompare(); return; }
     if (k === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cropping) { e.preventDefault(); fullScreen(); return; }
+    if (k === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setDust(!dust); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];

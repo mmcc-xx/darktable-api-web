@@ -77,6 +77,7 @@
       <span id="erase-note" class="status" hidden>sends the area around the shape to Black Forest Labs and uses credits</span>
     </div>
     <div class="view">
+      <button id="alts-open" class="secondary" hidden>alternatives</button>
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
       <canvas id="clipov" class="clipov" hidden></canvas>
       <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
@@ -93,12 +94,14 @@
       <button id="cmp-close" class="secondary">close comparison</button></p>
     <section id="alts" class="alts" hidden>
       <div class="alts-head"><span id="alts-title">alternatives</span>
+        <button id="alts-dismiss" class="secondary" title="throw the alternatives away">dismiss</button>
         <button id="alts-close" class="secondary" title="dismiss the alternatives">✕</button></div>
       <div id="alts-list" class="alts-list"></div>
     </section>
     <p id="status" class="status">opening…</p>
   </section>
   <aside class="panel">
+    <button id="sheet-handle" class="sheet-handle" aria-expanded="false" aria-label="show the edit panel"></button>
     <div class="panel-head">
       <canvas id="histo" class="histo" title="histogram of the preview: click for linear / logarithmic"></canvas>
       <div id="lv" class="lv" hidden>
@@ -161,6 +164,7 @@
             <button id="more-export" class="link">export…</button>
             <button id="dup" class="link" title="a virtual copy with this edit, as darktable's duplicate (ctrl+D)">duplicate</button>
             <button id="dup-virgin" class="link" title="a virtual copy without an edit">duplicate unedited</button>
+            <button id="more-discard" class="link" title="reopen the photo as saved">discard changes</button>
             <button id="reset" class="link" title="delete the edit and apply darktable's defaults">start over</button>
           </span>
         </span>
@@ -270,7 +274,7 @@
   }
   // drag to pan: the image moves at once, the new region renders on release;
   // one pointer at a time, so a second finger doesn't jump it (pinch is W21)
-  let panPointer = null;
+  let panPointer = null, pinchSeen = false;
   // a mouse drag on the <img> would start the browser's image drag and cancel the pan
   $('.view').addEventListener('dragstart', (e) => e.preventDefault());
   $('.view').addEventListener('pointerdown', (e) => {
@@ -291,6 +295,7 @@
       panPointer = null;
       v.onpointermove = v.onpointerup = v.onpointercancel = null;
       v.classList.remove('panning');
+      if (pinchSeen) { $('#pv').style.transform = $('#clipov').style.transform = ''; ov.setTransform(''); return; }
       if (Math.abs(dx) + Math.abs(dy) < 3 || !full) return;
       const k = (window.devicePixelRatio || 1) / from.zoom;
       center = {x: from.center.x - dx * k / full.w, y: from.center.y - dy * k / full.h};
@@ -306,6 +311,85 @@
   });
   let resizeTimer = null;
   addEventListener('resize', () => { if (zoom) { clearTimeout(resizeTimer); resizeTimer = setTimeout(preview, 300); } });
+
+  // ── phone (W21): swipe for prev / next, pinch to zoom in steps, the edit panel as a bottom sheet
+  const PHONE = matchMedia('(max-width: 800px)');
+  const anyTool = () => picking || cropping || cmp || dust || erase || area;
+  {
+    const v = $('.view'), touches = new Map();
+    let start = null, pinch = null;
+    v.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || !PHONE.matches) return;
+      if (e.isPrimary) touches.clear();        // a first finger: forget fingers whose end was missed
+      touches.set(e.pointerId, {x: e.clientX, y: e.clientY});
+      if (touches.size === 1) { start = {x: e.clientX, y: e.clientY, id: e.pointerId}; pinch = null; pinchSeen = false; }
+      else if (touches.size === 2) {
+        pinchSeen = true; start = null;
+        const [a, b] = [...touches.values()];
+        pinch = {d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, now: 0};
+        pinch.now = pinch.d;
+      } else { start = null; }
+    });
+    v.addEventListener('pointermove', (e) => {
+      const t = touches.get(e.pointerId);
+      if (!t) return;
+      t.x = e.clientX; t.y = e.clientY;
+      if (pinch && touches.size === 2) { const [a, b] = [...touches.values()]; pinch.now = Math.hypot(a.x - b.x, a.y - b.y); }
+    });
+    const end = (e) => {
+      if (!touches.has(e.pointerId)) return;
+      const t = touches.get(e.pointerId);
+      const wasPinch = pinch, s = start;
+      touches.delete(e.pointerId);
+      if (wasPinch && touches.size === 1 && e.type === 'pointerup') {
+        pinch = null;
+        const k = wasPinch.now / wasPinch.d;
+        if (anyTool()) return;
+        if (k > 1.5) { const p = zoom ? null : photoPoint({clientX: wasPinch.mx, clientY: wasPinch.my}); setZoom(k > 3 ? 2 : 1, p || undefined); }
+        else if (k < 0.7 && zoom) setZoom(0);
+        return;
+      }
+      if (!touches.size) { pinch = null; setTimeout(() => { pinchSeen = false; }); }   // after the pan's own pointerup ran
+      if (!s || s.id !== e.pointerId || e.type !== 'pointerup' || zoom || anyTool() || showing) { if (!touches.size) start = null; return; }
+      start = null;
+      const dx = t.x - s.x, dy = t.y - s.y;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > 1.5 * Math.abs(dy)) {
+        const a = $(dx > 0 ? '#prev' : '#next');
+        if (a) a.click();
+      }
+    };
+    v.addEventListener('pointerup', end);
+    v.addEventListener('pointercancel', end);
+  }
+  // the sheet: tap the handle, or swipe it vertically (> 30 px), to raise / lower; opening a section raises it
+  {
+    const h = $('#sheet-handle');
+    const sheet = (up, keep) => {
+      document.body.classList.toggle('sheet-up', up);
+      h.setAttribute('aria-expanded', up);
+      h.setAttribute('aria-label', up ? 'hide the edit panel' : 'show the edit panel');
+      if (!keep) try { sessionStorage.setItem('dtweb.sheet', up ? 'up' : ''); } catch (e) {}
+      requestAnimationFrame(() => dispatchEvent(new Event('resize')));
+    };
+    let y0 = null, moved = false;
+    h.addEventListener('pointerdown', (e) => { y0 = e.clientY; moved = false; try { h.setPointerCapture(e.pointerId); } catch (err) {} });
+    h.addEventListener('pointerup', (e) => {
+      if (y0 === null) return;
+      const dy = e.clientY - y0; y0 = null;
+      if (Math.abs(dy) > 30) { moved = true; sheet(dy < 0); }
+    });
+    h.addEventListener('pointercancel', () => { y0 = null; });
+    h.addEventListener('click', () => { if (moved) { moved = false; return; } sheet(!document.body.classList.contains('sheet-up')); });
+    $('#sections').addEventListener('click', (e) => {
+      const sm = e.target.closest('summary');
+      if (!sm || !PHONE.matches || document.body.classList.contains('sheet-up')) return;
+      const d = sm.parentElement;
+      if (d.open) e.preventDefault();   // already open (its body was hidden): keep it open, show it
+      sheet(true);
+    }, true);
+    try { if (sessionStorage.getItem('dtweb.sheet') === 'up') sheet(true, true); } catch (e) {}
+    $('#more-discard').onclick = () => { menu(false); $('#reload').click(); };
+  }
 
   // undo/redo move history_end by a step, as darktable's ctrl+z/ctrl+y do;
   // endTarget is where the steps queued so far will leave it
@@ -1801,14 +1885,25 @@
     }
     $('#alts-title').textContent = `alternatives (${list.length}): not applied`;
     $('#alts').hidden = false;
+    altsSync();
   }
+  // phone: the list is a panel over the photo, opened from a button on it
+  function altsSync() {
+    $('#alts-open').hidden = !alts;
+    if (alts) $('#alts-open').textContent = `alternatives (${alts.length})`;
+    else $('#alts').classList.remove('open');
+  }
+  $('#alts-open').addEventListener('pointerdown', (e) => e.stopPropagation());
+  $('#alts-open').onclick = () => $('#alts').classList.add('open');
+  $('#alts-dismiss').onclick = () => closeAlternatives(true);
   function closeAlternatives(dismiss) {
     if (dismiss && alts) api('alternatives/dismiss', {});
     alts = null;
     if (showing) { showing = null; $('#pv').src = url; }
     $('#alts').hidden = true;
+    altsSync();
   }
-  $('#alts-close').onclick = () => closeAlternatives(true);
+  $('#alts-close').onclick = () => { if (PHONE.matches) $('#alts').classList.remove('open'); else closeAlternatives(true); };
 
   $('#hist-line').onclick = () => {
     const open = $('#hist-pop').hidden;

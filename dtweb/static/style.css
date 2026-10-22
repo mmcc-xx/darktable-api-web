@@ -141,14 +141,61 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 #darkroom { font-size: .8rem; border: 1px solid var(--accent); border-radius: 4px; padding: .15rem .5rem; }
 #darkroom:hover { background: var(--accent); color: var(--bg); }
 
-/* narrow screens: the panel goes under the photo (the real phone layout is W21) */
+/* phone-only parts: hidden on the desktop layout */
+.sheet-handle, #alts-open, #alts-dismiss, #more-discard { display: none; }
+
+/* phone (W21): a full-height column: header, tool row, tool bar, photo, sheet; the bottom bar is fixed.
+   The sheet is lowered (histogram and section names) or raised (body.sheet-up: the sections, the photo ~230 px). */
 @media (max-width: 800px) {
-  body.darkroom-page { height: auto; display: block; }
-  .darkroom { flex-direction: column; height: auto; }
-  .view { flex: none; height: 60vh; }
-  .panel { flex: none; border-left: none; border-top: 1px solid var(--line); }
-  .panel-foot { position: sticky; bottom: 0; }
+  body.darkroom-page { --bar-h: 58px; height: 100vh; height: 100dvh; padding-bottom: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px)); overflow: hidden; }
+  body.darkroom-page .top { flex: none; position: static; flex-wrap: nowrap; gap: .5rem; padding: .25rem .5rem; overflow: hidden; white-space: nowrap; }
+  body.darkroom-page .top .brand, body.darkroom-page .top .name, body.darkroom-page #lib, body.darkroom-page #darkroom { display: none; }
+  body.darkroom-page .photo-nav { flex-wrap: nowrap; gap: .6rem; }
+  body.darkroom-page .photo-nav a { display: inline-flex; align-items: center; min-height: 36px; }
+  .darkroom { flex-direction: column; height: 100%; }
+  .stage { flex: 1; min-height: 0; padding: .4rem .5rem; gap: .4rem; position: relative; }
+  .view { flex: 1; min-height: 0; touch-action: none; }
+  body.sheet-up .stage { flex: none; }
+  body.sheet-up .view { flex: none; height: 230px; }
+
+  .toolbar { flex: none; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .toolbar > * { flex: none; }
+  .toolbar .zoom { margin-left: auto; }
+  .toolbar button, .toolbar-bar button, .panel-foot button, .menu-list button { min-height: 44px; min-width: 44px; white-space: nowrap; }
+  .toolbar-bar { flex: none; }
   .toolbar-bar .angle input { width: 6rem; }
+  .status { flex: none; }
+
+  .panel { flex: none; max-height: 32vh; max-height: 32dvh; overflow-y: auto; border-left: none; border-top: 1px solid var(--line); }
+  body.sheet-up .panel { flex: 1; max-height: none; min-height: 0; }
+  .sheet-handle { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px; flex: none; padding: 0;
+                  position: sticky; top: 0; z-index: 2; background: var(--panel); border: none; border-radius: 0; touch-action: none; }
+  .sheet-handle::before { content: ''; width: 44px; height: 5px; border-radius: 3px; background: var(--dim); }
+  .histo { height: 80px; }
+  .sections { flex: none; overflow: visible; }
+  body:not(.sheet-up) .sec .sec-body { display: none; }
+  body:not(.sheet-up) .sec[open] .sum { visibility: visible; }
+  .sec summary { min-height: 44px; align-items: center; }
+
+  .panel-foot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; flex-direction: row; align-items: center; gap: .35rem;
+                height: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px)); padding: .3rem .5rem calc(.3rem + env(safe-area-inset-bottom, 0px)); }
+  .foot-buttons { display: contents; }
+  #undo { order: 1; } #redo { order: 2; } .hist-line { order: 3; flex: 1; min-width: 0; align-items: center; } #save { order: 4; flex: none; } .menu { order: 5; }
+  .hist-line #hist-text { min-width: 0; }
+  .foot-buttons #save { flex: none; padding-left: 1rem; padding-right: 1rem; }
+  .hist-line { min-height: 44px; padding: 0 .3rem; border: none; }
+  #reload { display: none; }
+  #more-discard { display: block; }
+  .menu-list { min-width: 11rem; }
+  .hist-pop { position: absolute; left: 0; right: 0; bottom: 100%; max-height: 40dvh; background: var(--panel); border-top: 1px solid var(--line); padding: .3rem .6rem; z-index: 6; }
+
+  #alts-open { display: block; position: absolute; top: .4rem; right: .4rem; z-index: 3; min-height: 44px; background: rgba(0, 0, 0, .6); border-color: var(--accent); }
+  #alts-open[hidden] { display: none; }
+  #alts:not(.open) { display: none; }
+  #alts { position: absolute; left: .5rem; right: .5rem; bottom: 1.6rem; z-index: 4; background: var(--panel); }
+  #alts-dismiss { display: inline-block; }
+  .alts-head button { min-height: 44px; min-width: 44px; }
 }
 
 /* crop & rotate: the box drawn over the uncropped preview */

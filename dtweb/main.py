@@ -787,7 +787,8 @@ async def _mcp_worker(op: str, image_id: int, **params) -> dict:
     if not py or not Path(py).exists():
         raise HTTPException(501, "dust needs darktable-api-mcp with its dust extras "
                                  "(pip install 'darktable-api-mcp[dust]')")
-    env = {**os.environ, "DTAPI_BIN": str(BIN), "DTAPI_CONFIGDIR": str(CONFIG), "DTAPI_SOCKET": str(SOCKET)}
+    env = {**os.environ, "DTAPI_BIN": str(BIN), "DTAPI_CONFIGDIR": str(CONFIG), "DTAPI_SOCKET": str(SOCKET),
+           "DTAPI_CLIENT_KIND": "web-worker"}
     req = json.dumps({"op": op, "image_id": image_id, **params})
     async with _mcp_lock:
         proc = await asyncio.create_subprocess_exec(
@@ -1309,6 +1310,18 @@ async def import_cancel(job: int):
 
 
 # ── the library lock ─────────────────────────────────────────────────────────
+
+@app.get("/api/clients")
+async def clients():
+    """How many Claude sessions (clients that said kind "mcp") the engine has."""
+    try:
+        if not await engine.supports("clients"):
+            return {"supported": False, "claude": 0}
+        r = await engine.call("clients")
+    except EngineError:
+        return {"supported": False, "claude": 0}
+    return {"supported": True, "claude": sum(1 for c in r.get("clients", []) if c.get("kind") == "mcp")}
+
 
 @app.get("/api/library")
 async def library_status():

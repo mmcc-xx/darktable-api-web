@@ -11,7 +11,7 @@
     <a href="/" class="brand" id="brand">darktable-api</a>
     {% block top %}{% endblock %}
     {% if lib.server == 'gui' %}<a id="darkroom" href="{{ '/photo/%d' % lib.darkroom_imgid if lib.darkroom_imgid else '#' }}"{% if not lib.darkroom_imgid %} hidden{% endif %} title="the photo open in darktable's darkroom">darkroom: photo {{ lib.darkroom_imgid }}</a>{% endif %}
-    <button class="claude-btn" id="claude-btn" title="edit these photos by asking Claude">Claude</button>
+    <button class="claude-btn" id="claude-btn" title="edit these photos by asking Claude"><span class="light" id="claude-light" hidden></span>Claude</button>
     <span class="lib" id="lib" data-state="{{ lib.state }}">
       <span id="lib-text">
         {% if lib.state == 'owned' and lib.server == 'gui' %}library served by darktable's window: {{ lib.library }}
@@ -42,16 +42,35 @@
         <div class="cmd"><pre>{% if image_id is defined %}Open photo {{ image_id }} and lift the shadows a little with the tone equalizer, then show me before and after.{% else %}Find my best-rated photos from the last film roll and suggest a black and white look for one of them.{% endif %}</pre><button data-copy>copy</button></div>
       </li>
     </ol>
+    <p class="dim" id="claude-count" hidden></p>
     <form method="dialog"><button class="primary">close</button></form>
   </dialog>
   <script>
     try { const q = sessionStorage.getItem('lib:query'); if (q !== null) document.getElementById('brand').href = '/?' + q; } catch (e) {}
     // follow the photo open in darktable's darkroom
     const dr = document.getElementById('darkroom');
-    if (dr) try {
+    // the "Claude connected" light
+    const light = document.getElementById('claude-light');
+    const cbtn = document.getElementById('claude-btn');
+    const ccount = document.getElementById('claude-count');
+    async function refreshClients() {
+      try {
+        const s = await (await fetch('/api/clients')).json();
+        light.hidden = ccount.hidden = !s.supported;
+        if (!s.supported) { cbtn.title = 'edit these photos by asking Claude'; return; }
+        light.classList.toggle('on', s.claude >= 1);
+        cbtn.title = s.claude >= 1
+          ? `Claude is connected (${s.claude} session${s.claude === 1 ? '' : 's'}): click for how to connect another`
+          : 'no Claude session connected: click to connect one';
+        ccount.textContent = `Claude sessions connected now: ${s.claude}`;
+      } catch (e) {}
+    }
+    refreshClients();
+    try {
       new EventSource('/api/events').onmessage = (m) => {
         const ev = JSON.parse(m.data);
-        if (ev.type !== 'darkroom') return;
+        if (['clients', 'library_acquired', 'library_released'].includes(ev.type)) refreshClients();
+        if (!dr || ev.type !== 'darkroom') return;
         dr.hidden = !ev.imgid;
         dr.href = ev.imgid ? '/photo/' + ev.imgid : '#';
         dr.textContent = 'darkroom: photo ' + ev.imgid;

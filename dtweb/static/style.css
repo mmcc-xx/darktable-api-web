@@ -28,6 +28,9 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .lib[data-state="released"] #lib-text { color: var(--accent); }
 .claude-btn { margin-left: auto; font-size: .8rem; padding: .15rem .6rem; }
 .claude-btn + .lib { margin-left: 0; }
+.claude-btn .light { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: .35em; background: #666; }
+.claude-btn .light.on { background: #5bbf6a; }
+.claude-btn .light[hidden] { display: none; }
 .connect { max-width: min(46rem, calc(100vw - 2rem)); box-sizing: border-box; background: var(--panel); color: var(--text);
            border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.2rem; }
 .connect::backdrop { background: rgba(0, 0, 0, .55); }

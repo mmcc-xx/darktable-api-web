@@ -120,6 +120,8 @@ class Engine:
                 try:
                     await self._open()
                     self._handover_until = 0.0
+                    # not awaited: hello needs ping and a call, which take the locks
+                    self._hello_task = asyncio.create_task(self._hello())
                     return
                 except OSError:
                     pass
@@ -133,6 +135,17 @@ class Engine:
                         await asyncio.sleep(1)
                     proc = self._spawn()
                 await asyncio.sleep(0.2)
+
+    async def _hello(self) -> None:
+        """Tell the server what this client is (client_hello), so a web app can
+        show that Claude is connected. Older servers lack it: nothing."""
+        try:
+            if self._writer is None or self._writer.is_closing():
+                return
+            if await self.supports("client_hello"):
+                await self.call("client_hello", kind="web", name="darktable-api-web")
+        except EngineError:
+            pass
 
     async def _open(self) -> None:
         self._reader, self._writer = await asyncio.open_unix_connection(str(SOCKET), limit=1 << 24)

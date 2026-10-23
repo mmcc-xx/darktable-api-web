@@ -1,11 +1,13 @@
-// Shapes over the photo shown in the darkroom (dust spots now; erase and
-// mask outlines later). An <svg> laid over the photo inside the view:
+// Shapes over the photo shown in the darkroom (dust spots, erase and mask
+// outlines, named markers). An <svg> laid over the photo inside the view:
 //   const ov = dtOverlay.create(view, () => ({rect, region}))
 // rect is where the photo is drawn in the view (px: x, y, w, h), region the
 // part of the photo shown, in fractions of the photo (left, top, right,
 // bottom; 0..1 when it is all there). Shapes are in photo fractions:
 //   {id, kind: "circle", x, y, r (fraction of the photo's width), cls, title}
 //   {id, kind: "polygon", points: [[x, y], ...], cls, title}
+// Either may carry `label`: text (class ov-label, with a dark halo) drawn above a
+// circle, or at a polygon's top-left point. Labels are not hit-tested.
 // ov.set(items), ov.place() (after every render, resize or zoom),
 // ov.setTransform(css) (follow a pan drag), ov.show(bool), ov.interactive(bool),
 // ov.onclick((item | null, {x, y} | null, event) => ...), ov.remove().
@@ -49,6 +51,23 @@ const dtOverlay = (() => {
         if (it.cls) el.setAttribute('class', it.cls);
         if (it.title) { const t = document.createElementNS(NS, 'title'); t.textContent = it.title; el.append(t); }
         svg.append(el);
+        if (it.label) {
+          const t = document.createElementNS(NS, 'text');
+          let lx, ly;
+          if (it.kind === 'polygon') {
+            const P = it.points.map(([x, y]) => [m.px(x), m.py(y)]);
+            [lx, ly] = P.reduce((a, q) => (q[0] + q[1] < a[0] + a[1] ? q : a), P[0]);
+            t.setAttribute('text-anchor', 'start');
+            ly -= 4;
+          } else {
+            lx = m.px(it.x); ly = m.py(it.y) - radius(m, it) - 4;
+            t.setAttribute('text-anchor', 'middle');
+          }
+          t.setAttribute('x', lx.toFixed(1)); t.setAttribute('y', ly.toFixed(1));
+          t.setAttribute('class', 'ov-label');
+          t.textContent = it.label;
+          svg.append(t);
+        }
       }
     }
 

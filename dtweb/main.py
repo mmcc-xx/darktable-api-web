@@ -378,11 +378,12 @@ async def photo_page(request: Request, image_id: int):
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
            "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
-           "can_fill": False, "can_mask": False}
+           "can_fill": False, "can_mask": False, "can_mark": False}
     if lib.get("state") == "owned":
         try:
             ctx["can_fill"] = await engine.supports("ai_fill")
             ctx["can_mask"] = await engine.supports("mask_ai")
+            ctx["can_mark"] = await engine.supports("marker_set")
             info = await engine.call("image_info", imgid=image_id)
             ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
@@ -921,6 +922,68 @@ async def photo_area_remove(image_id: int, body: AreaRemoveBody):
         await engine.edit(image_id, "module_remove", operation="exposure", instance=body.exposure)
         await engine.edit(image_id, "module_remove", operation="colorbalancergb", instance=body.colorbalancergb)
         return {"history": await engine.edit(image_id, "history_list")}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+# ── named markers: points and areas on the photo ("left tree"). The engine keeps
+# them in raw space; the page works in photo fractions, so the points go through
+# the session's coords method both ways.
+
+async def _markers(image_id: int) -> dict:
+    """The photo's markers with their points as photo fractions."""
+    ms = (await engine.call("marker_list", imgid=image_id)).get("markers", [])
+    flat = [p for m in ms for p in m["points"]]
+    img = (await engine.edit(image_id, "coords", points=flat, **{"from": "raw", "to": "image"}))["points"] if flat else []
+    out, i = [], 0
+    for m in ms:
+        n = len(m["points"])
+        out.append({"name": m["name"], "kind": m["kind"], "note": m.get("note", ""), "by": m.get("by", ""),
+                    "points": [[round(q[0], 5), round(q[1], 5)] for q in img[i:i + n]]})
+        i += n
+    return {"markers": out}
+
+
+class MarkerBody(BaseModel):
+    name: str
+    kind: str
+    points: list[list[float]]
+    note: str = ""
+    old_name: str | None = None
+
+
+@app.get("/api/photo/{image_id}/markers")
+async def photo_markers(image_id: int):
+    try:
+        return await _markers(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+@app.post("/api/photo/{image_id}/markers")
+async def photo_marker_set(image_id: int, body: MarkerBody):
+    """Set a marker (a duplicate name replaces); with old_name it renames."""
+    if any(len(p) != 2 for p in body.points):
+        raise HTTPException(400, "points are [x, y]")
+    try:
+        raw = (await engine.edit(image_id, "coords", points=body.points, **{"from": "image", "to": "raw"}))["points"]
+        await engine.call("marker_set", imgid=image_id, name=body.name, kind=body.kind, points=raw, note=body.note)
+        if body.old_name and body.old_name.strip().lower() != body.name.strip().lower():
+            await engine.call("marker_remove", imgid=image_id, name=body.old_name)
+        return await _markers(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class MarkerRemoveBody(BaseModel):
+    name: str
+
+
+@app.post("/api/photo/{image_id}/markers/remove")
+async def photo_marker_remove(image_id: int, body: MarkerRemoveBody):
+    try:
+        await engine.call("marker_remove", imgid=image_id, name=body.name)
+        return await _markers(image_id)
     except EngineError as exc:
         raise _bad(exc)
 

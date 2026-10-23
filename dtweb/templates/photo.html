@@ -22,6 +22,7 @@
       <button id="tool-dust" data-tool="dust" aria-pressed="false" title="find sensor dust, review the spots, click to heal (d)">dust</button>
       <button id="tool-erase" data-tool="erase" aria-pressed="false" {% if not can_fill %}disabled {% endif %}title="{{ "remove an object: draw around it, or click for a round spot (e)" if can_fill else "erase needs darktable-api on darktable master (ai_fill); this engine doesn't have it" }}">erase</button>
       <button id="tool-area" data-tool="area" aria-pressed="false" {% if not can_mask %}disabled {% endif %}title="{{ "adjust the sky or the subject on its own: click it on the photo (a)" if can_mask else "sky / subject needs darktable-api on darktable master (mask_ai); this engine doesn't have it" }}">sky / subject</button>
+      <button id="tool-mark" data-tool="mark" aria-pressed="false" {% if not can_mark %}disabled {% endif %}title="{{ "name points and areas on the photo, so others (and Claude) can refer to them: \"the left tree\" (m)" if can_mark else "markers need darktable-api with marker_set; this engine doesn't have it" }}">markers</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
@@ -75,6 +76,15 @@
         <input type="range" id="erase-size" min="0.005" max="0.08" step="0.001" value="0.02"></span>
       <button id="erase-done" class="secondary" title="leave the erase tool (Esc)">done</button>
       <span id="erase-note" class="status" hidden>sends the area around the shape to Black Forest Labs and uses credits</span>
+    </div>
+    <div id="toolbar-mark" class="toolbar-bar" hidden>
+      <span class="seg" role="group" aria-label="shape of the next marker"><button class="secondary" data-markkind="point" aria-pressed="false" title="a point: click">point</button><button class="secondary" data-markkind="rect" aria-pressed="false" title="a rectangle: drag corner to corner">rect</button><button class="secondary" data-markkind="ellipse" aria-pressed="false" title="an ellipse: drag its bounding box">ellipse</button><button class="secondary" data-markkind="outline" aria-pressed="false" title="an outline: draw around it">outline</button></span>
+      <span id="mark-status" class="status" role="status"></span>
+      <input id="mark-name" type="text" maxlength="64" size="20" placeholder="name, e.g. left tree" aria-label="marker name" hidden>
+      <input id="mark-note" type="text" maxlength="500" size="24" placeholder="note (optional)" aria-label="marker note" hidden>
+      <button id="mark-save" class="primary" hidden title="save the marker (Enter)">save</button>
+      <button id="mark-delete" class="secondary" hidden title="remove this marker">delete</button>
+      <button id="mark-done" class="secondary" title="leave the markers tool (Esc)">done</button>
     </div>
     <div class="view">
       <button id="alts-open" class="secondary" hidden>alternatives</button>
@@ -180,6 +190,7 @@
   const ID = {{ img.id }};
   const CAN_FILL = {{ 'true' if can_fill else 'false' }};
   const CAN_MASK = {{ 'true' if can_mask else 'false' }};
+  const CAN_MARK = {{ 'true' if can_mark else 'false' }};
   const api = (p, body) => fetch(`/api/photo/${ID}/${p}`, body === undefined ? {} : {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const $ = (s) => document.querySelector(s);
@@ -278,7 +289,7 @@
   // a mouse drag on the <img> would start the browser's image drag and cancel the pan
   $('.view').addEventListener('dragstart', (e) => e.preventDefault());
   $('.view').addEventListener('pointerdown', (e) => {
-    if (!shown || picking || cropping || cmp || erase || e.button !== 0 || panPointer !== null) return;
+    if (!shown || picking || cropping || cmp || erase || mark || e.button !== 0 || panPointer !== null) return;
     const v = $('.view'), x0 = e.clientX, y0 = e.clientY, from = shown;
     v.setPointerCapture(e.pointerId);
     v.classList.add('panning');
@@ -304,7 +315,7 @@
   });
   // double-click: 100% there, or back to fit
   $('.view').addEventListener('dblclick', (e) => {
-    if (picking || cropping || cmp || dust || erase || area) return;
+    if (picking || cropping || cmp || dust || erase || area || mark) return;
     if (zoom) { setZoom(0); return; }
     const p = photoPoint(e);
     if (p) setZoom(1, p);
@@ -314,7 +325,7 @@
 
   // ── phone (W21): swipe for prev / next, pinch to zoom in steps, the edit panel as a bottom sheet
   const PHONE = matchMedia('(max-width: 800px)');
-  const anyTool = () => picking || cropping || cmp || dust || erase || area;
+  const anyTool = () => picking || cropping || cmp || dust || erase || area || mark;
   {
     const v = $('.view'), touches = new Map();
     let start = null, pinch = null;
@@ -594,6 +605,7 @@
     if (btn && dust) setDust(false);
     if (btn && erase) setErase(false);
     if (btn && area) setArea(false);
+    if (btn && mark) setMark(false);
     if (btn && cmp) closeCompare();
     picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
     document.querySelectorAll('[data-pick]').forEach((b) => {
@@ -960,7 +972,7 @@
   let chans = null, chansKey = null, chansLoading = null, mixCv = null, mixWant = null, mixRaf = 0;
   const SRGB2LIN = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
   const LIN2SRGB = new Uint8Array(4096).map((_, i) => { const c = i / 4095; return Math.round(255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055)); });
-  const mixAllowed = () => state && state.mono && state.mono.enabled && !zoom && !cmp && !dust && !erase && !area && !cropping;
+  const mixAllowed = () => state && state.mono && state.mono.enabled && !zoom && !cmp && !dust && !erase && !area && !mark && !cropping;
   async function mixChannels() {
     const key = editKey();
     if (chans && chansKey === key) return chans;
@@ -1143,6 +1155,7 @@
       if (cmp) closeCompare();
       if (erase) setErase(false);
       if (area) setArea(false);
+      if (mark) setMark(false);
     }
     dust = on;
     $('#toolbar-dust').hidden = !on;
@@ -1269,6 +1282,7 @@
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (area) setArea(false);
+      if (mark) setMark(false);
     }
     erase = on;
     $('#toolbar-erase').hidden = !on;
@@ -1282,6 +1296,207 @@
   }
   $('#tool-erase').onclick = () => setErase(!erase);
   $('#erase-done').onclick = () => setErase(false);
+
+  // ── markers: named points and areas on the photo ("left tree"), shared with
+  // every client (the engine's marker_set / marker_list; the server converts
+  // between photo fractions and raw space). With the tool on, a click makes a
+  // point, a drag a rectangle, ellipse or freehand outline, depending on the
+  // kind; the shape shows dashed until it is named and saved. A click on an
+  // existing marker selects it (rename, note, delete). Drawing wins over
+  // panning while the tool is on.
+  let mark = false, markers = [], markKind = 'rect', markDraw = null, markDraft = null, markSel = null, markBusy = false;
+  const markMsg = (t) => { $('#mark-status').textContent = t; };
+  try { const v = localStorage.getItem('dr:markkind'); if (['point', 'rect', 'ellipse', 'outline'].includes(v)) markKind = v; } catch (e) {}
+  function markKinds() {
+    document.querySelectorAll('[data-markkind]').forEach((b) => { const on = b.dataset.markkind === markKind; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+  }
+  document.querySelectorAll('[data-markkind]').forEach((b) => {
+    b.onclick = () => { markKind = b.dataset.markkind; try { localStorage.setItem('dr:markkind', markKind); } catch (e) {} markKinds(); if (markDraft) markClear(); };
+  });
+  markKinds();
+  const markPlural = () => `${markers.length} marker${markers.length === 1 ? '' : 's'}`;
+  function markCount() {
+    $('#tool-mark').textContent = markers.length ? 'markers ' + markers.length : 'markers';
+  }
+  const markShape = (m, extra) => m.kind === 'point'
+    ? {id: 'mark:' + m.name, kind: 'circle', x: m.points[0][0], y: m.points[0][1], r: 0.004, cls: 'marker' + extra, label: m.name, title: m.name + (m.note ? ': ' + m.note : '')}
+    : {id: 'mark:' + m.name, kind: 'polygon', points: m.points, cls: 'marker' + extra, label: m.name, title: m.name + (m.note ? ': ' + m.note : '')};
+  function markShow() {
+    if (!mark) return;
+    const items = markers.map((m) => markShape(m, markSel === m.name ? ' sel' : ''));
+    if (markDraft) items.push({...markShape({name: '', ...markDraft}, ' draft'), id: 'draft', label: ''});
+    if (markDraw && markDraw.shape) items.push(markDraw.shape);
+    ov.set(items);
+  }
+  async function markLoad() {
+    if (!CAN_MARK) return;
+    let m = null;
+    try { const r = await fetch(`/api/photo/${ID}/markers`); if (r.ok) m = (await r.json()).markers; } catch (e) {}
+    if (!m) return;
+    markers = m; markCount();
+    if (markSel && !markers.some((x) => x.name === markSel)) markClear();
+    if (mark && !markDraft && !markSel) markMsg(markers.length ? markPlural() + ' · ' + markHelp() : markHelp());
+    markShow();
+  }
+  const markHelp = () => ({point: 'click to place a point', rect: 'drag corner to corner', ellipse: 'drag the bounding box', outline: 'draw around it'}[markKind]);
+  function markFields(show, name, note) {
+    for (const id of ['#mark-name', '#mark-note', '#mark-save']) $(id).hidden = !show;
+    $('#mark-delete').hidden = !(show && markSel);
+    $('#mark-name').value = name || ''; $('#mark-note').value = note || '';
+  }
+  // forget the draft and the selection
+  function markClear() {
+    markDraft = null; markSel = null; markDraw = null;
+    markFields(false);
+    if (mark) { markMsg(markHelp()); markShow(); }
+  }
+  function markSelect(m) {
+    markDraft = null; markSel = m.name;
+    markFields(true, m.name, m.note);
+    markMsg(`${m.name} (${m.kind}${m.by ? ', set by ' + m.by : ''}): rename, edit the note, or delete`);
+    markShow();
+  }
+  // the marker under a photo point: a point within 12 px, else the smallest area containing it
+  function markHit(e) {
+    const r = imgRect(), pt = erasePoint(e), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1};
+    const kx = r.w / (R.right - R.left), ky = r.h / (R.bottom - R.top);
+    let best = null, ba = Infinity;
+    for (const m of markers) {
+      if (m.kind === 'point') {
+        if (Math.hypot((m.points[0][0] - pt[0]) * kx, (m.points[0][1] - pt[1]) * ky) <= 12) return m;
+        continue;
+      }
+      let inside = false;
+      const P = m.points;
+      for (let i = 0, j = P.length - 1; i < P.length; j = i++)
+        if ((P[i][1] > pt[1]) !== (P[j][1] > pt[1]) && pt[0] < (P[j][0] - P[i][0]) * (pt[1] - P[i][1]) / (P[j][1] - P[i][1]) + P[i][0]) inside = !inside;
+      if (!inside) continue;
+      const xs = P.map((p) => p[0]), ys = P.map((p) => p[1]), a = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+      if (a < ba) { best = m; ba = a; }
+    }
+    return best;
+  }
+  // the points of a shape dragged from a to b (photo fractions); ellipse: 24 points on the bounding box
+  function markPoints(kind, d, b) {
+    const a = d.pts[0];
+    if (kind === 'outline') {
+      let pts = d.pts;
+      if (pts.length > 60) { const k = Math.ceil(pts.length / 60); pts = pts.filter((_, i) => i % k === 0); }
+      return pts;
+    }
+    const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+    if (kind === 'rect') return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
+    return Array.from({length: 24}, (_, i) => [cx + rx * Math.cos(i * Math.PI / 12), cy + ry * Math.sin(i * Math.PI / 12)]);
+  }
+  function markEnd(d, e) {
+    const xs = d.px.map((p) => p[0]), ys = d.px.map((p) => p[1]);
+    const box = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    if (markKind !== 'point' && box >= 10) {
+      const pts = markPoints(markKind, d, d.pts[d.pts.length - 1]);
+      if (pts.length < 3) { markClear(); return; }
+      markDraft = {kind: markKind, points: pts.map((p) => p.map((v) => +v.toFixed(5)))};
+    } else {
+      // a click: an existing marker is selected, else (kind point) a point is made
+      const hit = markHit(e);
+      if (hit) { markSelect(hit); return; }
+      if (markKind !== 'point') { markClear(); return; }
+      markDraft = {kind: 'point', points: [d.pts[0].map((v) => +v.toFixed(5))]};
+    }
+    markSel = null;
+    markFields(true, '', '');
+    markMsg(`${markDraft.kind}: name it, Enter to save, Esc to cancel`);
+    markShow();
+    $('#mark-name').focus();
+  }
+  $('.view').addEventListener('pointerdown', (e) => {
+    if (!mark || markBusy || e.button !== 0 || markDraw) return;
+    e.preventDefault();
+    const v = $('.view');
+    v.setPointerCapture(e.pointerId);
+    if (markDraft || markSel) { markDraft = null; markSel = null; markFields(false); }
+    const d = markDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]], shape: null};
+    const move = (ev) => {
+      if (ev.pointerId !== d.id || markDraw !== d) return;
+      const last = d.px[d.px.length - 1];
+      if (markKind === 'outline') {
+        if (Math.hypot(ev.clientX - last[0], ev.clientY - last[1]) < 4) return;
+        d.px.push([ev.clientX, ev.clientY]); d.pts.push(erasePoint(ev));
+      } else { d.px[1] = [ev.clientX, ev.clientY]; d.pts[1] = erasePoint(ev); }
+      if (d.pts.length >= 2) {
+        const pts = markPoints(markKind, d, d.pts[d.pts.length - 1]);
+        d.shape = markKind === 'point' ? null : {id: 'draw', kind: 'polygon', points: pts, cls: 'marker draft'};
+        markShow();
+      }
+    };
+    v.addEventListener('pointermove', move);
+    const finish = (ev, ok) => {
+      if (ev.pointerId !== d.id) return;
+      v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
+      markDraw = null;
+      if (!mark) return;
+      if (ok) markEnd(d, ev); else markShow();
+    };
+    const up = (ev) => finish(ev, true), cancel = (ev) => finish(ev, false);
+    v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
+  });
+  async function markSave() {
+    const name = $('#mark-name').value.trim(), note = $('#mark-note').value.trim();
+    if (markBusy || (!markDraft && !markSel)) return;
+    if (!name || name.length > 64) { markMsg('the name needs 1 to 64 characters'); $('#mark-name').focus(); return; }
+    const old = markSel, sel = markers.find((m) => m.name === old);
+    const replaced = markers.find((m) => m.name.toLowerCase() === name.toLowerCase() && m.name !== old);
+    const body = markDraft ? {name, kind: markDraft.kind, points: markDraft.points, note} : {name, kind: sel.kind, points: sel.points, note, old_name: old};
+    markBusy = true;
+    let r, s;
+    try { r = await api('markers', body); s = await r.json(); } catch (e) { r = null; }
+    markBusy = false;
+    if (!r || !r.ok) { markMsg('not saved: ' + (s && s.detail || 'no answer')); return; }
+    markers = s.markers; markCount();
+    markClear();
+    markMsg((replaced ? `replaced '${replaced.name}' · ` : '') + `saved '${name}' · ${markPlural()}`);
+  }
+  async function markDelete() {
+    if (markBusy || !markSel) return;
+    const name = markSel;
+    markBusy = true;
+    let r, s;
+    try { r = await api('markers/remove', {name}); s = await r.json(); } catch (e) { r = null; }
+    markBusy = false;
+    if (!r || !r.ok) { markMsg('not deleted: ' + (s && s.detail || 'no answer')); return; }
+    markers = s.markers; markCount();
+    markClear();
+    markMsg(`deleted '${name}' · ${markPlural()}`);
+  }
+  $('#mark-save').onclick = markSave;
+  $('#mark-delete').onclick = markDelete;
+  for (const id of ['#mark-name', '#mark-note'])
+    $(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); markSave(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); $(id).blur(); markClear(); }
+    });
+  function setMark(on) {
+    if (on === mark || (on && !CAN_MARK)) return;
+    if (on) {
+      if (cropping) setCropping(false);
+      if (picking) setPicking(null);
+      if (cmp) closeCompare();
+      if (dust) setDust(false);
+      if (erase) setErase(false);
+      if (area) setArea(false);
+    }
+    mark = on;
+    $('#toolbar-mark').hidden = !on;
+    $('#tool-mark').setAttribute('aria-pressed', on);
+    $('#tool-mark').classList.toggle('on', on);
+    $('.view').classList.toggle('marking', on);
+    ov.interactive(false);
+    ov.show(on);
+    if (on) { markMsg(markHelp()); markLoad(); }
+    else { markDraw = null; markDraft = null; markSel = null; markFields(false); ov.set([]); areaDraw(); }
+  }
+  $('#tool-mark').onclick = () => setMark(!mark);
+  $('#mark-done').onclick = () => setMark(false);
 
   // ── areas: the sky or the subject on its own. A click on the photo asks
   // darktable's AI object mask for that area (POST area); the engine gives
@@ -1304,7 +1519,7 @@
   };
   // outlines on the photo: all while the tool is on, else the shown ones and the hovered row's
   function areaDraw() {
-    if (dust || erase || cropping || cmp) return;
+    if (dust || erase || mark || cropping || cmp) return;
     const items = [];
     for (const a of areas)
       if (area || a.show || areaHover === a.exposure)
@@ -1430,6 +1645,7 @@
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (erase) setErase(false);
+      if (mark) setMark(false);
     }
     area = on;
     $('#toolbar-area').hidden = !on;
@@ -1571,6 +1787,7 @@
     if (on && dust) setDust(false);
     if (on && erase) setErase(false);
     if (on && area) setArea(false);
+    if (on && mark) setMark(false);
     if (on && zoom) markZoom(0);
     cropping = on && !!geo;
     $('#toolbar-crop').hidden = !on;
@@ -1844,7 +2061,7 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (area) setArea(false); openCompare(0); };
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (area) setArea(false); if (mark) setMark(false); openCompare(0); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one
@@ -1995,6 +2212,7 @@
     if (dust && e.key === 'Escape') { e.preventDefault(); setDust(false); return; }
     if (erase && e.key === 'Escape') { e.preventDefault(); setErase(false); return; }
     if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
+    if (mark && e.key === 'Escape') { e.preventDefault(); if (markDraft || markSel) markClear(); else setMark(false); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }
@@ -2003,6 +2221,7 @@
     if (k === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setDust(!dust); return; }
     if (k === 'e' && CAN_FILL && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setErase(!erase); return; }
     if (k === 'a' && CAN_MASK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setArea(!area); return; }
+    if (k === 'm' && CAN_MARK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setMark(!mark); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];
@@ -2028,6 +2247,7 @@
         else if (ev.kind === 'variants' && d.applied) { closeAlternatives(); status(`"${d.applied}" applied by another client`); }
         return;
       }
+      if (ev.imgid === ID && ev.type === 'markers') return markLoad();
       if (ev.imgid === ID && ev.type === 'image') return loadMeta();      // tags or metadata set elsewhere
       if (ev.imgid !== ID || !['edit', 'saved', 'reset', 'reopened', 'closed'].includes(ev.type)) return;
       clearTimeout(refreshTimer);
@@ -2051,6 +2271,7 @@
     dirty = !!s.unsaved;
     show(s);
     await preview(`opened in ${Math.round(performance.now() - t)} ms${s.joined ? ', shared with another client' : ''},`);
+    markLoad();                       // the count on the markers button
     // alternatives proposed while this page wasn't open; #compare=N opens a comparison with step N
     api('alternatives').then((r) => r.ok && r.json()).then((a) => a && a.variants.length && showAlternatives(a.variants));
     const m = location.hash.match(/compare=(\d+)/);

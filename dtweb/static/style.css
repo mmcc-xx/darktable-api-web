@@ -249,6 +249,13 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .view.dusting, .view.dusting.zoomed { cursor: crosshair; }
 .view.erasing, .view.erasing.zoomed { cursor: crosshair; touch-action: none; }
 .photo-ov .lasso { stroke: #ff3b6b; stroke-width: 2; fill: rgba(255, 59, 107, .18); stroke-dasharray: 4 3; }
+/* named markers (static/overlay.js labels): cyan, the selected one thicker and yellow */
+.photo-ov .marker { stroke: #29d3e6; stroke-width: 2; fill: none; vector-effect: non-scaling-stroke; }
+.photo-ov .marker.sel { stroke: #ffe14a; stroke-width: 3.5; }
+.photo-ov .marker.draft { stroke: #fff; stroke-dasharray: 5 3; }
+.ov-label { fill: #fff; font: 600 12px/1 system-ui, sans-serif; paint-order: stroke; stroke: rgba(0, 0, 0, .85); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.view.marking, .view.marking.zoomed { cursor: crosshair; touch-action: none; }
+.toolbar-bar input[type=text] { min-width: 0; }
 .toolbar-bar .size { display: inline-flex; align-items: center; gap: .4rem; }
 .toolbar-bar .size input { width: 7rem; accent-color: var(--accent); }
 #dust-status { flex: 1 1 18rem; min-width: 0; }

@@ -79,6 +79,7 @@
     </div>
     <div id="toolbar-mark" class="toolbar-bar" hidden>
       <span class="seg" role="group" aria-label="shape of the next marker"><button class="secondary" data-markkind="point" aria-pressed="false" title="a point: click">point</button><button class="secondary" data-markkind="rect" aria-pressed="false" title="a rectangle: drag corner to corner">rect</button><button class="secondary" data-markkind="ellipse" aria-pressed="false" title="an ellipse: drag its bounding box">ellipse</button><button class="secondary" data-markkind="outline" aria-pressed="false" title="an outline: draw around it">outline</button></span>
+      <span id="mark-list" class="mark-list" role="list" aria-label="markers on this photo" hidden></span>
       <span id="mark-status" class="status" role="status"></span>
       <input id="mark-name" type="text" maxlength="64" size="20" placeholder="name, e.g. left tree" aria-label="marker name" hidden>
       <input id="mark-note" type="text" maxlength="500" size="24" placeholder="note (optional)" aria-label="marker note" hidden>
@@ -1508,9 +1509,10 @@
   // between photo fractions and raw space). With the tool on, a click makes a
   // point, a drag a rectangle, ellipse or freehand outline, depending on the
   // kind; the shape shows dashed until it is named and saved. A click on an
-  // existing marker selects it (rename, note, delete). Drawing wins over
-  // panning while the tool is on.
-  let mark = false, markers = [], markKind = 'rect', markDraw = null, markDraft = null, markSel = null, markBusy = false;
+  // existing marker (or its label, or its chip in the list) selects it: rename,
+  // note, delete (Del), and drag it to move or drag a handle to resize; every
+  // change saves at once. Drawing wins over panning while the tool is on.
+  let mark = false, markers = [], markKind = 'rect', markDraw = null, markDraft = null, markSel = null, markBusy = false, markEdit = null;
   const markMsg = (t) => { $('#mark-status').textContent = t; };
   try { const v = localStorage.getItem('dr:markkind'); if (['point', 'rect', 'ellipse', 'outline'].includes(v)) markKind = v; } catch (e) {}
   function markKinds() {
@@ -1527,22 +1529,67 @@
   const markShape = (m, extra) => m.kind === 'point'
     ? {id: 'mark:' + m.name, kind: 'circle', x: m.points[0][0], y: m.points[0][1], r: 0.004, cls: 'marker' + extra, label: m.name, title: m.name + (m.note ? ': ' + m.note : '')}
     : {id: 'mark:' + m.name, kind: 'polygon', points: m.points, cls: 'marker' + extra, label: m.name, title: m.name + (m.note ? ': ' + m.note : '')};
+  // the chips under the kind buttons: pick selects, x deletes
+  function markList() {
+    const box = $('#mark-list');
+    box.hidden = !markers.length;
+    box.textContent = '';
+    for (const m of markers) {
+      const chip = document.createElement('span'), pick = document.createElement('button'), x = document.createElement('button'), on = markSel === m.name;
+      chip.setAttribute('role', 'listitem'); chip.className = 'mark-chip';
+      pick.className = 'secondary mark-pick' + (on ? ' on' : ''); pick.textContent = m.name;
+      pick.title = m.name + (m.note ? ': ' + m.note : '') + ' (click to select)';
+      pick.setAttribute('aria-pressed', on);
+      pick.onclick = () => markSelect(m);
+      x.className = 'secondary mark-x'; x.textContent = '\u00d7';
+      x.setAttribute('aria-label', 'delete ' + m.name); x.title = 'delete ' + m.name;
+      x.onclick = () => markDelete(m.name);
+      chip.append(pick, x); box.append(chip);
+    }
+  }
+  // handle positions (photo fractions) of a marker: box corners, or the points
+  function markHandles(m) {
+    if (m.kind === 'point' || m.kind === 'outline') return m.points.map((p) => ({x: p[0], y: p[1]}));
+    const xs = m.points.map((p) => p[0]), ys = m.points.map((p) => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    return [{x: x0, y: y0}, {x: x1, y: y0}, {x: x1, y: y1}, {x: x0, y: y1}];
+  }
+  // px per photo fraction on both axes (region aware)
+  function markScale() {
+    const r = imgRect(), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1};
+    return [r.w / (R.right - R.left), r.h / (R.bottom - R.top)];
+  }
+  // the handle of the selected marker under the pointer (index) or -1
+  function markHandleAt(e) {
+    const m = markers.find((x) => x.name === markSel);
+    if (!m || m.kind === 'point') return -1;
+    const pt = erasePoint(e), [kx, ky] = markScale(), lim = matchMedia('(pointer: coarse)').matches ? 22 : 10;
+    let best = -1, bd = Infinity;
+    markHandles(m).forEach((h, i) => { const d = Math.hypot((h.x - pt[0]) * kx, (h.y - pt[1]) * ky); if (d <= lim && d < bd) { best = i; bd = d; } });
+    return best;
+  }
   function markShow() {
     if (!mark) return;
     const items = markers.map((m) => markShape(m, markSel === m.name ? ' sel' : ''));
+    const sm = markSel && !markDraft && markers.find((m) => m.name === markSel);
+    if (sm && sm.kind !== 'point') {
+      const coarse = matchMedia('(pointer: coarse)').matches, kx = markScale()[0];
+      markHandles(sm).forEach((h, i) => items.push({id: 'mh:' + i, kind: 'circle', x: h.x, y: h.y, r: (sm.kind === 'outline' ? (coarse ? 7 : 4) : (coarse ? 9 : 5)) / kx, cls: 'mark-handle'}));
+    }
     if (markDraft) items.push({...markShape({name: '', ...markDraft}, ' draft'), id: 'draft', label: ''});
     if (markDraw && markDraw.shape) items.push(markDraw.shape);
     ov.set(items);
   }
   async function markLoad() {
-    if (!CAN_MARK) return;
+    if (!CAN_MARK || markEdit) return;
     let m = null;
     try { const r = await fetch(`/api/photo/${ID}/markers`); if (r.ok) m = (await r.json()).markers; } catch (e) {}
     if (!m) return;
+    if (markEdit) return;
     markers = m; markCount();
     if (markSel && !markers.some((x) => x.name === markSel)) markClear();
     if (mark && !markDraft && !markSel) markMsg(markers.length ? markPlural() + ' · ' + markHelp() : markHelp());
-    markShow();
+    markList(); markShow();
   }
   const markHelp = () => ({point: 'click to place a point', rect: 'drag corner to corner', ellipse: 'drag the bounding box', outline: 'draw around it'}[markKind]);
   function markFields(show, name, note) {
@@ -1554,19 +1601,27 @@
   function markClear() {
     markDraft = null; markSel = null; markDraw = null;
     markFields(false);
-    if (mark) { markMsg(markHelp()); markShow(); }
+    if (mark) { markMsg(markHelp()); markList(); markShow(); }
   }
   function markSelect(m) {
     markDraft = null; markSel = m.name;
     markFields(true, m.name, m.note);
-    markMsg(`${m.name} (${m.kind}${m.by ? ', set by ' + m.by : ''}): rename, edit the note, or delete`);
-    markShow();
+    const how = m.kind === 'point' ? 'drag to move' : m.kind === 'outline' ? 'drag to move, drag a point to reshape' : 'drag to move, drag a handle to resize';
+    markMsg(`${m.name} (${m.kind}${m.by ? ', set by ' + m.by : ''}): ${how}, rename, Del deletes`);
+    markList(); markShow();
   }
   // the marker under a photo point: a point within 12 px, else the smallest area containing it
   function markHit(e) {
-    const r = imgRect(), pt = erasePoint(e), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1};
-    const kx = r.w / (R.right - R.left), ky = r.h / (R.bottom - R.top);
+    const pt = erasePoint(e), [kx, ky] = markScale();
     let best = null, ba = Infinity;
+    // a label hit selects its marker
+    for (const t of document.querySelectorAll('.photo-ov text.ov-label')) {
+      const b = t.getBoundingClientRect();
+      if (e.clientX >= b.left - 4 && e.clientX <= b.right + 4 && e.clientY >= b.top - 4 && e.clientY <= b.bottom + 4) {
+        const m = markers.find((x) => x.name === t.textContent);
+        if (m) return m;
+      }
+    }
     for (const m of markers) {
       if (m.kind === 'point') {
         if (Math.hypot((m.points[0][0] - pt[0]) * kx, (m.points[0][1] - pt[1]) * ky) <= 12) return m;
@@ -1615,12 +1670,72 @@
     markShow();
     $('#mark-name').focus();
   }
+  // move (h < 0) or resize (handle h) the selected marker by dragging; saves on release
+  function markDrag(e, m, h) {
+    const v = $('.view'), orig = JSON.parse(JSON.stringify(m.points)), start = erasePoint(e), sx = e.clientX, sy = e.clientY;
+    const ed = markEdit = {id: e.pointerId, name: m.name, orig, start, h, mode: h < 0 ? 'move' : 'handle', moved: false};
+    v.setPointerCapture(e.pointerId);
+    const r5 = (p) => p.map((c) => +c.toFixed(5));
+    const clamp = (c) => Math.min(1, Math.max(0, c));
+    const move = (ev) => {
+      if (ev.pointerId !== ed.id || markEdit !== ed) return;
+      if (!ed.moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return;
+      ed.moved = true;
+      const pt = erasePoint(ev), xs = orig.map((p) => p[0]), ys = orig.map((p) => p[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+      if (ed.mode === 'move') {
+        const dx = Math.min(1 - x1, Math.max(-x0, pt[0] - start[0])), dy = Math.min(1 - y1, Math.max(-y0, pt[1] - start[1]));
+        m.points = orig.map((p) => r5([p[0] + dx, p[1] + dy]));
+      } else if (m.kind === 'outline') {
+        m.points = orig.map((p, i) => i === h ? r5([clamp(pt[0]), clamp(pt[1])]) : p);
+      } else {
+        // the opposite corner stays fixed (corner order x0y0, x1y0, x1y1, x0y1)
+        const fx = [x1, x0, x0, x1][h], fy = [y1, y1, y0, y0][h], cx = clamp(pt[0]), cy = clamp(pt[1]);
+        let nx0 = Math.min(fx, cx), nx1 = Math.max(fx, cx), ny0 = Math.min(fy, cy), ny1 = Math.max(fy, cy);
+        if (nx1 - nx0 < 0.004) { if (cx < fx) nx0 = nx1 - 0.004; else nx1 = nx0 + 0.004; }
+        if (ny1 - ny0 < 0.004) { if (cy < fy) ny0 = ny1 - 0.004; else ny1 = ny0 + 0.004; }
+        const w = x1 - x0 || 1, ht = y1 - y0 || 1;
+        m.points = orig.map((p) => r5([nx0 + (p[0] - x0) / w * (nx1 - nx0), ny0 + (p[1] - y0) / ht * (ny1 - ny0)]));
+      }
+      markShow();
+    };
+    v.addEventListener('pointermove', move);
+    const finish = async (ev, ok) => {
+      if (ev.pointerId !== ed.id) return;
+      v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
+      if (!mark || !ok || !ed.moved) {
+        if (!ok || !mark) m.points = orig;
+        markEdit = null;
+        if (mark) markShow();
+        return;
+      }
+      await markSaveShape(m, orig, ed.mode === 'move' ? 'moved' : 'resized');
+      markEdit = null;
+    };
+    const up = (ev) => finish(ev, true), cancel = (ev) => finish(ev, false);
+    v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
+  }
+  async function markSaveShape(m, orig, verb) {
+    markBusy = true;
+    let r, s;
+    try { r = await api('markers', {name: m.name, kind: m.kind, points: m.points, note: m.note || ''}); s = await r.json(); } catch (e) { r = null; }
+    markBusy = false;
+    if (!r || !r.ok) { m.points = orig; markShow(); markMsg('not saved: ' + (s && s.detail || 'no answer')); return; }
+    markers = s.markers; markCount();
+    const n = markers.find((x) => x.name === m.name);
+    if (n && mark) { markSelect(n); markMsg(`${verb} '${n.name}'`); }
+  }
   $('.view').addEventListener('pointerdown', (e) => {
     if (!mark || markBusy || e.button !== 0 || markDraw) return;
     e.preventDefault();
     const v = $('.view');
+    const sel = markSel && !markDraft && markers.find((m) => m.name === markSel);
+    if (sel && !markEdit) {
+      const h = markHandleAt(e), hit = h < 0 && markHit(e) === sel;
+      if (h >= 0 || hit) { markDrag(e, sel, sel.kind === 'point' || h < 0 ? -1 : h); return; }
+    }
     v.setPointerCapture(e.pointerId);
-    if (markDraft || markSel) { markDraft = null; markSel = null; markFields(false); }
+    if (markDraft || markSel) { markDraft = null; markSel = null; markFields(false); markList(); }
     const d = markDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]], shape: null};
     const move = (ev) => {
       if (ev.pointerId !== d.id || markDraw !== d) return;
@@ -1660,22 +1775,23 @@
     if (!r || !r.ok) { markMsg('not saved: ' + (s && s.detail || 'no answer')); return; }
     markers = s.markers; markCount();
     markClear();
+    markList();
     markMsg((replaced ? `replaced '${replaced.name}' · ` : '') + `saved '${name}' · ${markPlural()}`);
   }
-  async function markDelete() {
-    if (markBusy || !markSel) return;
-    const name = markSel;
+  async function markDelete(name = markSel) {
+    if (markBusy || !name) return;
     markBusy = true;
     let r, s;
     try { r = await api('markers/remove', {name}); s = await r.json(); } catch (e) { r = null; }
     markBusy = false;
     if (!r || !r.ok) { markMsg('not deleted: ' + (s && s.detail || 'no answer')); return; }
     markers = s.markers; markCount();
-    markClear();
+    if (name === markSel) markClear();
+    markList(); markShow();
     markMsg(`deleted '${name}' · ${markPlural()}`);
   }
   $('#mark-save').onclick = markSave;
-  $('#mark-delete').onclick = markDelete;
+  $('#mark-delete').onclick = () => markDelete();
   for (const id of ['#mark-name', '#mark-note'])
     $(id).addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); markSave(); }
@@ -1698,7 +1814,7 @@
     $('.view').classList.toggle('marking', on);
     ov.interactive(false);
     ov.show(on);
-    if (on) { markMsg(markHelp()); markLoad(); }
+    if (on) { markMsg(markHelp()); markList(); markLoad(); }
     else { markDraw = null; markDraft = null; markSel = null; markFields(false); ov.set([]); areaDraw(); }
   }
   $('#tool-mark').onclick = () => setMark(!mark);
@@ -2419,6 +2535,7 @@
     if (erase && e.key === 'Escape') { e.preventDefault(); setErase(false); return; }
     if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
     if (mark && e.key === 'Escape') { e.preventDefault(); if (markDraft || markSel) markClear(); else setMark(false); return; }
+    if (mark && markSel && !markDraft && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); markDelete(); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
     if (e.key === 'Escape' && !$('#more-menu').hidden) { menu(false); return; }
     if (e.key === 'Escape' && !$('#hist-pop').hidden) { $('#hist-line').click(); return; }

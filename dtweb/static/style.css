@@ -281,6 +281,15 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .photo-ov .marker.sel { stroke: #ffe14a; stroke-width: 3.5; }
 .photo-ov .marker.draft { stroke: #fff; stroke-dasharray: 5 3; }
 .ov-label { fill: #fff; font: 600 12px/1 system-ui, sans-serif; paint-order: stroke; stroke: rgba(0, 0, 0, .85); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.photo-ov .mark-handle { fill: #ffe14a; stroke: #000; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.mark-list { display: inline-flex; flex-wrap: wrap; gap: .3rem; }
+.mark-list[hidden] { display: none; }
+.mark-chip { display: inline-flex; }
+.mark-chip button { border-radius: 0; }
+.mark-chip .mark-pick { border-radius: 6px 0 0 6px; }
+.mark-chip .mark-x { border-radius: 0 6px 6px 0; border-left-width: 0; }
+.mark-chip .on { border-color: #ffe14a; color: #ffe14a; }
+@media (max-width: 800px), (pointer: coarse) { .mark-list { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; } }
 .view.marking, .view.marking.zoomed { cursor: crosshair; touch-action: none; }
 .toolbar-bar input[type=text] { min-width: 0; }
 .toolbar-bar .size { display: inline-flex; align-items: center; gap: .4rem; }

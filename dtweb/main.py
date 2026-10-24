@@ -994,6 +994,7 @@ async def photo_marker_set(image_id: int, body: MarkerBody):
         await engine.call("marker_set", imgid=image_id, name=body.name, kind=body.kind, points=raw, note=body.note)
         if body.old_name and body.old_name.strip().lower() != body.name.strip().lower():
             await engine.call("marker_remove", imgid=image_id, name=body.old_name)
+        engine.emit({"type": "markers", "imgid": image_id})   # the other tabs
         return await _markers(image_id)
     except EngineError as exc:
         raise _bad(exc)
@@ -1007,6 +1008,7 @@ class MarkerRemoveBody(BaseModel):
 async def photo_marker_remove(image_id: int, body: MarkerRemoveBody):
     try:
         await engine.call("marker_remove", imgid=image_id, name=body.name)
+        engine.emit({"type": "markers", "imgid": image_id})
         return await _markers(image_id)
     except EngineError as exc:
         raise _bad(exc)

@@ -105,6 +105,16 @@ class Engine:
         if fn in self._listeners:
             self._listeners.remove(fn)
 
+    def emit(self, ev: dict) -> None:
+        """Pass an event to the listeners as if the engine had sent it: the
+        engine doesn't echo a client's own changes, and all the browser tabs
+        share this one connection."""
+        for fn in list(self._listeners):
+            try:
+                fn(ev)
+            except Exception:
+                pass
+
     async def _connect(self) -> None:
         """Connect to whoever serves the library: the engine, or darktable's
         window started with --api. Starts an engine if nobody does, except

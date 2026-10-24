@@ -122,6 +122,30 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .val { font-variant-numeric: tabular-nums; text-decoration: underline dotted; }
 .buttons { display: flex; gap: .4rem; flex-wrap: wrap; }
 
+/* quick / pipeline views */
+.views { display: flex; margin: .5rem 0 0; }
+.views button { flex: 1; font-size: .78rem; padding: .25rem .4rem; border-radius: 0; background: none; border: 1px solid var(--line); color: var(--dim); }
+.views button:first-child { border-radius: 3px 0 0 3px; }
+.views button:last-child { border-radius: 0 3px 3px 0; border-left: 0; }
+.views button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mtag { display: block; margin-top: .15rem; font-size: .75rem; color: var(--dim); }
+.head .mtag { display: inline; margin: 0 0 0 .5rem; font-weight: normal; }
+#pipeline { padding: .3rem 0 .5rem; overflow-x: hidden; }
+.pbody select { max-width: 100%; min-width: 0; }
+.pdef { display: block; padding: .3rem .9rem; font-size: .8rem; }
+#pipeline > p.dim { padding: 0 .9rem; font-size: .85rem; }
+.prow { border-bottom: 1px solid var(--line); }
+.prow.open { background: #2a2c30; }
+.phead { display: flex; align-items: center; gap: .5rem; padding: .35rem .9rem; font-size: .85rem; }
+.pname { text-align: left; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.prole { font-size: .75rem; white-space: nowrap; }
+.pmask { font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); white-space: nowrap; }
+.plast { color: var(--accent); font-size: .7rem; }
+.plast[hidden] { display: none; }
+.pchev { margin-left: auto; font-size: .8rem; }
+.pbody { padding: 0 .9rem .6rem; }
+.pnote { font-size: .75rem; margin: .2rem 0 0; }
+
 .panel-foot { border-top: 1px solid var(--line); padding: .6rem .9rem; display: flex; flex-direction: column; gap: .5rem; background: #222427; }
 .hist-line { display: flex; justify-content: space-between; gap: .5rem; text-align: left; background: none; font-size: .85rem; }
 .hist-line #hist-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -147,6 +171,8 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 /* phone (W21): a full-height column: header, tool row, tool bar, photo, sheet; the bottom bar is fixed.
    The sheet is lowered (histogram and section names) or raised (body.sheet-up: the sections, the photo ~230 px). */
 @media (max-width: 800px) {
+  .phead { min-height: 44px; }
+  .views button { min-height: 44px; }
   body.darkroom-page { --bar-h: 58px; height: 100vh; height: 100dvh; padding-bottom: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px)); overflow: hidden; }
   body.darkroom-page .top { flex: none; position: static; flex-wrap: nowrap; gap: .5rem; padding: .25rem .5rem; overflow: hidden; white-space: nowrap; }
   body.darkroom-page .top .brand, body.darkroom-page .top .name, body.darkroom-page #lib, body.darkroom-page #darkroom { display: none; }

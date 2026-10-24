@@ -128,9 +128,13 @@
       </div>
       <p id="histo-clip" class="histo-clip"></p>
       {% if shot %}<p class="shot">{% for line in shot %}<span>{{ line }}</span>{% endfor %}</p>{% endif %}
+      <div id="views" class="views" role="tablist">
+        <button role="tab" data-view="quick">quick</button><button role="tab" data-view="pipeline">pipeline · <span id="pipe-n"></span> modules</button>
+      </div>
     </div>
     <div id="sections" class="sections">
       <div id="panels"></div>
+      <div id="pipeline" hidden></div>
       <details class="sec" id="info" data-sec="info">
         <summary>info &amp; tags <span class="sum" id="info-sum"></span></summary>
         <div class="sec-body"><div id="meta"></div></div>
@@ -437,6 +441,7 @@
     const cur = h.items[h.history_end - 1];
     $('#hist-text').textContent = h.history_end ? `step ${h.history_end} of ${h.items.length}: ${stepName(cur)}`
                                                 : `the original (${h.items.length} steps undone)`;
+    markLast();
   }
   // darktable's own name for the step ("local contrast", "exposure • sky"); older engines give only the operation
   const stepName = (it) => it.label || `${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}`;
@@ -488,8 +493,56 @@
     return out.length ? out.slice(0, 2).join(' · ') + (out.length > 2 ? ' …' : '') : 'defaults';
   }
 
+  // quick / pipeline view, the pipeline's open rows, and its caches
+  let view = 'quick', showDefaults = false, deepDone = false, genGen = 0;
+  try { view = localStorage.getItem('dr:view') === 'pipeline' ? 'pipeline' : 'quick'; showDefaults = localStorage.getItem('dr:defaults') === '1'; } catch (e) {}
+  const expanded = new Set(), genCache = new Map();
+  const key = (op, inst) => `${op}:${inst || 0}`;
+  function applyView() {
+    document.querySelectorAll('#views button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.view === view);
+      b.setAttribute('aria-selected', b.dataset.view === view);
+    });
+    $('#panels').hidden = view !== 'quick';
+    $('#pipeline').hidden = view !== 'pipeline';
+  }
+  function setView(v, noShow) {
+    view = v;
+    try { localStorage.setItem('dr:view', v); } catch (e) {}
+    if (noShow) applyView(); else show(state);
+  }
+  document.querySelectorAll('#views button').forEach((b) => { b.onclick = () => setView(b.dataset.view); });
+
+  // a module's name as darktable shows it, under its controls in the quick view
+  const TONEMAPPERS = ['agx', 'sigmoid', 'filmicrgb'];
+  function moduleTag(op, inst) {
+    const p = state.pipeline || [];
+    const i = p.findIndex((e) => e.operation === op && e.instance === (inst || 0));
+    if (i < 0) return null;
+    const e = p[i], base = (l) => l.split(' • ')[0];
+    // darktable's own preset names ("_builtin_…") and bare numbers say nothing more than the instance
+    const named = e.name && !/^(_builtin|\d+$)/.test(e.name);
+    let t = base(e.label) + ` · ${e.instance + 1}` + (named ? ` “${e.name}”` : '');
+    if (op === 'channelmixerrgb' && e.instance > 0) {
+      const ti = p.findIndex((x) => TONEMAPPERS.includes(x.operation) && x.enabled);
+      if (ti >= 0 && ti < i) t += ` · after ${base(p[ti].label)}`;
+    }
+    const b = document.createElement('button');
+    b.className = 'link mtag'; b.textContent = t; b.title = 'show this module in the pipeline view';
+    b.onclick = () => openRow(op, e.instance);
+    return b;
+  }
+  // the tag on a control group's title line (under it when it has none)
+  function tagged(panel, op, inst) {
+    const t = moduleTag(op, inst);
+    if (t) (panel.querySelector('.head') || panel).appendChild(t);
+    return panel;
+  }
+
   function show(s) {
     state = s;
+    genCache.clear(); genGen++;
+    $('#pipe-n').textContent = (s.pipeline || []).filter((e) => e.in_history && !e.plumbing).length;
     const box = $('#panels');
     box.innerHTML = '';
     for (const name of SECTIONS) {
@@ -508,9 +561,9 @@
       d.append(sum, body);
       keepOpen(d);
       mods.forEach((m) => {
-        body.appendChild(modulePanel(m, resum));
+        body.appendChild(tagged(modulePanel(m, resum), m.operation, 0));
         // white balance comes after exposure, before the tone mapper (the pipe's order)
-        if (m.operation === 'exposure' && s.wb) body.appendChild(wbPanel(s.wb, resum));
+        if (m.operation === 'exposure' && s.wb) body.appendChild(tagged(wbPanel(s.wb, resum), 'channelmixerrgb', 0));
       });
       box.appendChild(d);
     }
@@ -522,7 +575,138 @@
     if (s.geometry) showGeo(s.geometry);
     drawLevels();
     areaSync();
+    applyView();
+    if (view === 'pipeline') renderPipeline(s);
+    if (!deepDone) { deepDone = true; deepLink(); }
   }
+
+  // ── pipeline view: every instance in the edit, output at the top as in
+  // darktable; a row opens to the module's controls
+  const ROLE = (op, inst) => ({exposure: 'basic', agx: 'tone mapper', sigmoid: 'tone mapper', filmicrgb: 'tone mapper',
+    toneequal: 'tone', colorbalancergb: 'color'}[op] || (op === 'channelmixerrgb' ? (state.mono && inst === state.mono.instance ? 'black & white' : inst === 0 ? 'white balance' : '')
+    : op === 'rgblevels' && inst === 0 ? 'levels' : ''));
+  const noop = () => {};
+  function markLast() {
+    const it = hist && hist.items[hist.history_end - 1];
+    document.querySelectorAll('#pipeline .prow').forEach((r) => {
+      const l = r.querySelector('.plast');
+      if (l) l.hidden = !it || r.dataset.key !== key(it.operation, it.instance);
+    });
+  }
+  function renderPipeline(s) {
+    const box = $('#pipeline');
+    box.textContent = '';
+    const top = document.createElement('label');
+    top.className = 'pdef dim';
+    top.title = "darktable's plumbing: demosaic, input color, output color, ...";
+    const dc = document.createElement('input');
+    dc.type = 'checkbox'; dc.checked = showDefaults;
+    dc.onchange = () => {
+      showDefaults = dc.checked;
+      try { localStorage.setItem('dr:defaults', showDefaults ? '1' : '0'); } catch (e) {}
+      renderPipeline(state);
+    };
+    top.append(dc, ' show default modules');
+    box.appendChild(top);
+    const rows = [...(s.pipeline || [])].reverse().filter((e) => e.plumbing ? showDefaults : e.in_history);
+    if (!rows.length) {
+      const p = document.createElement('p');
+      p.className = 'dim'; p.textContent = "no modules in this edit's history";
+      box.appendChild(p);
+    }
+    for (const e of rows) box.appendChild(pipeRow(e));
+    markLast();
+  }
+  function pipeRow(e) {
+    const k = key(e.operation, e.instance), open = expanded.has(k);
+    const row = document.createElement('div');
+    row.className = 'prow' + (open ? ' open' : ''); row.dataset.key = k;
+    const head = document.createElement('div');
+    head.className = 'phead';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = !!e.enabled;
+    cb.onchange = async () => {
+      const r = await api('enable', {operation: e.operation, instance: e.instance, enabled: cb.checked});
+      if (!r.ok) { cb.checked = !cb.checked; status('not applied: ' + (await r.json()).detail); return; }
+      dirty = true; show(await r.json()); preview();
+    };
+    const nm = document.createElement('button');
+    nm.className = 'link pname'; nm.textContent = e.label;
+    nm.onclick = () => {
+      if (open) expanded.delete(k); else { expanded.add(k); history.replaceState(null, '', '#module=' + k); }
+      renderPipeline(state);
+    };
+    const role = document.createElement('span');
+    role.className = 'prole dim'; role.textContent = ROLE(e.operation, e.instance);
+    head.append(cb, nm, role);
+    if (e.masks && e.masks !== 'off') {
+      const m = document.createElement('span');
+      m.className = 'pmask'; m.textContent = e.masks; head.appendChild(m);
+    }
+    const last = document.createElement('span');
+    last.className = 'plast'; last.textContent = '●'; last.title = 'last changed'; last.hidden = true;
+    const chev = document.createElement('span');
+    chev.className = 'pchev dim'; chev.textContent = open ? '▾' : '▸';
+    head.append(last, chev);
+    row.appendChild(head);
+    if (open) {
+      const body = document.createElement('div');
+      body.className = 'pbody';
+      pipeBody(body, e);
+      row.appendChild(body);
+    }
+    return row;
+  }
+  function pipeBody(body, e) {
+    const m = e.instance === 0 && state.modules.find((x) => x.operation === e.operation && !x.missing);
+    if (m) { body.appendChild(modulePanel(m, noop, true)); return; }
+    if (e.operation === 'channelmixerrgb' && e.instance === 0 && state.wb && !state.wb.missing) {
+      const w = wbPanel(state.wb, noop);
+      w.removeAttribute('id');
+      const il = w.querySelector('#wb-ill');
+      if (il) il.removeAttribute('id');
+      const hd = w.querySelector('.head');
+      if (hd) hd.remove();
+      body.appendChild(w);
+      return;
+    }
+    const k = key(e.operation, e.instance), gen = genGen;
+    const draw = (g) => {
+      body.textContent = '';
+      body.appendChild(modulePanel({operation: e.operation, instance: e.instance, enabled: e.enabled, title: e.label,
+                                    fields: g.fields}, noop, true));
+      const line = (t) => { const p = document.createElement('p'); p.className = 'pnote dim'; p.textContent = t; body.appendChild(p); };
+      if (g.notes.length) line(`${g.notes.join(', ')}: set in darktable or ask Claude`);
+      if (g.blend) line(`blend: ${g.blend.blend_mode} · ${g.blend.opacity} % · mask: ${g.blend.masks}`);
+    };
+    if (genCache.has(k)) { draw(genCache.get(k)); return; }
+    body.textContent = 'loading…';
+    api(`module?operation=${encodeURIComponent(e.operation)}&instance=${e.instance}`).then(async (r) => {
+      if (!r.ok) { body.textContent = 'not available: ' + (await r.json()).detail; return; }
+      const g = await r.json();
+      if (gen === genGen) genCache.set(k, g);
+      draw(g);
+    });
+  }
+  function openRow(op, inst) {
+    inst = inst || 0;
+    const e = (state.pipeline || []).find((x) => x.operation === op && x.instance === inst);
+    if (!e) { status(`no module ${op} ${inst} in this edit`); return; }
+    setView('pipeline', true);
+    expanded.add(key(op, inst));
+    if (e.plumbing && !showDefaults) {
+      showDefaults = true;
+      try { localStorage.setItem('dr:defaults', '1'); } catch (x) {}
+    }
+    renderPipeline(state);
+    const r = document.querySelector(`#pipeline .prow[data-key="${key(op, inst)}"]`);
+    if (r) r.scrollIntoView({block: 'nearest'});
+  }
+  function deepLink() {
+    const m = /^#module=([^:]+)(?::(\d+))?$/.exec(location.hash);
+    if (m && state) openRow(m[1], m[2] ? +m[2] : 0);
+  }
+  addEventListener('hashchange', deepLink);
 
   // ── white balance: color calibration's illuminant as temperature and
   // tint (the engine converts to its x, y); a click on a neutral spot sets it
@@ -706,11 +890,30 @@
       row.className = 'field';
       const lab = document.createElement('span');
       lab.textContent = f.label; lab.title = 'double-click: back to default';
+      if (f.kind === 'enum' || f.kind === 'bool') {
+        // pipeline view's generic fields: a dropdown or a checkbox
+        let inp;
+        if (f.kind === 'enum') {
+          inp = document.createElement('select');
+          for (const o of f.values) inp.add(new Option(o.label, o.name));
+          inp.value = f.value;
+          inp.onchange = () => { f.value = inp.value; queue(m.operation, f.name, inp.value, m.instance); };
+          lab.ondblclick = () => { inp.value = f.default; inp.onchange(); };
+        } else {
+          inp = document.createElement('input');
+          inp.type = 'checkbox'; inp.checked = !!f.value;
+          inp.onchange = () => { f.value = inp.checked; queue(m.operation, f.name, inp.checked, m.instance); };
+          lab.ondblclick = () => { inp.checked = !!f.default; inp.onchange(); };
+        }
+        row.append(lab, inp);
+        sec.appendChild(row);
+        return;
+      }
       const val = document.createElement('button');
       val.className = 'link val'; val.textContent = fmt(f, f.value); val.title = 'type a value';
       const sl = document.createElement('input');
-      sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = (f.hi - f.lo) / 1000; sl.value = f.value;
-      const send = (v) => { f.value = v; val.textContent = fmt(f, v); resum(); queue(m.operation, f.name, v, m.instance); };
+      sl.type = 'range'; sl.min = f.lo; sl.max = f.hi; sl.step = f.step || (f.hi - f.lo) / 1000; sl.value = f.value;
+      const send = (v) => { if (f.step === 1) v = Math.round(v); f.value = v; val.textContent = fmt(f, v); resum(); queue(m.operation, f.name, v, m.instance); };
       sl.oninput = () => send(parseFloat(sl.value));
       lab.ondblclick = () => { sl.value = f.default; send(f.default); };
       val.onclick = () => {
@@ -733,7 +936,7 @@
     const line = document.createElement('span');
     line.className = 'sum';
     line.textContent = others.map((m) => m.label.split(' • ')[0] + (m.enabled ? '' : ' (off)')).join(' · ');
-    sum.append('other\u00a0modules ', line);
+    sum.append('also\u00a0in\u00a0this\u00a0edit ', line);
     const body = document.createElement('div');
     body.className = 'sec-body';
     for (const m of others) {
@@ -747,7 +950,10 @@
         if (!r.ok) { cb.checked = !cb.checked; status('not applied: ' + (await r.json()).detail); return; }
         dirty = true; show(await r.json()); preview();
       };
-      head.append(cb, ' ' + m.label);
+      const nm = document.createElement('button');
+      nm.className = 'link'; nm.textContent = m.label; nm.title = 'show this module in the pipeline view';
+      nm.onclick = () => openRow(m.operation, m.instance);
+      head.append(cb, ' ', nm);
       const ask = document.createElement('button');
       ask.className = 'link ask'; ask.textContent = 'ask Claude';
       ask.title = 'copy a question about this module to paste into Claude';
@@ -797,7 +1003,7 @@
     const strip = document.createElement('div');
     strip.className = 'looks'; strip.id = 'looks';
     const wheel = mixWheel(m);
-    body.append(head, strip, wheel);
+    body.append(m ? tagged(head, 'channelmixerrgb', m.instance) : head, strip, wheel);
     d.append(sum, body);
     keepOpen(d);
     d.addEventListener('toggle', () => d.open && loadLooks());

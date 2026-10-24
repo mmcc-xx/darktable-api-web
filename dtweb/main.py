@@ -410,6 +410,25 @@ def _others(mods: list[dict], mono: dict | None) -> list[dict]:
             and (m["operation"], m["instance"]) not in shown]
 
 
+async def _pipeline(image_id: int, mods: list[dict]) -> list[dict]:
+    """Every instance in pipe order (input first) for the pipeline view; the
+    mask kind of those in the history."""
+    out = []
+    for m in mods:
+        op, inst = m["operation"], m["instance"]
+        plumbing = op in PLUMBING
+        masks = "off"
+        if m.get("in_history") and not plumbing:
+            try:
+                masks = (await engine.edit(image_id, "blend_get", operation=op, instance=inst)).get("masks", "off")
+            except EngineError:
+                masks = "off"
+        out.append({"operation": op, "instance": inst, "name": m.get("name", ""), "label": m["label"],
+                    "enabled": m["enabled"], "in_history": bool(m.get("in_history")),
+                    "plumbing": plumbing, "masks": masks})
+    return out
+
+
 async def _state(image_id: int) -> dict:
     mods = (await engine.edit(image_id, "module_list"))["modules"]
     listed = {m["operation"] for m in mods}
@@ -440,7 +459,8 @@ async def _state(image_id: int) -> dict:
     mono = await _mono(image_id)
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
             "geometry": geometry, "mono": mono, "others": _others(mods, mono),
-            "wb": await _wb(image_id), "levels": await _levels(image_id)}
+            "wb": await _wb(image_id), "levels": await _levels(image_id),
+            "pipeline": await _pipeline(image_id, mods)}
 
 
 # ── white balance: color calibration's illuminant (its first instance) as a
@@ -1025,6 +1045,46 @@ async def photo_enable(image_id: int, body: EnableBody):
         return await _state(image_id)
     except EngineError as exc:
         raise _bad(exc)
+
+
+@app.get("/api/photo/{image_id}/module")
+async def photo_module(image_id: int, operation: str, instance: int = 0):
+    """Any module's fields for the pipeline view's generic panel."""
+    try:
+        g = await engine.edit(image_id, "module_get", operation=operation, instance=instance)
+        try:
+            b = await engine.edit(image_id, "blend_get", operation=operation, instance=instance)
+            blend = {"masks": b.get("masks"), "blend_mode": b.get("blend_mode"), "opacity": b.get("opacity")}
+        except EngineError:
+            blend = None
+    except EngineError as exc:
+        raise _bad(exc)
+    fields, notes = [], []
+    # a description shared by several fields (colorcalibration's six "normalize channels"): their names instead
+    descs = [x.get("description") for x in g["fields"]]
+    for x in g["fields"]:
+        label = x.get("description") if x.get("description") and descs.count(x.get("description")) == 1 \
+            else x["name"].replace("_", " ")
+        v, d = x.get("value"), x.get("default")
+        if "shape" in x:
+            notes.append(label)
+        elif isinstance(v, bool):
+            fields.append({"kind": "bool", "name": x["name"], "label": label, "value": v, "default": d})
+        elif "values" in x:
+            fields.append({"kind": "enum", "name": x["name"], "label": label, "value": v, "default": d,
+                           "values": [{"name": e["name"], "label": e.get("label") or e["name"]} for e in x["values"]]})
+        else:
+            lo, hi = x.get("min"), x.get("max")
+            num = lambda a: isinstance(a, (int, float)) and not isinstance(a, bool) and math.isfinite(a)
+            if num(v) and num(lo) and num(hi) and hi > lo and hi - lo <= 1e6:
+                whole = all(isinstance(a, int) for a in (v, d))
+                fields.append({"kind": "num", "name": x["name"], "label": label, "value": v, "default": d,
+                               "lo": lo, "hi": hi, "factor": 1, "unit": "",
+                               "digits": 0 if whole else (2 if hi - lo > 1.5 else 3), "step": 1 if whole else None})
+            else:
+                notes.append(label)
+    return {"operation": operation, "instance": instance, "enabled": g["enabled"], "fields": fields,
+            "notes": notes, "blend": blend}
 
 
 class EndBody(BaseModel):

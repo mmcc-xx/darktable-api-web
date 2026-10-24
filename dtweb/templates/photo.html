@@ -22,7 +22,7 @@
       <button id="tool-dust" data-tool="dust" aria-pressed="false" title="find sensor dust, review the spots, click to heal (d)">dust</button>
       <button id="tool-erase" data-tool="erase" aria-pressed="false" {% if not can_fill %}disabled {% endif %}title="{{ "remove an object: draw around it, or click for a round spot (e)" if can_fill else "erase needs darktable-api on darktable master (ai_fill); this engine doesn't have it" }}">erase</button>
       <button id="tool-area" data-tool="area" aria-pressed="false" {% if not can_mask %}disabled {% endif %}title="{{ "adjust the sky or the subject on its own: click it on the photo (a)" if can_mask else "sky / subject needs darktable-api on darktable master (mask_ai); this engine doesn't have it" }}">sky / subject</button>
-      <button id="tool-mark" data-tool="mark" aria-pressed="false" {% if not can_mark %}disabled {% endif %}title="{{ "name points and areas on the photo, so others (and Claude) can refer to them: \"the left tree\" (m)" if can_mark else "markers need darktable-api with marker_set; this engine doesn't have it" }}">markers</button>
+      <button id="tool-mark" data-tool="mark" aria-pressed="false" {% if not can_mark %}disabled {% endif %}title="{{ "name points and areas on the photo, so others (and your AI assistant) can refer to them: \"the left tree\" (m)" if can_mark else "markers need darktable-api with marker_set; this engine doesn't have it" }}">markers</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
@@ -676,7 +676,7 @@
       body.appendChild(modulePanel({operation: e.operation, instance: e.instance, enabled: e.enabled, title: e.label,
                                     fields: g.fields}, noop, true));
       const line = (t) => { const p = document.createElement('p'); p.className = 'pnote dim'; p.textContent = t; body.appendChild(p); };
-      if (g.notes.length) line(`${g.notes.join(', ')}: set in darktable or ask Claude`);
+      if (g.notes.length) line(`${g.notes.join(', ')}: set in darktable or ask the assistant`);
       if (g.blend) line(`blend: ${g.blend.blend_mode} · ${g.blend.opacity} % · mask: ${g.blend.masks}`);
     };
     if (genCache.has(k)) { draw(genCache.get(k)); return; }
@@ -730,7 +730,7 @@
       const p = document.createElement('p');
       p.className = 'status';
       p.textContent = wb.missing ? 'not available: ' + wb.missing
-        : "this edit's white balance is in darktable's white balance module (color calibration's adaptation is off): ask Claude to change it";
+        : "this edit's white balance is in darktable's white balance module (color calibration's adaptation is off): ask the assistant to change it";
       sec.appendChild(p);
       return sec;
     }
@@ -824,7 +824,7 @@
     $('#lv-on').checked = !!L.enabled;
     $('#lv').classList.toggle('off', !L.enabled);
     $('#lv-track').hidden = !L.linked;
-    $('#lv-val').textContent = L.linked ? lv.map((v) => v.toFixed(2)).join(' · ') : 'per channel: ask Claude';
+    $('#lv-val').textContent = L.linked ? lv.map((v) => v.toFixed(2)).join(' · ') : 'per channel: ask the assistant';
     $('.lv-picks').hidden = !L.linked;
     document.querySelectorAll('.lv-h').forEach((h) => { h.style.left = (Math.max(0, Math.min(1, lv[+h.dataset.h])) * 100) + '%'; });
   }
@@ -927,8 +927,8 @@
     return sec;
   }
 
-  // ── modules in the edit that no panel shows (often added by Claude or a
-  // preset): on/off, and a question about it to paste into Claude
+  // ── modules in the edit that no panel shows (often added by the assistant or a
+  // preset): on/off, and a question about it to paste into the assistant
   function othersSection(others) {
     const d = document.createElement('details');
     d.className = 'sec'; d.dataset.sec = 'others';
@@ -955,13 +955,13 @@
       nm.onclick = () => openRow(m.operation, m.instance);
       head.append(cb, ' ', nm);
       const ask = document.createElement('button');
-      ask.className = 'link ask'; ask.textContent = 'ask Claude';
-      ask.title = 'copy a question about this module to paste into Claude';
+      ask.className = 'link ask'; ask.textContent = 'ask the assistant';
+      ask.title = 'copy a question about this module to paste into your AI assistant';
       ask.onclick = async () => {
         const q = `Photo ${ID}: what is the ${m.label} module doing in this edit` +
                   `${m.instance ? ` (instance ${m.instance})` : ''}? Should I keep it, change it or turn it off?`;
-        try { await navigator.clipboard.writeText(q); status('question copied: paste it into Claude (Claude, top right, to connect)'); }
-        catch (e) { prompt('Ask Claude:', q); }
+        try { await navigator.clipboard.writeText(q); status('question copied: paste it into your AI assistant (AI assistant, top right, to connect one)'); }
+        catch (e) { prompt('Ask the assistant:', q); }
       };
       row.append(head, ask);
       body.appendChild(row);

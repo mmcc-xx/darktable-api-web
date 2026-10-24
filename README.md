@@ -68,8 +68,8 @@ owner.
   (luminance, red/orange/yellow/green/blue filters, darktable's film
   presets) rendered on the current edit; a click applies one. *Other
   modules* lists the edit's modules no panel shows (lens correction, or
-  local contrast and the like added by Claude or a preset), each with on/off
-  and *ask Claude*, which copies a question about it. Pinned under the panel:
+  local contrast and the like added by the assistant or a preset), each with on/off
+  and *ask the assistant*, which copies a question about it. Pinned under the panel:
   the history step ("step 14 of 14: local contrast", click for the whole
   history), undo/redo, save, discard unsaved, and ⋯ for export,
   duplicate (with this edit, ⌘/Ctrl+D, or unedited) and start over from
@@ -105,11 +105,16 @@ owner.
   at its default, including the folder, by default
   `$(FILE_FOLDER)/darktable_exported/`), with a download link for the file.
   Unsaved changes are saved first, after asking.
-- **Connect Claude:** *Claude* in the header shows how to let Claude Code
-  edit this library: the `claude mcp add` command filled in with this
-  app's engine and library (set `DTAPI_MCP` if `darktable-api-mcp` isn't
-  on the PATH or in `~/darktable-api-mcp/.venv`), linking the editing
-  skills, and a prompt to start with. Claude's edits show up here live.
+- **Connect an AI assistant:** *AI assistant* in the header (its light is
+  green while one is connected) shows how to let any MCP client edit this
+  library: the MCP server as the generic stdio JSON config (`mcpServers`:
+  command, args, env) filled in with this app's engine and library (set
+  `DTAPI_MCP` if `darktable-api-mcp` isn't on the PATH or in
+  `~/darktable-api-mcp/.venv`), which Claude Desktop, Cursor, VS Code,
+  Codex and others take in their MCP settings; then Claude Code as the
+  worked example: the `claude mcp add` command, linking the editing skills
+  (Claude Code's; other clients get the server's own instructions), and a
+  prompt to start with. The assistant's edits show up here live.
 - **Sharing the library with darktable:** darktable and the engine can't
   have one library open at the same time. Use the darktable-api build of
   darktable's window, which serves the library to the engine itself. If the
@@ -200,7 +205,7 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_CACHEDIR` | `library-copy/cache` | the engine's darktable cache |
 | `DTAPI_SOCKET` | `library-copy/darktable-api.sock` (or `/tmp/darktable-api-<uid>-<hash>.sock` if that path is too long) | where the engine listens; every app using the library must use the same one |
 | `DTAPI_MAX_SESSIONS`, `DTAPI_IDLE_EXIT` | 3, 600 | used when this app starts the engine |
-| `DTAPI_MCP` | `darktable-api-mcp` on the PATH, else `~/darktable-api-mcp/.venv/bin/darktable-api-mcp` | the MCP server the *Claude* dialog's command runs |
+| `DTAPI_MCP` | `darktable-api-mcp` on the PATH, else `~/darktable-api-mcp/.venv/bin/darktable-api-mcp` | the MCP server the *AI assistant* dialog's config runs |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
 To open the copy in darktable's GUI (it serves the library to the engine

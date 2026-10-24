@@ -11,7 +11,7 @@
     <a href="/" class="brand" id="brand">darktable-api</a>
     {% block top %}{% endblock %}
     {% if lib.server == 'gui' %}<a id="darkroom" href="{{ '/photo/%d' % lib.darkroom_imgid if lib.darkroom_imgid else '#' }}"{% if not lib.darkroom_imgid %} hidden{% endif %} title="the photo open in darktable's darkroom">darkroom: photo {{ lib.darkroom_imgid }}</a>{% endif %}
-    <button class="claude-btn" id="claude-btn" title="edit these photos by asking Claude"><span class="light" id="claude-light" hidden></span>Claude</button>
+    <button class="claude-btn" id="claude-btn" title="edit these photos by asking an AI assistant"><span class="light" id="claude-light" hidden></span>AI assistant</button>
     <span class="lib" id="lib" data-state="{{ lib.state }}">
       <span id="lib-text">
         {% if lib.state == 'owned' and lib.server == 'gui' %}library served by darktable's window: {{ lib.library }}
@@ -27,15 +27,19 @@
   </header>
   <main>{% block main %}{% endblock %}</main>
   <dialog id="connect" class="connect">
-    <h3>Connect Claude</h3>
-    <p class="dim">Claude Code edits this library through the same engine as this page: its changes show up here as it makes them, and yours are there for it.</p>
+    <h3>Connect an AI assistant</h3>
+    <p class="dim">darktable-api-mcp is an MCP server: any AI assistant that speaks MCP (the Model Context Protocol) can use it to edit this library through the same engine as this page. Its changes show up here as it makes them, and yours are there for it.</p>
+    <p>The server, as the stdio config most MCP clients take:</p>
+    <div class="cmd"><pre>{{ connect.config }}</pre><button data-copy>copy</button></div>
+    {% if not connect.found %}<p class="dim">darktable-api-mcp wasn't found on this machine: put its path in place of the placeholder (or set DTAPI_MCP for the web app).</p>{% endif %}
+    <p class="dim">Other clients (Claude Desktop, Cursor, VS Code, Codex, …) take this JSON in their MCP settings; see your client's documentation for where.</p>
+    <h4>Example: Claude Code</h4>
     <ol>
       <li>In a terminal, add the MCP server (once):
         <div class="cmd"><pre>{{ connect.command }}</pre><button data-copy>copy</button></div>
-        {% if not connect.found %}<p class="dim">darktable-api-mcp wasn't found on this machine: put its path in place of the last line (or set DTAPI_MCP for the web app).</p>{% endif %}
         <p class="dim">Already have a darktable-api server on another library? Remove it first (<code>claude mcp remove darktable-api</code>) or give this one another name.</p>
       </li>
-      {% if connect.skills %}<li>Link the editing skills (optional, once):
+      {% if connect.skills %}<li>Link the editing skills (optional, once; skills are Claude Code's, other clients get the server's own instructions):
         <div class="cmd"><pre>{{ connect.skills }}</pre><button data-copy>copy</button></div>
       </li>{% endif %}
       <li>Start <code>claude</code> and ask, for example:
@@ -49,7 +53,7 @@
     try { const q = sessionStorage.getItem('lib:query'); if (q !== null) document.getElementById('brand').href = '/?' + q; } catch (e) {}
     // follow the photo open in darktable's darkroom
     const dr = document.getElementById('darkroom');
-    // the "Claude connected" light
+    // the "AI assistant connected" light
     const light = document.getElementById('claude-light');
     const cbtn = document.getElementById('claude-btn');
     const ccount = document.getElementById('claude-count');
@@ -57,12 +61,12 @@
       try {
         const s = await (await fetch('/api/clients')).json();
         light.hidden = ccount.hidden = !s.supported;
-        if (!s.supported) { cbtn.title = 'edit these photos by asking Claude'; return; }
-        light.classList.toggle('on', s.claude >= 1);
-        cbtn.title = s.claude >= 1
-          ? `Claude is connected (${s.claude} session${s.claude === 1 ? '' : 's'}): click for how to connect another`
-          : 'no Claude session connected: click to connect one';
-        ccount.textContent = `Claude sessions connected now: ${s.claude}`;
+        if (!s.supported) { cbtn.title = 'edit these photos by asking an AI assistant'; return; }
+        light.classList.toggle('on', s.assistants >= 1);
+        cbtn.title = s.assistants >= 1
+          ? 'AI assistant connected: click for how to connect another'
+          : 'no AI assistant connected: click to connect one';
+        ccount.textContent = `AI assistant sessions connected now: ${s.assistants}`;
       } catch (e) {}
     }
     refreshClients();

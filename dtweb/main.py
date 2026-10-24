@@ -51,17 +51,21 @@ def _mcp_program() -> str | None:
 
 
 def _connect() -> dict:
-    """The Connect Claude dialog's commands: the MCP server on this web app's
-    engine and library (DTAPI_MCP: the darktable-api-mcp program)."""
+    """The Connect an AI assistant dialog's configs: the MCP server on this web
+    app's engine and library (DTAPI_MCP: the darktable-api-mcp program), as the
+    stdio JSON most MCP clients take and as Claude Code's command."""
     mcp = _mcp_program()
+    program = mcp or "/path/to/darktable-api-mcp/.venv/bin/darktable-api-mcp"
     env = [("DTAPI_BIN", BIN), ("DTAPI_CONFIGDIR", CONFIG)]
     if os.environ.get("DTAPI_SOCKET"):
         env.append(("DTAPI_SOCKET", os.environ["DTAPI_SOCKET"]))
     q = lambda v: shlex.quote(str(v))
     command = " \\\n  ".join(["claude mcp add darktable-api", *(f"-e {k}={q(v)}" for k, v in env),
-                               f"-- {q(mcp or '/path/to/darktable-api-mcp/.venv/bin/darktable-api-mcp')}"])
+                               f"-- {q(program)}"])
+    config = json.dumps({"mcpServers": {"darktable-api": {
+        "command": program, "args": [], "env": {k: str(v) for k, v in env}}}}, indent=2)
     skills = Path(mcp).resolve().parents[2] / "skills" if mcp else None
-    return {"command": command, "found": bool(mcp),
+    return {"command": command, "config": config, "found": bool(mcp),
             "skills": (f"mkdir -p ~/.claude/skills\nfor s in {q(skills)}/*/; do ln -s \"$s\" ~/.claude/skills/; done"
                        if skills and skills.is_dir() else None)}
 
@@ -1659,14 +1663,14 @@ async def import_cancel(job: int):
 
 @app.get("/api/clients")
 async def clients():
-    """How many Claude sessions (clients that said kind "mcp") the engine has."""
+    """How many AI assistant sessions (clients that said kind "mcp") the engine has."""
     try:
         if not await engine.supports("clients"):
-            return {"supported": False, "claude": 0}
+            return {"supported": False, "assistants": 0}
         r = await engine.call("clients")
     except EngineError:
-        return {"supported": False, "claude": 0}
-    return {"supported": True, "claude": sum(1 for c in r.get("clients", []) if c.get("kind") == "mcp")}
+        return {"supported": False, "assistants": 0}
+    return {"supported": True, "assistants": sum(1 for c in r.get("clients", []) if c.get("kind") == "mcp")}
 
 
 @app.get("/api/library")

@@ -347,7 +347,14 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .exform .status button { font-size: .8rem; padding: .1rem .5rem; margin-left: .3rem; }
 .detail { flex: 0 0 300px; position: sticky; top: calc(var(--top-h, 3rem) + .8rem); max-height: calc(100vh - var(--top-h, 3rem) - 1.6rem);
           overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .7rem; font-size: .85rem; }
-.detail-img { display: block; width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #111; border-radius: 3px; cursor: zoom-in; }
+.detail-pv { position: relative; overflow: hidden; width: 100%; aspect-ratio: 3 / 2; background: #111; border-radius: 3px; cursor: zoom-in;
+             touch-action: manipulation; }
+.detail-pv.zoomed { cursor: grab; }
+.detail-pv.panning { cursor: grabbing; }
+.dz-layer { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.dz-bar { display: none; position: absolute; top: .4rem; right: .4rem; gap: .25rem; padding: .2rem; background: rgba(0, 0, 0, .55); border-radius: 4px; }
+.dz-bar button { font-size: .75rem; padding: .1rem .45rem; }
+.dz-bar button.on { color: var(--accent); border-color: var(--accent); }
 .detail-name { margin: .5rem 0 .4rem; font-size: .95rem; overflow-wrap: anywhere; }
 .detail .buttons { margin: 0 0 .4rem; align-items: center; }
 .detail .buttons button { font-size: .8rem; padding: .15rem .5rem; }
@@ -369,7 +376,8 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   .lt-split::after { content: ""; display: block; width: 2px; height: 100%; margin: 0 auto; background: var(--line); border-radius: 1px; }
   .lt-split:hover::after, .lt-split.drag::after { background: var(--accent); }
   .detail { flex-basis: var(--preview-w, 45%); height: calc(100vh - var(--top-h, 3rem) - 1.6rem); display: flex; flex-direction: column; overflow: hidden; }
-  .detail-img { flex: 1 1 0; min-height: 12rem; width: 100%; aspect-ratio: auto; }
+  .detail-pv { flex: 1 1 0; min-height: 12rem; aspect-ratio: auto; }
+  .dz-bar { display: flex; }
   .detail-info { flex: 0 1 auto; max-height: 45%; overflow-y: auto; }
 }
 
@@ -410,7 +418,7 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .fv-stage { position: absolute; inset: 0; touch-action: none; }
 .fullview.zoomed .fv-stage { cursor: grab; }
 .fv-layer { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
-.fv-base, .fv-sharp { position: absolute; display: block; max-width: none; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+.fv-base, .fv-sharp, .dz-base, .dz-sharp { position: absolute; display: block; max-width: none; user-select: none; -webkit-user-drag: none; pointer-events: none; }
 .fv-bar { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: .4rem; padding: .4rem .8rem;
           background: linear-gradient(rgba(0, 0, 0, .6), transparent); transition: opacity .3s; }
 .fv-top { top: 0; }

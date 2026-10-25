@@ -22,6 +22,7 @@
 {% endblock %}
 {% block main %}
 <script src="/static/meta.js?v={{ static_version('meta.js') }}"></script>
+<script src="/static/zoomview.js?v={{ static_version('zoomview.js') }}"></script>
 <script src="/static/fullview.js?v={{ static_version('fullview.js') }}"></script>
 {% if error %}<p class="banner">{{ error }}</p>{% endif %}
 {% if lib.state == 'released' %}
@@ -469,9 +470,12 @@
     box.textContent = '';
     detailId = t.dataset.id;
     pvBase = `/thumb/${img.id}/${d.version}.jpg`;
-    pv.alt = img.filename; pv.title = 'click: full screen, double-click: open';
-    pv.onclick = () => { clearTimeout(pvClick); pvClick = setTimeout(() => fullScreen(t), 250); };
-    pv.ondblclick = () => { clearTimeout(pvClick); open(t); };
+    pvImg.alt = img.filename; pvTile = t;
+    if (pvId !== img.id) {                  // a new photo: fit; the same one re-rendered keeps its zoom
+      pvId = img.id; pvFresh = true;
+      z.setPhoto({id: img.id, width: img.width, height: img.height});
+    }
+    pvTitle();
     const info = el('div', 'detail-info');
     box.append(pv, info);
     pvSize();
@@ -507,11 +511,34 @@
   }
   addEventListener('resize', detailSoon);
 
-  // the preview: one element kept across photos, so the old image stays
-  // until the new one has loaded; its size follows the box (wide split)
-  // × the pixel ratio, in steps of 256, 720 to 2048
-  const pv = el('img', 'detail-img');
-  let pvBase = null, pvWant = null, pvClick = null, pvTimer = null;
+  // the preview: one box kept across photos, so the old image stays until the
+  // new one has loaded; its size follows the box (wide split) × the pixel
+  // ratio, in steps of 256, 720 to 2048. Wide: zoom and pan (static/zoomview.js)
+  const pv = el('div', 'detail-pv'), pvLayer = el('div', 'dz-layer');
+  const pvImg = el('img', 'detail-img dz-base'), pvSharp = el('img', 'dz-sharp');
+  pvImg.draggable = pvSharp.draggable = false;
+  pvSharp.hidden = true;
+  pvLayer.append(pvImg, pvSharp);
+  const pvBar = el('div', 'dz-bar');
+  const pvBtns = [['fit', 'fit the photo'], ['1', '100%: one photo pixel per screen pixel'], ['2', '200%']].map(([k, tip]) => {
+    const b = el('button', null, k === 'fit' ? 'fit' : k + '00%'); b.type = 'button'; b.dataset.z = k; b.title = tip;
+    return b;
+  });
+  pvBar.append(...pvBtns);
+  pv.append(pvLayer, pvBar);
+  const z = dtZoom.create({box: pv, layer: pvLayer, base: pvImg, sharp: pvSharp,
+                           onZoom(on) { pv.classList.toggle('zoomed', on); pvTitle(); pvButtons(); }});
+  let pvBase = null, pvWant = null, pvClick = null, pvTimer = null, pvTile = null, pvId = null, pvFresh = false;
+  let pvNat = null, pvBoxW = 0, pvBoxH = 0;
+  const wideOn = () => split.offsetParent !== null;          // the W28 test: the wide split
+  function pvTitle() {
+    pv.title = wideOn() && z.zoomed() ? 'drag: pan, double-click: open' : wideOn() ? 'click: full screen, double-click: open, wheel: zoom'
+      : 'click: full screen, double-click: open';
+  }
+  function pvButtons() {
+    const zoomed = z.zoomed(), w = z.wantZ();
+    pvBtns.forEach((b) => b.classList.toggle('on', b.dataset.z === 'fit' ? !zoomed : zoomed && w !== null && +b.dataset.z === w));
+  }
   function pvSize() {
     if (!pvBase || !pv.isConnected) return;
     const px = Math.max(pv.clientWidth, pv.clientHeight) * (devicePixelRatio || 1);
@@ -519,10 +546,69 @@
     if (url === pvWant) return;
     pvWant = url;
     const next = new Image();
-    next.onload = () => { if (pvWant === url) pv.src = url; };
+    next.onload = () => {
+      if (pvWant !== url) return;
+      pvImg.src = url;
+      const w = next.naturalWidth, h = next.naturalHeight;
+      if (pvFresh || !pvNat || Math.abs(w / h - pvNat.w / pvNat.h) > 0.01) z.natural(w, h);   // a bigger size of the same photo keeps the zoom
+      pvFresh = false; pvNat = {w, h};
+    };
     next.src = url;
   }
-  new ResizeObserver(() => { clearTimeout(pvTimer); pvTimer = setTimeout(pvSize, 150); }).observe(pv);
+  new ResizeObserver(() => {
+    if (pv.clientWidth !== pvBoxW || pv.clientHeight !== pvBoxH) {
+      pvBoxW = pv.clientWidth; pvBoxH = pv.clientHeight;
+      z.layout(); z.reset();
+    }
+    pvTitle();
+    clearTimeout(pvTimer); pvTimer = setTimeout(pvSize, 150);
+  }).observe(pv);
+
+  // mouse and pen in the wide split: wheel zooms at the pointer, a drag pans when zoomed;
+  // touch is a plain tap (click) as in the narrow panel
+  pv.addEventListener('wheel', (e) => {
+    if (!wideOn()) return;
+    e.preventDefault();
+    const [x, y] = z.local(e.clientX, e.clientY);
+    z.zoomAt(z.state().s * dtZoom.wheelFactor(e), x, y);
+  }, {passive: false});
+  let pvG = null;      // {x, y, s, tx, ty, moved} of a mouse press
+  pv.addEventListener('pointerdown', (e) => {
+    if (!wideOn() || e.pointerType === 'touch' || e.button !== 0) return;
+    const v = z.state();
+    pvG = {x: e.clientX, y: e.clientY, s: v.s, tx: v.tx, ty: v.ty, moved: false};
+    try { pv.setPointerCapture(e.pointerId); } catch (err) {}
+    z.hideSharp();
+  });
+  pv.addEventListener('pointermove', (e) => {
+    if (!pvG) return;
+    const dx = e.clientX - pvG.x, dy = e.clientY - pvG.y;
+    if (!pvG.moved && Math.hypot(dx, dy) > 6) pvG.moved = true;
+    if (pvG.moved && z.zoomed()) { pv.classList.add('panning'); z.view(pvG.s, pvG.tx + dx, pvG.ty + dy); }
+  });
+  function pvUp() {
+    if (!pvG) return;
+    pv.classList.remove('panning');
+    if (z.zoomed()) z.changed();                     // pointerdown hid the sharp layer
+    setTimeout(() => { pvG = null; }, 0);            // after the click that follows
+  }
+  pv.addEventListener('pointerup', pvUp);
+  pv.addEventListener('pointercancel', pvUp);
+  pv.addEventListener('click', () => {
+    if (!pvTile || (wideOn() && (z.zoomed() || (pvG && pvG.moved)))) return;   // zoomed: it was a pan
+    clearTimeout(pvClick); const t = pvTile; pvClick = setTimeout(() => fullScreen(t), 250);
+  });
+  pv.addEventListener('dblclick', () => { clearTimeout(pvClick); if (pvTile) open(pvTile); });
+  for (const type of ['pointerdown', 'click', 'dblclick']) pvBar.addEventListener(type, (e) => e.stopPropagation());
+  pvBar.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-z]');
+    if (!b) return;
+    clearTimeout(pvClick);
+    if (b.dataset.z === 'fit') z.reset(); else z.zoomTo(+b.dataset.z);
+    pvButtons();
+    b.blur();
+  });
+  pvButtons();
 
   // wide screens: the divider between the grid and the preview; the
   // preview's width is kept, clamped so the grid keeps 2 columns

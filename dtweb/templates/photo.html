@@ -616,8 +616,68 @@
       p.className = 'dim'; p.textContent = "no modules in this edit's history";
       box.appendChild(p);
     }
+    pipeRows = rows;
     for (const e of rows) box.appendChild(pipeRow(e));
     markLast();
+  }
+  // W30: reorder. Rows show output at the top, so above = later in the pipe (module_move `after`).
+  let pipeRows = [];
+  async function moveModule(e, where, t) {
+    const r = await api('move', {operation: e.operation, instance: e.instance,
+                                 [where]: {operation: t.operation, instance: t.instance}});
+    if (!r.ok) { status('not moved: ' + (await r.json()).detail); renderPipeline(state); return; }
+    dirty = true; show(await r.json());
+    preview('moved (undo doesn\'t take a move back: move it again) ·');
+  }
+  function moveMenu(e) {
+    const sel = document.createElement('select');
+    sel.className = 'pmove'; sel.title = 'move this module';
+    sel.add(new Option('⇅', ''));
+    const others = pipeRows.filter((t) => t !== e);
+    for (const [where, text] of [['after', 'above'], ['before', 'below']]) {
+      const g = document.createElement('optgroup');
+      g.label = `move ${text} (${where} in the pipe)`;
+      others.forEach((t, i) => g.appendChild(new Option(`${text} ${t.label}`, `${where}:${i}`)));
+      sel.appendChild(g);
+    }
+    sel.onchange = () => {
+      const [where, i] = sel.value.split(':');
+      if (where) moveModule(e, where, others[+i]);
+    };
+    return sel;
+  }
+  function dragGrip(e, row) {
+    const g = document.createElement('span');
+    g.className = 'pgrip dim'; g.textContent = '⠿'; g.title = 'drag to move';
+    let line = null, gap = -1;
+    const end = () => { if (line) line.remove(); line = null; row.classList.remove('dragging'); };
+    g.onpointerdown = (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      g.setPointerCapture(ev.pointerId);
+      row.classList.add('dragging');
+      line = document.createElement('div');
+      line.className = 'pdrop';
+      $('#pipeline').appendChild(line);
+      gap = -1;
+    };
+    g.onpointermove = (ev) => {
+      if (!line) return;
+      const rs = [...document.querySelectorAll('#pipeline .prow')];
+      gap = rs.findIndex((r) => { const b = r.getBoundingClientRect(); return ev.clientY < b.top + b.height / 2; });
+      if (gap < 0) gap = rs.length;
+      const ref = rs[gap] || rs[rs.length - 1];
+      line.style.top = (gap < rs.length ? ref.offsetTop : ref.offsetTop + ref.offsetHeight) - 1 + 'px';
+    };
+    g.onpointerup = () => {
+      const at = gap, from = pipeRows.indexOf(e);
+      end();
+      if (at < 0 || at === from || at === from + 1) return;
+      if (at < pipeRows.length) moveModule(e, 'after', pipeRows[at]);
+      else moveModule(e, 'before', pipeRows[pipeRows.length - 1]);
+    };
+    g.onpointercancel = end;
+    return g;
   }
   function pipeRow(e) {
     const k = key(e.operation, e.instance), open = expanded.has(k);
@@ -640,7 +700,7 @@
     };
     const role = document.createElement('span');
     role.className = 'prole dim'; role.textContent = ROLE(e.operation, e.instance);
-    head.append(cb, nm, role);
+    head.append(dragGrip(e, row), cb, nm, role);
     if (e.masks && e.masks !== 'off') {
       const m = document.createElement('span');
       m.className = 'pmask'; m.textContent = e.masks; head.appendChild(m);
@@ -649,7 +709,7 @@
     last.className = 'plast'; last.textContent = '●'; last.title = 'last changed'; last.hidden = true;
     const chev = document.createElement('span');
     chev.className = 'pchev dim'; chev.textContent = open ? '▾' : '▸';
-    head.append(last, chev);
+    head.append(last, moveMenu(e), chev);
     row.appendChild(head);
     if (open) {
       const body = document.createElement('div');

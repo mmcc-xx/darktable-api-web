@@ -1053,6 +1053,30 @@ async def photo_enable(image_id: int, body: EnableBody):
         raise _bad(exc)
 
 
+class ModuleRef(BaseModel):
+    operation: str
+    instance: int = 0
+
+
+class MoveBody(BaseModel):
+    operation: str
+    instance: int = 0
+    before: ModuleRef | None = None
+    after: ModuleRef | None = None
+
+
+@app.post("/api/photo/{image_id}/move")
+async def photo_move(image_id: int, body: MoveBody):
+    """Move a module instance in the pipe (W30); darktable's rules decide what may move."""
+    if (body.before is None) == (body.after is None):
+        raise HTTPException(400, "give before or after")
+    try:
+        await engine.edit(image_id, "module_move", **body.model_dump(exclude_none=True))
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
 @app.get("/api/photo/{image_id}/module")
 async def photo_module(image_id: int, operation: str, instance: int = 0):
     """Any module's fields for the pipeline view's generic panel."""

@@ -43,6 +43,16 @@ h4 { margin: 1rem 0 .3rem; color: var(--dim); font-weight: 600; }
 .connect pre { flex: 1; min-width: 0; margin: 0; padding: .5rem .6rem; background: var(--bg); border: 1px solid var(--line);
                border-radius: 4px; font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .connect form { text-align: right; }
+/* ask() / tell() (static/ask.js) */
+.ask-dlg { width: 26rem; padding: 0; }
+.ask-dlg form { text-align: left; padding: 1rem 1.2rem; }
+.ask-msg { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-val { display: block; width: 100%; box-sizing: border-box; margin: .4rem 0; }
+.ask-val[hidden] { display: none; }
+.ask-btns { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .8rem; }
+.ask-btns [hidden] { display: none; }
+button.danger { background: #d0534a; color: #fff; border-color: #d0534a; font-weight: 600; }
+@media (pointer: coarse) { .ask-btns button { min-height: 44px; min-width: 5rem; } }
 .banner { background: #3a2f1c; border: 1px solid #6b5228; padding: .6rem .8rem; border-radius: 4px; }
 .count { color: var(--dim); font-size: .8rem; margin: 0 0 .6rem; }
 

@@ -273,7 +273,7 @@
   async function post(tile, path, body) {
     const r = await fetch(`/api/photo/${tile.dataset.id}/${path}?${query}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-    if (!r.ok) { alert((await r.json()).detail); return; }
+    if (!r.ok) { tell((await r.json()).detail); return; }
     const was = tile === current, id = tile.id;
     tile.outerHTML = await r.text();
     const t = document.getElementById(id);
@@ -294,7 +294,7 @@
   async function duplicate(tile) {
     let r = await fetch(`/api/photo/${tile.dataset.id}/duplicate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})});
-    if (!r.ok) { alert((await r.json()).detail); return; }
+    if (!r.ok) { tell((await r.json()).detail); return; }
     const img = (await r.json()).image;
     r = await fetch(`/tile/${img.id}?${query}`);
     if (!r.ok) return;
@@ -369,7 +369,7 @@
     if (!names.length) return $('#sel-tag').focus();
     const ids = selection().map((t) => +t.dataset.id);
     try { await dtMeta.setTags(ids, on ? names : [], on ? [] : names); }
-    catch (e) { alert(e.message); return; }
+    catch (e) { tell(e.message); return; }
     $('#sel-tag').value = '';
     $('#sel-count').textContent = `${selected.size} selected · ${names.join(', ')} ${on ? 'added' : 'removed'}`;
     detailKey = null; detailSoon();

@@ -763,8 +763,8 @@
       };
       sl.oninput = () => send(f.to(parseFloat(sl.value)));
       lab.ondblclick = () => { sl.value = f.from(f.def); send(f.def); };
-      val.onclick = () => {
-        const t = prompt(f.label + (f.key === 'temperature' ? ' (K)' : ''), f.key === 'temperature' ? Math.round(wb[f.key]) : wb[f.key].toFixed(1));
+      val.onclick = async () => {
+        const t = await ask(f.label + (f.key === 'temperature' ? ' (K)' : ''), {value: f.key === 'temperature' ? Math.round(wb[f.key]) : wb[f.key].toFixed(1), ok: 'set'});
         if (t === null || isNaN(parseFloat(t))) return;
         const v = parseFloat(t); sl.value = f.from(v); send(v);
       };
@@ -918,8 +918,8 @@
       const send = (v) => { if (f.step === 1) v = Math.round(v); f.value = v; val.textContent = fmt(f, v); resum(); queue(m.operation, f.name, v, m.instance); };
       sl.oninput = () => send(parseFloat(sl.value));
       lab.ondblclick = () => { sl.value = f.default; send(f.default); };
-      val.onclick = () => {
-        const t = prompt(`${f.label}${f.unit ? ' (' + f.unit + ')' : ''}`, (f.value * f.factor).toFixed(f.digits));
+      val.onclick = async () => {
+        const t = await ask(`${f.label}${f.unit ? ' (' + f.unit + ')' : ''}`, {value: (f.value * f.factor).toFixed(f.digits), ok: 'set'});
         if (t === null || isNaN(parseFloat(t))) return;
         const v = parseFloat(t) / f.factor; sl.value = v; send(v);
       };
@@ -956,16 +956,16 @@
       nm.className = 'link'; nm.textContent = m.label; nm.title = 'show this module in the pipeline view';
       nm.onclick = () => openRow(m.operation, m.instance);
       head.append(cb, ' ', nm);
-      const ask = document.createElement('button');
-      ask.className = 'link ask'; ask.textContent = 'ask the assistant';
-      ask.title = 'copy a question about this module to paste into your AI assistant';
-      ask.onclick = async () => {
+      const askBtn = document.createElement('button');
+      askBtn.className = 'link ask'; askBtn.textContent = 'ask the assistant';
+      askBtn.title = 'copy a question about this module to paste into your AI assistant';
+      askBtn.onclick = async () => {
         const q = `Photo ${ID}: what is the ${m.label} module doing in this edit` +
                   `${m.instance ? ` (instance ${m.instance})` : ''}? Should I keep it, change it or turn it off?`;
         try { await navigator.clipboard.writeText(q); status('question copied: paste it into your AI assistant (AI assistant, top right, to connect one)'); }
-        catch (e) { prompt('Ask the assistant:', q); }
+        catch (e) { tell('Copy this question and paste it into your AI assistant:', {value: q}); }
       };
-      row.append(head, ask);
+      row.append(head, askBtn);
       body.appendChild(row);
     }
     d.append(sum, body);
@@ -1430,7 +1430,7 @@
     const m = eraseModel();
     if (!m || eraseBusy) return;
     if (m.online && !eraseSure) {
-      if (!confirm('Send the area around the shape to Black Forest Labs? It uses credits.')) { ov.set([]); return; }
+      if (!await ask('Send the area around the shape to Black Forest Labs? It uses credits.', {ok: 'send'})) { ov.set([]); return; }
       eraseSure = true;
     }
     eraseBusy = true;
@@ -2134,8 +2134,8 @@
   document.querySelectorAll('#geo [data-flip]').forEach((b) => b.onclick = () => queueGeo({flip: b.dataset.flip}));
   $('#angle').oninput = () => { $('#angle-val').textContent = fmtAngle($('#angle').value); queueGeo({angle: +$('#angle').value}); };
   $('#angle-lab').ondblclick = () => { $('#angle').value = 0; $('#angle').oninput(); };
-  $('#angle-val').onclick = () => {
-    const t = prompt('angle (degrees, -180 to 180)', (+$('#angle').value).toFixed(2));
+  $('#angle-val').onclick = async () => {
+    const t = await ask('angle (degrees, -180 to 180)', {value: (+$('#angle').value).toFixed(2), ok: 'set'});
     if (t !== null && !isNaN(parseFloat(t))) { $('#angle').value = t; queueGeo({angle: parseFloat(t)}); }
   };
   // a new aspect reshapes the box being drawn, else the photo's crop
@@ -2199,7 +2199,7 @@
   // are saved first, after asking
   $('#ex-go').onclick = async () => {
     if (busy) { status('wait for the last change to finish'); return; }
-    if (dirty && !confirm('Export uses the saved edit. Save your changes and export?')) return;
+    if (dirty && !await ask('Export uses the saved edit. Save your changes and export?', {ok: 'save and export'})) return;
     const body = {save: dirty};
     const fmt = $('#ex-format').value, size = $('#ex-size').value, q = parseInt($('#ex-quality').value);
     if (fmt) body.format = fmt;
@@ -2476,12 +2476,12 @@
     if (r.ok) dirty = false;
     status(r.ok ? (s.changed ? `saved (${s.history_items} history items)` : 'nothing new to save') : 'save failed: ' + s.detail);
   };
-  $('#reload').onclick = () => { if (!dirty || confirm('Discard unsaved changes?')) open(true); };
+  $('#reload').onclick = async () => { if (!dirty || await ask('Discard unsaved changes?', {ok: 'discard', danger: true})) open(true); };
   // duplicate: a virtual copy (the next version) with the saved edit, or
   // none; unsaved changes are saved first, after asking. This photo stays open
   async function duplicate(virgin) {
     menu(false);
-    if (!virgin && dirty && !confirm('The duplicate gets the saved edit. Save your changes and duplicate?')) return;
+    if (!virgin && dirty && !await ask('The duplicate gets the saved edit. Save your changes and duplicate?', {ok: 'save and duplicate'})) return;
     const r = await api('duplicate', {virgin, save: !virgin && dirty});
     const s = await r.json();
     if (!r.ok) { status('duplicate failed: ' + s.detail); return; }
@@ -2496,7 +2496,7 @@
   $('#dup-virgin').onclick = () => duplicate(true);
   $('#reset').onclick = async () => {
     menu(false);
-    if (!confirm("Start over from darktable's defaults? This deletes the photo's whole edit.")) return;
+    if (!await ask("Start over from darktable's defaults? This deletes the photo's whole edit.", {ok: 'start over', danger: true})) return;
     const r = await api('reset', {});
     if (!r.ok) { status('start over failed: ' + (await r.json()).detail); return; }
     dirty = false;

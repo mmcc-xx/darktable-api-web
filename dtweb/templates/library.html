@@ -71,6 +71,7 @@
       {% include "_tiles.html" %}
     </div>
   </div>
+  <div class="lt-split" id="lt-split" role="separator" aria-orientation="vertical" title="drag: resize the preview"></div>
   <aside class="detail" id="detail" aria-live="polite">
     <p class="dim">Click a photo to see it here.</p>
   </aside>
@@ -467,11 +468,14 @@
     const d = await r.json(), img = d.image, box = $('#detail');
     box.textContent = '';
     detailId = t.dataset.id;
-    const pv = el('img', 'detail-img');
-    pv.src = `/thumb/${img.id}/${d.version}.jpg?size=720`;
-    pv.alt = img.filename; pv.title = 'double-click: open';
-    pv.ondblclick = () => open(t);
-    box.append(pv, el('h3', 'detail-name', t.dataset.name));
+    pvBase = `/thumb/${img.id}/${d.version}.jpg`;
+    pv.alt = img.filename; pv.title = 'click: full screen, double-click: open';
+    pv.onclick = () => { clearTimeout(pvClick); pvClick = setTimeout(() => fullScreen(t), 250); };
+    pv.ondblclick = () => { clearTimeout(pvClick); open(t); };
+    const info = el('div', 'detail-info');
+    box.append(pv, info);
+    pvSize();
+    info.append(el('h3', 'detail-name', t.dataset.name));
     const acts = el('p', 'buttons');
     const op = el('a', 'detail-open', 'open in darkroom');
     op.href = t.querySelector('a').href;
@@ -494,14 +498,62 @@
       b.title = `${name} (F${i + 1})`; b.onclick = () => label([t], i);
       ctl.append(b);
     });
-    box.append(acts, ctl);
-    if (d.shot.length) { const p = el('p', 'shot'); d.shot.forEach((s) => p.append(el('span', null, s))); box.append(p); }
+    info.append(acts, ctl);
+    if (d.shot.length) { const p = el('p', 'shot'); d.shot.forEach((s) => p.append(el('span', null, s))); info.append(p); }
     const ed = el('div');
     dtMeta.editor(ed, img.id, d);
     const file = el('p', 'detail-file dim', `${img.folder}/${img.filename}`);
-    box.append(ed, file);
+    info.append(ed, file);
   }
   addEventListener('resize', detailSoon);
+
+  // the preview: one element kept across photos, so the old image stays
+  // until the new one has loaded; its size follows the box (wide split)
+  // × the pixel ratio, in steps of 256, 720 to 2048
+  const pv = el('img', 'detail-img');
+  let pvBase = null, pvWant = null, pvClick = null, pvTimer = null;
+  function pvSize() {
+    if (!pvBase || !pv.isConnected) return;
+    const px = Math.max(pv.clientWidth, pv.clientHeight) * (devicePixelRatio || 1);
+    const url = `${pvBase}?size=${Math.min(2048, Math.max(720, Math.ceil(px / 256) * 256))}`;
+    if (url === pvWant) return;
+    pvWant = url;
+    const next = new Image();
+    next.onload = () => { if (pvWant === url) pv.src = url; };
+    next.src = url;
+  }
+  new ResizeObserver(() => { clearTimeout(pvTimer); pvTimer = setTimeout(pvSize, 150); }).observe(pv);
+
+  // wide screens: the divider between the grid and the preview; the
+  // preview's width is kept, clamped so the grid keeps 2 columns
+  const lt = $('.lt'), split = $('#lt-split'), wKey = 'lt:previewW';
+  function previewW(w) {
+    if (!split.offsetParent) return;
+    const tile = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tile')) || 200;
+    const max = lt.clientWidth - split.offsetWidth - 2 * tile - 24, min = Math.min(320, max);
+    w = Math.round(Math.max(min, Math.min(max, w)));
+    lt.style.setProperty('--preview-w', w + 'px');
+    return w;
+  }
+  let savedW = null;
+  try { savedW = +localStorage.getItem(wKey) || null; } catch (e) {}
+  const fitW = () => { if (savedW) previewW(savedW); };
+  fitW(); addEventListener('resize', fitW);
+  split.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    split.setPointerCapture(e.pointerId);
+    split.classList.add('drag');
+    const right = lt.getBoundingClientRect().right;
+    const move = (ev) => { savedW = previewW(right - ev.clientX - split.offsetWidth / 2) || savedW; };
+    const up = () => {
+      split.classList.remove('drag');
+      split.removeEventListener('pointermove', move);
+      try { if (savedW) localStorage.setItem(wKey, savedW); } catch (e) {}
+    };
+    split.addEventListener('pointermove', move);
+    split.addEventListener('pointerup', up, {once: true});
+    split.addEventListener('pointercancel', up, {once: true});
+  });
 
   function cols() {
     const ts = grid.querySelectorAll('.tile');

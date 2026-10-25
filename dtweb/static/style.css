@@ -359,6 +359,19 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .detail-meta dt { color: var(--dim); }
 .detail-meta dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 800px) { .detail { display: none; } }
+.lt-split { display: none; }
+/* wide (W28): the grid at the left, a large preview filling the height at the right, its details under it;
+   the divider sets --preview-w (library.html) */
+@media (min-width: 1400px) {
+  .lt { gap: 0; }
+  .lt-split { display: block; flex: 0 0 1rem; align-self: flex-start; position: sticky; top: calc(var(--top-h, 3rem) + .8rem);
+              height: calc(100vh - var(--top-h, 3rem) - 1.6rem); cursor: col-resize; touch-action: none; }
+  .lt-split::after { content: ""; display: block; width: 2px; height: 100%; margin: 0 auto; background: var(--line); border-radius: 1px; }
+  .lt-split:hover::after, .lt-split.drag::after { background: var(--accent); }
+  .detail { flex-basis: var(--preview-w, 45%); height: calc(100vh - var(--top-h, 3rem) - 1.6rem); display: flex; flex-direction: column; overflow: hidden; }
+  .detail-img { flex: 1 1 0; min-height: 12rem; width: 100%; aspect-ratio: auto; }
+  .detail-info { flex: 0 1 auto; max-height: 45%; overflow-y: auto; }
+}
 
 /* tags, title and description (static/meta.js): lighttable detail panel and darkroom */
 .meta-ed { display: flex; flex-direction: column; gap: .4rem; margin: .5rem 0 0; font-size: .8rem; }

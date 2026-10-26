@@ -398,6 +398,16 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   .detail-pv { flex: 1 1 0; min-height: 12rem; aspect-ratio: auto; }
   .dz-bar { display: flex; }
   .detail-info { flex: 0 1 auto; max-height: 45%; overflow-y: auto; }
+  .detail-stage { position: relative; flex: 1 1 0; min-height: 12rem; display: flex; flex-direction: column; }
+  .detail-stage .detail-pv { flex: 1 1 0; min-height: 0; }
+  .detail-drawer { position: absolute; left: 0; right: 0; bottom: 0; max-height: 60%; overflow: auto; padding: .5rem .7rem;
+                   background: color-mix(in srgb, var(--panel) 92%, transparent); border-top: 1px solid var(--line); border-radius: 0 0 3px 3px; }
+  .detail-drawer[hidden] { display: none; }
+  .detail-bar { flex: 0 0 auto; display: flex; align-items: center; gap: .6rem; margin-top: .4rem; min-width: 0; }
+  .detail-bar .detail-name { margin: 0; flex: 0 1 auto; font-size: .9rem; overflow-wrap: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .detail-shot { flex: 1 1 0; min-width: 0; color: var(--dim); font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .detail-i { flex: 0 0 auto; font-size: .8rem; padding: .1rem .55rem; }
+  .detail-i.on { color: var(--accent); border-color: var(--accent); }
 }
 
 /* tags, title and description (static/meta.js): lighttable detail panel and darkroom */

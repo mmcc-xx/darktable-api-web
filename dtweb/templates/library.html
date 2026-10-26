@@ -451,13 +451,25 @@
   // ── the detail panel: the shown photo larger, with its rating, labels,
   // exif, title, description and tags
   let detailTimer = null, detailKey = null, detailId = null;
+  // W35: in the wide split one slim line under the preview, the rest in a drawer over its bottom
+  const wideMQ = matchMedia('(min-width: 1400px)');
+  let infoDrawer = null;
+  const infoOpen = () => { try { return localStorage.getItem('lt:info') === '1'; } catch (e) { return false; } };
+  function infoSet(on) {
+    try { localStorage.setItem('lt:info', on ? '1' : '0'); } catch (e) {}
+    if (!infoDrawer || !infoDrawer.isConnected) return;
+    infoDrawer.hidden = !on;
+    const b = $('#detail .detail-i'); if (b) b.classList.toggle('on', on);
+    pvSize();
+  }
+  const infoShown = () => !!infoDrawer && infoDrawer.isConnected && !infoDrawer.hidden;
   const detailOn = () => $('#detail').offsetParent !== null;   // not shown on narrow screens
   function detailSoon() { clearTimeout(detailTimer); detailTimer = setTimeout(showDetail, 100); }
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
   async function showDetail() {
     const t = current;
     if (!t || !detailOn()) return;
-    const k = [t.dataset.id, t.dataset.version, t.dataset.rating, t.dataset.labels].join(':');
+    const k = [t.dataset.id, t.dataset.version, t.dataset.rating, t.dataset.labels, wideMQ.matches].join(':');
     if (k === detailKey) return;
     if (dtMeta.typing($('#detail')) && detailId === t.dataset.id) {
       $('#detail').addEventListener('focusout', () => { detailKey = null; detailSoon(); }, {once: true});
@@ -476,10 +488,10 @@
       z.setPhoto({id: img.id, width: img.width, height: img.height});
     }
     pvTitle();
+    const wide = wideMQ.matches;
+    infoDrawer = null;
     const info = el('div', 'detail-info');
-    box.append(pv, info);
-    pvSize();
-    info.append(el('h3', 'detail-name', t.dataset.name));
+    if (!wide) { box.append(pv, info); pvSize(); info.append(el('h3', 'detail-name', t.dataset.name)); }
     const acts = el('p', 'buttons');
     const op = el('a', 'detail-open', 'open in darkroom');
     op.href = t.querySelector('a').href;
@@ -488,26 +500,39 @@
     const ex = el('button', null, 'export…'); ex.onclick = () => openExport(img.id);
     const fs = el('button', null, 'full screen'); fs.title = 'full screen (f)'; fs.onclick = () => fullScreen(t);
     acts.append(op, dup, ex, fs);
-    const ctl = el('p', 'ctl detail-ctl');
-    const rej = el('button', 'rej' + (img.rejected ? ' on' : ''), '✕'); rej.title = 'reject (r)';
-    rej.onclick = () => rate([t], 'reject');
-    ctl.append(rej);
-    for (let n = 1; n <= 5; n++) {
-      const s = el('button', 'star' + (!img.rejected && img.rating >= n ? ' on' : ''), '★');
-      s.title = `${n} (key ${n})`; s.onclick = () => rate([t], n);
-      ctl.append(s);
+    const ctl = wide ? null : el('p', 'ctl detail-ctl');
+    if (!wide) {
+      const rej = el('button', 'rej' + (img.rejected ? ' on' : ''), '✕'); rej.title = 'reject (r)';
+      rej.onclick = () => rate([t], 'reject');
+      ctl.append(rej);
+      for (let n = 1; n <= 5; n++) {
+        const s = el('button', 'star' + (!img.rejected && img.rating >= n ? ' on' : ''), '★');
+        s.title = `${n} (key ${n})`; s.onclick = () => rate([t], n);
+        ctl.append(s);
+      }
+      LABELS.forEach((name, i) => {
+        const b = el('button', `dot ${name}` + (img.labels.includes(i) ? ' on' : ''));
+        b.title = `${name} (F${i + 1})`; b.onclick = () => label([t], i);
+        ctl.append(b);
+      });
     }
-    LABELS.forEach((name, i) => {
-      const b = el('button', `dot ${name}` + (img.labels.includes(i) ? ' on' : ''));
-      b.title = `${name} (F${i + 1})`; b.onclick = () => label([t], i);
-      ctl.append(b);
-    });
-    info.append(acts, ctl);
-    if (d.shot.length) { const p = el('p', 'shot'); d.shot.forEach((s) => p.append(el('span', null, s))); info.append(p); }
+    if (!wide) info.append(acts, ctl);
+    if (!wide && d.shot.length) { const p = el('p', 'shot'); d.shot.forEach((s) => p.append(el('span', null, s))); info.append(p); }
     const ed = el('div');
     dtMeta.editor(ed, img.id, d);
     const file = el('p', 'detail-file dim', `${img.folder}/${img.filename}`);
-    info.append(ed, file);
+    if (!wide) { info.append(ed, file); return; }
+    const stage = el('div', 'detail-stage'), drawer = el('div', 'detail-drawer');
+    drawer.append(acts, ed, file);
+    drawer.hidden = !infoOpen();
+    infoDrawer = drawer;
+    stage.append(pv, drawer);
+    const bar = el('div', 'detail-bar');
+    const ib = el('button', 'detail-i' + (infoOpen() ? ' on' : ''), 'i');
+    ib.type = 'button'; ib.title = 'details (i)'; ib.onclick = () => infoSet(!infoShown());
+    bar.append(el('span', 'detail-name', t.dataset.name), el('span', 'detail-shot', d.shot.join(' · ')), ib);
+    box.append(stage, bar);
+    pvSize();
   }
   addEventListener('resize', detailSoon);
 
@@ -662,9 +687,13 @@
       return;
     }
     if (cmd && k === 'a') { e.preventDefault(); tiles.forEach((t) => select(t, true)); selChanged(); return; }
+    if (e.key === 'Escape' && infoShown()) { infoSet(false); return; }
     if (e.key === 'Escape') {
       if (!$('#exform').hidden) closeExport(); else if (selected.size) clearSelection();
       return;
+    }
+    if (k === 'i' && !cmd && !e.altKey && !e.repeat && !e.target.closest('[contenteditable]') && infoDrawer && infoDrawer.isConnected) {
+      e.preventDefault(); infoSet(!infoShown()); return;
     }
     const ts = targets();
     if (!ts.length) return;

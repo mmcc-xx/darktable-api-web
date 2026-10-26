@@ -171,7 +171,7 @@
       <div class="foot-buttons">
         <button id="undo" title="undo (⌘Z / Ctrl+Z)" aria-label="undo">↶</button>
         <button id="redo" title="redo (⇧⌘Z / Ctrl+Y)" aria-label="redo">↷</button>
-        <button id="save" class="primary">save</button>
+        <button id="save" disabled title="nothing to save">save</button>
         <button id="reload" class="secondary" title="reopen the photo as saved">discard</button>
         <span class="menu">
           <button id="more" class="secondary" aria-haspopup="true" aria-expanded="false" aria-label="more: export, duplicate, start over">⋯</button>
@@ -202,6 +202,15 @@
   const $ = (s) => document.querySelector(s);
   const status = (t) => { $('#status').textContent = t; };
   let state = null, pending = null, busy = false, url = null, dirty = false;
+  // dirty: unsaved changes in the shared edit; the save button shows it
+  // (accent and enabled when there is something to save)
+  function setDirty(v) {
+    dirty = v;
+    const b = $('#save');
+    b.classList.toggle('primary', v); b.classList.toggle('dirty', v);
+    b.disabled = !v;
+    b.title = v ? 'save (unsaved changes)' : 'nothing to save';
+  }
 
   const fmt = (f, v) => (v * f.factor).toFixed(f.digits) + (f.unit ? ' ' + f.unit : '');
 
@@ -626,7 +635,7 @@
     const r = await api('move', {operation: e.operation, instance: e.instance,
                                  [where]: {operation: t.operation, instance: t.instance}});
     if (!r.ok) { status('not moved: ' + (await r.json()).detail); renderPipeline(state); return; }
-    dirty = true; show(await r.json());
+    setDirty(true); show(await r.json());
     preview('moved (undo doesn\'t take a move back: move it again) ·');
   }
   function moveMenu(e) {
@@ -690,7 +699,7 @@
     cb.onchange = async () => {
       const r = await api('enable', {operation: e.operation, instance: e.instance, enabled: cb.checked});
       if (!r.ok) { cb.checked = !cb.checked; status('not applied: ' + (await r.json()).detail); return; }
-      dirty = true; show(await r.json()); preview();
+      setDirty(true); show(await r.json()); preview();
     };
     const nm = document.createElement('button');
     nm.className = 'link pname'; nm.textContent = e.label;
@@ -783,7 +792,7 @@
     cb.type = 'checkbox'; cb.checked = !!wb.enabled; cb.disabled = !!wb.missing;
     cb.onchange = async () => {
       const r = await api('enable', {operation: 'channelmixerrgb', instance: 0, enabled: cb.checked});
-      if (r.ok) { dirty = true; show(await r.json()); preview(); }
+      if (r.ok) { setDirty(true); show(await r.json()); preview(); }
     };
     head.append(cb, ' white balance');
     head.title = 'color calibration: the light the photo was taken in';
@@ -929,7 +938,7 @@
   });
   $('#lv-on').onchange = async () => {
     const r = await api('enable', {operation: 'rgblevels', enabled: $('#lv-on').checked});
-    if (r.ok) { dirty = true; show(await r.json()); preview(); }
+    if (r.ok) { setDirty(true); show(await r.json()); preview(); }
   };
   $('#lv-reset').onclick = () => sendLevels([...state.levels.default]);
   document.querySelectorAll('.lv-picks [data-pick]').forEach((b) => b.onclick = () => togglePick(b));
@@ -943,7 +952,7 @@
     cb.type = 'checkbox'; cb.checked = !!m.enabled; cb.disabled = !!m.missing;
     cb.onchange = async () => {
       const r = await api('enable', {operation: m.operation, instance: m.instance || 0, enabled: cb.checked});
-      if (r.ok) { dirty = true; show(await r.json()); preview(); }
+      if (r.ok) { setDirty(true); show(await r.json()); preview(); }
     };
     head.append(cb, ' ' + m.title + (m.missing ? ' (not available)' : ''));
     if (!bare) sec.appendChild(head);
@@ -1010,7 +1019,7 @@
       cb.onchange = async () => {
         const r = await api('enable', {operation: m.operation, instance: m.instance, enabled: cb.checked});
         if (!r.ok) { cb.checked = !cb.checked; status('not applied: ' + (await r.json()).detail); return; }
-        dirty = true; show(await r.json()); preview();
+        setDirty(true); show(await r.json()); preview();
       };
       const nm = document.createElement('button');
       nm.className = 'link'; nm.textContent = m.label; nm.title = 'show this module in the pipeline view';
@@ -1058,7 +1067,7 @@
       status(cb.checked ? 'black & white…' : 'back to color…');
       const r = await api('mono', {on: cb.checked});
       if (!r.ok) { status('not applied: ' + (await r.json()).detail); return; }
-      dirty = true; show(await r.json()); preview(cb.checked ? 'black & white,' : 'color,');
+      setDirty(true); show(await r.json()); preview(cb.checked ? 'black & white,' : 'color,');
     };
     head.append(cb, ' black & white');
     head.title = 'a second color calibration instance with a gray mix; the first keeps the white balance';
@@ -1120,7 +1129,7 @@
     const before = editKey();
     const r = await api('mono_look', {key});
     if (!r.ok) { status('not applied: ' + (await r.json()).detail); return; }
-    dirty = true;
+    setDirty(true);
     const s = await r.json();
     show(s);
     if (looksFor === before) looksFor = editKey();   // the thumbnails still hold
@@ -1227,7 +1236,7 @@
     const before = editKey();
     const r = await api('mono_mix', {grey: w});
     if (!r.ok) { mixEnd(); status('not applied: ' + (await r.json()).detail); return; }
-    dirty = true;
+    setDirty(true);
     const s = await r.json();
     show(s);
     if (looksFor === before) looksFor = editKey();
@@ -1365,7 +1374,7 @@
   // an edit made by the worker (dust, erase): show it like any other edit
   async function refreshEdit() {
     const r = await api('open', {});
-    if (r.ok) { const s = await r.json(); dirty = true; show(s); }
+    if (r.ok) { const s = await r.json(); setDirty(true); show(s); }
     await preview();
   }
   async function dustHeal() {
@@ -2230,7 +2239,7 @@
       const t = performance.now();
       const r = await api(path, p);
       if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
-      dirty = true;
+      setDirty(true);
       const s = await r.json();
       if (path === 'history_end' || path === 'pick') show(s);
       else renderHistory(s.history);
@@ -2273,7 +2282,7 @@
     $('#ex-go').disabled = false;
     const s = await r.json();
     if (!r.ok) { $('#ex-result').textContent = 'export failed: ' + s.detail; return; }
-    if (s.saved) dirty = false;
+    if (s.saved) setDirty(false);
     const box = $('#ex-result');
     box.textContent = '';
     if (s.skipped) { box.textContent = 'skipped: the file exists (darktable\'s conflict setting)'; return; }
@@ -2474,7 +2483,7 @@
         status(`applying ${v.label}…`);
         const r = await api('apply_steps', {steps: v.steps});
         if (!r.ok) { status('apply failed: ' + (await r.json()).detail); return; }
-        dirty = true;
+        setDirty(true);
         closeAlternatives();
         show(await r.json());
         preview(`applied "${v.label}",`);
@@ -2533,7 +2542,7 @@
   $('#save').onclick = async () => {
     const r = await api('save', {});
     const s = await r.json();
-    if (r.ok) dirty = false;
+    if (r.ok) setDirty(false);
     status(r.ok ? (s.changed ? `saved (${s.history_items} history items)` : 'nothing new to save') : 'save failed: ' + s.detail);
   };
   $('#reload').onclick = async () => { if (!dirty || await ask('Discard unsaved changes?', {ok: 'discard', danger: true})) open(true); };
@@ -2545,7 +2554,7 @@
     const r = await api('duplicate', {virgin, save: !virgin && dirty});
     const s = await r.json();
     if (!r.ok) { status('duplicate failed: ' + s.detail); return; }
-    if (s.saved) dirty = false;
+    if (s.saved) setDirty(false);
     const img = s.image, el = $('#status');
     el.textContent = `made duplicate ${img.version}${virgin ? ' (unedited)' : ''} · `;
     const a = document.createElement('a');
@@ -2559,7 +2568,7 @@
     if (!await ask("Start over from darktable's defaults? This deletes the photo's whole edit.", {ok: 'start over', danger: true})) return;
     const r = await api('reset', {});
     if (!r.ok) { status('start over failed: ' + (await r.json()).detail); return; }
-    dirty = false;
+    setDirty(false);
     show(await r.json());
     preview('started over from the defaults,');
   };
@@ -2639,7 +2648,7 @@
         const r = await api('open', {});
         if (!r.ok) return;
         const s = await r.json();
-        dirty = !!s.unsaved;
+        setDirty(!!s.unsaved);
         show(s);
         preview({edit: 'changed by another client,', saved: 'saved by another client,', reset: 'started over by another client,',
                  reopened: 'reloaded by another client,', closed: 'reopened after another client closed it,'}[ev.type]);
@@ -2652,7 +2661,7 @@
     const r = await api('open' + (fresh ? '?fresh=true' : ''), {});
     if (!r.ok) { status('engine error: ' + (await r.json()).detail); return; }
     const s = await r.json();
-    dirty = !!s.unsaved;
+    setDirty(!!s.unsaved);
     show(s);
     await preview(`opened in ${Math.round(performance.now() - t)} ms${s.joined ? ', shared with another client' : ''},`);
     markLoad();                       // the count on the markers button

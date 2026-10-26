@@ -14,6 +14,7 @@ from pathlib import Path
 
 import asyncio
 import base64
+import hashlib
 import json
 import math
 import os
@@ -1157,7 +1158,7 @@ _mcp_lock = asyncio.Lock()
 DUST_TIMEOUT_S = 300
 
 
-async def _mcp_worker(op: str, image_id: int, **params) -> dict:
+async def _mcp_worker(op: str, image_id: int, lock: asyncio.Lock | None = None, **params) -> dict:
     mcp = _mcp_program()
     py = os.environ.get("DTAPI_MCP_PYTHON") or (str(Path(mcp).parent / "python") if mcp else None)
     if not py or not Path(py).exists():
@@ -1166,7 +1167,7 @@ async def _mcp_worker(op: str, image_id: int, **params) -> dict:
     env = {**os.environ, "DTAPI_BIN": str(BIN), "DTAPI_CONFIGDIR": str(CONFIG), "DTAPI_SOCKET": str(SOCKET),
            "DTAPI_CLIENT_KIND": "web-worker"}
     req = json.dumps({"op": op, "image_id": image_id, **params})
-    async with _mcp_lock:
+    async with lock or _mcp_lock:
         proc = await asyncio.create_subprocess_exec(
             py, "-I", str(HERE / "mcp_worker.py"), req, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -1417,6 +1418,151 @@ async def photo_before(image_id: int, step: int, w: int = 1200, h: int = 1200):
     if r is None:
         return Response(status_code=204)
     return Response(r[0], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+# ── sensor clipping (W36): shares of clipped and blocked-shadow blocks from the
+# raw file, for the lighttable's tile chips and the preview's overlay. Cached
+# by file, mtime and size (one shares.json, a PNG per photo), computed by the
+# MCP's worker without the engine, with a lock of its own so a batch doesn't
+# wait behind a dust run
+CLIP_DIR = Path(os.environ.get("DTAPI_CLIP_DIR") or Path.home() / ".cache/darktable-api-web/clip")
+_clip_lock = asyncio.Lock()
+_clip_shares: dict | None = None
+CLIP_MASK_SIZE = 1024
+
+
+def _clip_key(path: str) -> str | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return f"{path}|{st.st_mtime_ns}|{st.st_size}"
+
+
+def _clip_load() -> dict:
+    global _clip_shares
+    if _clip_shares is None:
+        try:
+            _clip_shares = json.loads((CLIP_DIR / "shares.json").read_text())
+        except (OSError, ValueError):
+            _clip_shares = {}
+    return _clip_shares
+
+
+def _clip_save() -> None:
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CLIP_DIR / f"shares.json.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(_clip_shares))
+    tmp.replace(CLIP_DIR / "shares.json")
+
+
+def _clip_name(key: str) -> str:
+    return hashlib.sha1(key.encode()).hexdigest()
+
+
+async def _clip_source(image_id: int) -> tuple[str, float | None]:
+    """The photo's file and ISO."""
+    try:
+        r = await engine.call("image_info", imgid=image_id)
+    except EngineError as exc:
+        raise HTTPException(404, str(exc))
+    return str(Path(r["image"]["folder"]) / r["image"]["filename"]), (r.get("exif") or {}).get("iso")
+
+
+@app.get("/api/clip")
+async def clip_shares(ids: str):
+    """Clipping shares ({all_clipped_pct, some_clipped_pct, blocked_shadows_pct},
+    null for a file that isn't a raw) for up to 50 photos: {id: shares | null}."""
+    try:
+        wanted = [int(i) for i in ids.split(",") if i.strip()]
+    except ValueError:
+        raise HTTPException(400, "ids: a comma-separated list of photo ids")
+    if not 0 < len(wanted) <= 50:
+        raise HTTPException(400, "1 to 50 ids")
+    cache, out, todo = _clip_load(), {}, []
+    for i in wanted:
+        try:
+            path, iso = await _clip_source(i)
+        except HTTPException:          # a removed photo: no chip, the rest still answer
+            out[str(i)] = None
+            continue
+        key = _clip_key(path)
+        if key is None:
+            out[str(i)] = None
+        elif key in cache:
+            out[str(i)] = cache[key]
+        else:
+            todo.append({"id": i, "path": path, "iso": iso, "key": key})
+    if todo:
+        r = await _mcp_worker("clip_batch", 0, _clip_lock,
+                              items=[{k: t[k] for k in ("id", "path", "iso")} for t in todo])
+        for t in todo:
+            out[str(t["id"])] = cache[t["key"]] = r.get(str(t["id"]))
+        _clip_save()
+    return out
+
+
+async def _clip_png(image_id: int) -> tuple[dict | None, str, Path] | None:
+    """(shares, key's hash, the PNG's path) for a photo, making them when the
+    cache hasn't them; None when it isn't a raw."""
+    path, iso = await _clip_source(image_id)
+    key = _clip_key(path)
+    if key is None:
+        raise HTTPException(404, "the file is missing")
+    name = _clip_name(key)
+    png = CLIP_DIR / f"{name}.png"
+    cache = _clip_load()
+    if png.is_file() and cache.get(key):
+        return cache[key], name, png
+    try:
+        r = await _mcp_worker("clip", 0, _clip_lock, path=path, iso=iso, mask_size=CLIP_MASK_SIZE)
+    except HTTPException:
+        return None                  # rawpy can't read it
+    cache[key] = r["shares"]
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    if r.get("png_b64"):
+        tmp = CLIP_DIR / f"{name}.png.{os.getpid()}.tmp"
+        tmp.write_bytes(base64.b64decode(r["png_b64"]))
+        tmp.replace(png)
+    _clip_save()
+    return r["shares"], name, png
+
+
+# what bends the sensor's picture away from the photo: the mask ignores these
+CLIP_APPROX = {"lens", "ashift", "rotatepixels"}
+
+
+@app.get("/api/clip/{image_id}")
+async def clip_photo(image_id: int):
+    """One photo's shares, its mask (a PNG of the whole sensor, turned like the
+    photo), the crop box to place it with, and whether lens correction or
+    rotation make it approximate."""
+    r = await _clip_png(image_id)
+    if r is None or not r[2].is_file():          # not a raw rawpy reads, or not a Bayer sensor
+        return {"shares": r[0] if r else None, "png": None, "crop": None, "approximate": False}
+    shares, name, _ = r
+    crop, approximate = None, False
+    try:
+        g = await engine.edit(image_id, "module_get", operation="crop")
+        v = {f["name"]: f["value"] for f in g["fields"]}
+        box = {"left": v["cx"], "top": v["cy"], "right": v["cw"], "bottom": v["ch"]}
+        if g.get("enabled") and (box["left"] > 0.001 or box["top"] > 0.001
+                                 or box["right"] < 0.999 or box["bottom"] < 0.999):
+            crop = box
+        mods = (await engine.edit(image_id, "module_list"))["modules"]
+        approximate = any(m["operation"] in CLIP_APPROX and m.get("enabled") for m in mods)
+    except (EngineError, KeyError):
+        crop, approximate = None, False
+    return {"shares": shares, "png": f"/clip/{image_id}.png?k={name[:10]}", "crop": crop,
+            "approximate": approximate}
+
+
+@app.get("/clip/{image_id}.png")
+async def clip_image(image_id: int):
+    r = await _clip_png(image_id)
+    if r is None or not r[2].is_file():
+        raise HTTPException(404, "no clipping mask")
+    return FileResponse(r[2], media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 # alternatives an AI rendered (darktable-api-mcp's propose_alternatives):

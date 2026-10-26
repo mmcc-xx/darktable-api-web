@@ -16,9 +16,14 @@ ops: find {rebuild_map}, heal {spots: [ids]},
      ones have a key); image_id is ignored.
      fill {shape: "circle"|"path", x, y, radius | points, model, prompt,
      context}: ai_fill on the photo's open edit; returns its reply.
+     clip {path, iso, mask_size}: sensor clipping and blocked shadows of a
+     raw file, from the file alone (no engine): {shares, png_b64}; image_id
+     is ignored. clip_batch {items: [{id, path, iso}]}: {id: shares | null}
+     (null when rawpy can't read the file: JPEG, TIFF...).
 """
 
 import asyncio
+import base64
 import json
 import math
 import os
@@ -109,7 +114,28 @@ async def fill(server, n: int, req: dict) -> dict:
         return {"error": str(exc)}
 
 
+def clip(req: dict) -> dict:
+    from darktable_api_mcp import clipping
+    r = clipping.measure(req["path"], req.get("iso"), int(req.get("mask_size") or 0) or None)
+    return {"shares": r["shares"], "png_b64": base64.b64encode(r["png"]).decode() if r["png"] else None}
+
+
+def clip_batch(req: dict) -> dict:
+    from darktable_api_mcp import clipping
+    out = {}
+    for it in req["items"]:
+        try:
+            out[str(it["id"])] = clipping.measure(it["path"], it.get("iso"))["shares"]
+        except Exception:       # not a raw rawpy reads
+            out[str(it["id"])] = None
+    return out
+
+
 async def main(req: dict) -> dict:
+    if req.get("op") == "clip":
+        return clip(req)
+    if req.get("op") == "clip_batch":
+        return clip_batch(req)
     from darktable_api_mcp import server
     n = int(req["image_id"])
     op = {"find": find, "heal": heal, "heal_at": heal_at, "fill_models": fill_models,

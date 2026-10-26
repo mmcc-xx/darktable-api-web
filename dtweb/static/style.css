@@ -372,6 +372,12 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .detail-pv.panning { cursor: grabbing; }
 .dz-layer { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
 .dz-bar { display: none; position: absolute; top: .4rem; right: .4rem; gap: .25rem; padding: .2rem; background: rgba(0, 0, 0, .55); border-radius: 4px; }
+.dz-clipbox { position: absolute; overflow: hidden; pointer-events: none; }
+.dz-clip { position: absolute; max-width: none; image-rendering: pixelated; user-select: none; pointer-events: none; }
+.dz-note { align-self: center; font-size: .7rem; color: var(--dim); padding: 0 .2rem; }
+.clipchip { display: flex; gap: .4rem; font-size: .7rem; }
+.clipchip .hi { color: #ff5a4f; }
+.clipchip .lo { color: #5b8dff; }
 .dz-bar button { font-size: .75rem; padding: .1rem .45rem; }
 .dz-bar button.on { color: var(--accent); border-color: var(--accent); }
 .detail-name { margin: .5rem 0 .4rem; font-size: .95rem; overflow-wrap: anywhere; }

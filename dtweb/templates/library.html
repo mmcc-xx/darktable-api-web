@@ -486,6 +486,7 @@
     if (pvId !== img.id) {                  // a new photo: fit; the same one re-rendered keeps its zoom
       pvId = img.id; pvFresh = true;
       z.setPhoto({id: img.id, width: img.width, height: img.height});
+      clipLoad();
     }
     pvTitle();
     const wide = wideMQ.matches;
@@ -635,6 +636,100 @@
   });
   pvButtons();
 
+  // sensor clipping (W36, key o): the raw's clipped highlights (red, orange) and
+  // blocked shadows (blue) as a mask over the preview, and a chip on each tile.
+  // The mask covers the whole sensor: with a crop it is scaled so the crop
+  // rectangle fills the base image's box, which a clipping wrapper holds.
+  const clipOn = () => { try { return localStorage.getItem('lt:clip') === '1'; } catch (e) { return false; } };
+  const clipBox = el('div', 'dz-clipbox'), clipImg = el('img', 'dz-clip');
+  clipImg.draggable = false; clipBox.hidden = true; clipBox.append(clipImg);
+  pvLayer.append(clipBox);          // after the sharp layer: zoomed in, the sharp render would cover it
+  const clipNote = el('span', 'dz-note', 'approximate: lens / rotation on'); clipNote.hidden = true;
+  const clipBtn = el('button', clipOn() ? 'on' : null, 'clip'); clipBtn.type = 'button'; clipBtn.title = 'sensor clipping (o)';
+  pvBar.prepend(clipNote); pvBar.append(clipBtn);
+  let clipCrop = null;
+  // the overlay's place: the base image's box, then the mask inside it
+  function clipPlace() {
+    const st = pvImg.style, bw = parseFloat(st.width), bh = parseFloat(st.height);
+    if (!bw || !bh) return;
+    Object.assign(clipBox.style, {left: st.left, top: st.top, width: st.width, height: st.height});
+    const c = clipCrop, w = c ? bw / (c.right - c.left) : bw, h = c ? bh / (c.bottom - c.top) : bh;
+    Object.assign(clipImg.style, {width: w + 'px', height: h + 'px',
+      left: (c ? -c.left * w : 0) + 'px', top: (c ? -c.top * h : 0) + 'px'});
+  }
+  new MutationObserver(clipPlace).observe(pvImg, {attributes: true, attributeFilter: ['style']});
+  function clipClear() { clipBox.hidden = true; clipNote.hidden = true; clipImg.removeAttribute('src'); clipCrop = null; }
+  async function clipLoad() {
+    clipClear();
+    const id = pvId;
+    if (!clipOn() || !id) return;
+    let d = null;
+    try { const r = await fetch(`/api/clip/${id}`); if (r.ok) d = await r.json(); } catch (e) {}
+    if (pvId !== id || !clipOn() || !d || !d.png) return;      // a stale answer
+    clipCrop = d.crop || null;
+    clipNote.hidden = !d.approximate;
+    clipImg.onload = () => { if (pvId === id) { clipPlace(); clipBox.hidden = false; } };
+    clipImg.src = d.png;
+  }
+  // tile chips: one observer on the tiles; visible ids are queued and fetched in
+  // batches; the answers are kept (id -> shares or null), so scrolling back is free
+  const clipShares = new Map(), clipQueue = new Set();
+  let clipTimer = null;
+  const clipChip = (t) => {
+    const old = t.querySelector('.clipchip'); if (old) old.remove();
+    const s = clipOn() && clipShares.get(+t.dataset.id);
+    if (!s) return;
+    const hi = s.all_clipped_pct >= 0.05, lo = s.blocked_shadows_pct >= 2;
+    if (!hi && !lo) return;
+    const f = (v) => (v >= 1 ? Math.round(v) : v.toFixed(1)) + '%';
+    const c = el('span', 'clipchip');
+    if (hi) c.append(el('span', 'hi', '▲' + f(s.all_clipped_pct)));
+    if (lo) c.append(el('span', 'lo', '▼' + f(s.blocked_shadows_pct)));
+    c.title = `clipped in all colors ${s.all_clipped_pct}%, in some ${s.some_clipped_pct}%; blocked shadows ${s.blocked_shadows_pct}%`;
+    t.querySelector('figcaption').append(c);
+  };
+  async function clipFlush() {
+    const ids = [...clipQueue].slice(0, 50);
+    ids.forEach((i) => clipQueue.delete(i));
+    if (ids.length) {
+      let d = null;
+      try { const r = await fetch('/api/clip?ids=' + ids.join(',')); if (r.ok) d = await r.json(); } catch (e) {}
+      for (const i of ids) {
+        if (d && i in d) clipShares.set(i, d[i]);
+        const t = tileOf(i); if (t) clipChip(t);
+      }
+    }
+    if (clipQueue.size && clipOn()) clipTimer = setTimeout(clipFlush, 150);
+  }
+  const clipIO = new IntersectionObserver((es) => {
+    if (!clipOn()) return;
+    for (const e of es) {
+      if (!e.isIntersecting) continue;
+      const id = +e.target.dataset.id;
+      if (clipShares.has(id)) clipChip(e.target); else clipQueue.add(id);
+    }
+    if (clipQueue.size) { clearTimeout(clipTimer); clipTimer = setTimeout(clipFlush, 150); }
+  }, {rootMargin: '200px'});
+  const clipWatch = () => grid.querySelectorAll('.tile').forEach((t) => clipIO.observe(t));   // observe() twice is harmless
+  // tiles added later (more, or one refreshed) are seen by a mutation observer on the grid
+  new MutationObserver((ms) => {
+    if (!clipOn()) return;
+    for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1 && n.matches('.tile')) clipIO.observe(n);
+  }).observe(grid, {childList: true});
+  function clipSet(on) {
+    try { localStorage.setItem('lt:clip', on ? '1' : '0'); } catch (e) {}
+    clipBtn.classList.toggle('on', on);
+    if (on) clipWatch();
+    else {
+      clipIO.disconnect(); clipQueue.clear(); clearTimeout(clipTimer);
+      grid.querySelectorAll('.clipchip').forEach((c) => c.remove());
+    }
+    clipLoad();
+  }
+  for (const type of ['pointerdown', 'click', 'dblclick']) clipBtn.addEventListener(type, (e) => e.stopPropagation());
+  clipBtn.addEventListener('click', () => { clearTimeout(pvClick); clipSet(!clipOn()); clipBtn.blur(); });
+  if (clipOn()) clipWatch();
+
   // wide screens: the divider between the grid and the preview; the
   // preview's width is kept, clamped so the grid keeps 2 columns
   const lt = $('.lt'), split = $('#lt-split'), wKey = 'lt:previewW';
@@ -695,6 +790,7 @@
     if (k === 'i' && !cmd && !e.altKey && !e.repeat && !e.target.closest('[contenteditable]') && infoDrawer && infoDrawer.isConnected) {
       e.preventDefault(); infoSet(!infoShown()); return;
     }
+    if (k === 'o' && !cmd && !e.altKey && !e.repeat && !e.target.closest('[contenteditable]')) { e.preventDefault(); clipSet(!clipOn()); return; }
     const ts = targets();
     if (!ts.length) return;
     if (cmd && k === 'd') { e.preventDefault(); duplicateAll(ts); }

@@ -147,22 +147,77 @@
 
   const out = (t) => { $('#imp-result').textContent = t; };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // uploads from a phone: one batch for the dialog's lifetime, so pressing
+  // import again (or coming back to the page) sends only what's missing; the
+  // screen is kept on while sending and importing, where the browser lets us
+  let batch = null, stalled = false, busy = false, lock = null;
+  const wake = async () => {
+    try {
+      const l = await navigator.wakeLock.request('screen');
+      if (busy) lock = l; else l.release().catch(() => {});
+    } catch (e) { lock = null; }
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (busy && (!lock || lock.released)) wake();
+    if (stalled && !busy && dlg.open && tab === 'upload') $('#imp-go').click();
+  });
+  const send = (f, onprogress) => new Promise((resolve) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', `/api/import/upload/${batch}?name=${encodeURIComponent(f.name)}&mtime=${f.lastModified / 1000}&size=${f.size}`);
+    x.upload.onprogress = (e) => onprogress(e.loaded);
+    x.onload = () => {
+      let d = {};
+      try { d = JSON.parse(x.responseText); } catch (e) { /* not JSON */ }
+      resolve(x.status >= 200 && x.status < 300 ? {ok: true} : {ok: false, fatal: x.status === 400 && /^bad /.test(d.detail || ''), detail: d.detail || `HTTP ${x.status}`});
+    };
+    x.onerror = x.ontimeout = x.onabort = () => resolve({ok: false, detail: 'the connection dropped'});
+    x.send(f);
+  });
+  async function upload(files) {
+    // false when it stopped (the message says why); true when all arrived
+    if (!batch) batch = Array.from(crypto.getRandomValues(new Uint8Array(8)), (x) => x.toString(16).padStart(2, '0')).join('');
+    let have = new Map();
+    try {
+      const r = await fetch(`/api/import/upload/${batch}`);
+      if (r.ok) have = new Map((await r.json()).files.map((x) => [x.file, x.bytes]));
+    } catch (e) { /* offline: try the sends anyway, they retry */ }
+    const todo = files.filter((f) => have.get(f.name) !== f.size);
+    const total = todo.reduce((n, f) => n + f.size, 0) || 1;
+    let done = 0;
+    const sent = files.length - todo.length;
+    for (const [i, f] of todo.entries()) {
+      for (const wait of [0, 2000, 5000, null]) {
+        if (wait === null) {
+          stalled = true;
+          out(`${sent + i} of ${files.length} sent: press import again to send the rest`);
+          return false;
+        }
+        if (wait) { out(`${f.name}: sending again in ${wait / 1000} s…`); await sleep(wait); }
+        const r = await send(f, (loaded) => {
+          out(`sending ${sent + i + 1} of ${files.length}: ${f.name}, ${Math.round(100 * loaded / (f.size || 1))}%` +
+              ` (all: ${Math.round(100 * (done + loaded) / total)}%) · keep this screen open until it's done`);
+        });
+        if (r.ok) break;
+        if (r.fatal) { out(`${f.name}: ${r.detail}`); return false; }
+      }
+      done += f.size;
+    }
+    stalled = false;
+    return true;
+  }
   $('#imp-go').onclick = async () => {
     const go = $('#imp-go');
     const body = {copy_files: mode() === 'copy', jobcode: $('#imp-jobcode').value};
-    go.disabled = true;
+    go.disabled = true; busy = true;
+    wake();
     try {
       if (tab === 'upload') {
         const files = [...$('#imp-files').files];
         if (!files.length) { out('choose some files first'); return; }
-        const batch = Array.from(crypto.getRandomValues(new Uint8Array(8)), (x) => x.toString(16).padStart(2, '0')).join('');
-        for (const [i, f] of files.entries()) {
-          out(`sending ${i + 1} of ${files.length}: ${f.name}…`);
-          const r = await fetch(`/api/import/upload/${batch}?name=${encodeURIComponent(f.name)}&mtime=${f.lastModified / 1000}`,
-                                {method: 'POST', body: f});
-          if (!r.ok) { out(`${f.name}: ${(await r.json()).detail}`); return; }
-        }
+        if (!await upload(files)) return;
         body.upload = batch;
+        batch = null;
       } else {
         body.paths = [$('#imp-path').value];
         body.recursive = $('#imp-rec').checked;
@@ -179,7 +234,10 @@
         if (!r.ok) { out(s.detail); return; }
       }
       report(s);
-    } finally { go.disabled = false; $('#imp-stop').hidden = true; job = null; }
+    } finally {
+      go.disabled = false; $('#imp-stop').hidden = true; job = null; busy = false;
+      if (lock) { lock.release().catch(() => {}); lock = null; }
+    }
   };
   $('#imp-stop').onclick = () => job && fetch(`/api/import/${job}/cancel`, {method: 'POST'});
 

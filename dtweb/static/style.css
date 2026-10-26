@@ -444,6 +444,7 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .imp-dirs { list-style: none; margin: .3rem 0; padding: .3rem; max-height: 14rem; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; columns: 2 12rem; }
 .imp-dirs:empty { display: none; }
 .imp-dirs button { text-align: left; overflow-wrap: anywhere; }
+#import code { overflow-wrap: anywhere; }
 .ex-line { display: block; }
 
 /* full screen view (static/fullview.js) */

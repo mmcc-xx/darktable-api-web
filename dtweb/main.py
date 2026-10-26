@@ -1735,25 +1735,45 @@ IMPORTS: dict[str, dict] = {}                 # engine job id -> {"upload": fold
 
 
 @app.post("/api/import/upload/{batch}")
-async def import_upload(request: Request, batch: str, name: str, mtime: float = 0):
+async def import_upload(request: Request, batch: str, name: str, mtime: float = 0, size: int = -1):
     """One file from the browser (the body is the file), into a folder per
     batch; /api/import with the batch then copies and imports them. mtime
     (seconds) keeps the file's modification time, which darktable's
-    duplicate check compares."""
+    duplicate check compares. The file is written as <name>.part and gets
+    its name only once the whole body (size bytes, when given) arrived, so
+    a dropped connection never leaves a partial photo to import."""
     if not batch.isalnum() or len(batch) > 40:
         raise HTTPException(400, "bad batch id")
     safe = Path(name).name
-    if not safe or safe.startswith("."):
+    if not safe or safe.startswith(".") or safe.endswith(".part"):
         raise HTTPException(400, "bad file name")
     folder = UPLOADS / batch
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / safe
-    with open(dest, "wb") as f:
+    part = folder / (safe + ".part")
+    with open(part, "wb") as f:
         async for chunk in request.stream():
             f.write(chunk)
+    got = part.stat().st_size
+    if size >= 0 and got != size:
+        part.unlink(missing_ok=True)
+        raise HTTPException(400, f"{safe}: {got} of {size} bytes arrived")
     if mtime > 0:
-        os.utime(dest, (time.time(), mtime))
-    return {"file": safe, "bytes": dest.stat().st_size}
+        os.utime(part, (time.time(), mtime))
+    part.replace(dest)
+    return {"file": safe, "bytes": got}
+
+
+@app.get("/api/import/upload/{batch}")
+async def import_uploaded(batch: str):
+    """The batch's files that arrived whole, so a resumed upload sends only
+    the rest."""
+    if not batch.isalnum() or len(batch) > 40:
+        raise HTTPException(400, "bad batch id")
+    folder = UPLOADS / batch
+    files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")
+                   and not p.name.endswith(".part")) if folder.is_dir() else []
+    return {"files": [{"file": p.name, "bytes": p.stat().st_size} for p in files]}
 
 
 class ImportBody(BaseModel):
@@ -1777,6 +1797,10 @@ async def import_start(body: ImportBody):
         if not body.upload.isalnum() or not (UPLOADS / body.upload).is_dir():
             raise HTTPException(400, "no such upload")
         upload = UPLOADS / body.upload
+        for part in upload.glob("*.part"):      # a send cut off: never imported
+            part.unlink(missing_ok=True)
+        if not any(p.is_file() and not p.name.startswith(".") for p in upload.iterdir()):
+            raise HTTPException(400, "no file arrived whole: press import again to send them")
         paths = [str(upload)]
     if not paths:
         raise HTTPException(400, "nothing to import")

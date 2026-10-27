@@ -1674,6 +1674,31 @@ async def variant_image(path: str):
     return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/photo/{image_id}/alternative.jpg")
+async def photo_alternative(image_id: int, path: str, w: int = 1200, h: int = 1200, uncropped: bool = False):
+    """A pending alternative (named by its small file's path) rendered
+    fitted inside w x h, so it is shown as sharp as the preview; the edit
+    is unchanged. render_variants takes no region: alternatives show fitted."""
+    v = next((v for v in PENDING_VARIANTS.get(image_id, []) if v.get("path") == path), None)
+    if v is None:
+        raise HTTPException(404, "no such alternative")
+    steps = v.get("steps") or []
+    if any(st.get("method") not in VARIANT_METHODS for st in steps):
+        raise HTTPException(400, "the alternative has steps that aren't edits")
+    w, h = max(64, min(w, 2560)), max(64, min(h, 2560))
+    try:
+        with tempfile.TemporaryDirectory(prefix="dtweb_alt_") as tmp:
+            out = Path(tmp) / "alt.jpg"
+            r = await engine.edit(image_id, "render_variants", width=w, height=h, quality=92, uncropped=uncropped,
+                                  variants=[{"label": v.get("label", ""), "path": str(out), "steps": steps}])
+            if r["variants"][0].get("error"):
+                raise HTTPException(502, r["variants"][0]["error"])
+            data = out.read_bytes()
+    except EngineError as exc:
+        raise _bad(exc, 502)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 class StepsBody(BaseModel):
     steps: list[dict]
 

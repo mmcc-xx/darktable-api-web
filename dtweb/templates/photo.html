@@ -256,7 +256,9 @@
     ov.place();
     if (url) URL.revokeObjectURL(url);
     url = URL.createObjectURL(blob);
-    img.src = url;
+    altBigClear();
+    // an alternative on show stays, rendered again on the new edit
+    if (showing) altBig(showing); else img.src = url;
     if (cropping) img.decode().then(drawBox, drawBox);
     status(`${note ? note + ' ' : ''}${shown ? Math.round(z * 100) + '%, ' : ''}render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
     looksSoon();
@@ -2496,6 +2498,7 @@
         $('#pv').src = showing ? im.src : url;
         for (const f of box.children) f.classList.toggle('on', showing && f === fig);
         status(showing ? `showing alternative ${v.number}: ${v.label} (not applied)` : 'the current edit');
+        if (showing) altBig(v);
       };
       const cap = document.createElement('figcaption');
       cap.textContent = `${v.number}. ${v.label}`;
@@ -2518,6 +2521,29 @@
     $('#alts').hidden = false;
     altsSync();
   }
+  // the alternative on show rendered at the preview's size (the list's
+  // files are small), replacing the small one once it arrives; cached by
+  // size until the edit renders again. render_variants takes no region, so
+  // alternatives show fitted: zooming goes back to the edit
+  let altCache = new Map();
+  function altBigClear() {
+    for (const p of altCache.values()) p.then((u) => u && URL.revokeObjectURL(u));
+    altCache = new Map();
+  }
+  async function altBig(v) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.min(2048, Math.round(($('#pv').parentElement.clientWidth || 800) * dpr));
+    const q = `path=${encodeURIComponent(v.path)}&w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`;
+    const cache = altCache;
+    if (!cache.has(q)) cache.set(q, fetch(`/api/photo/${ID}/alternative.jpg?${q}`).then(async (r) => {
+      if (r.ok) return URL.createObjectURL(await r.blob());
+      status('alternative render failed: ' + (await r.text()));
+      cache.delete(q);
+      return null;
+    }));
+    const u = await cache.get(q);
+    if (u && showing === v && cache === altCache) $('#pv').src = u;
+  }
   // phone: the list is a panel over the photo, opened from a button on it
   function altsSync() {
     $('#alts-open').hidden = !alts;
@@ -2531,6 +2557,7 @@
     if (dismiss && alts) api('alternatives/dismiss', {});
     alts = null;
     if (showing) { showing = null; $('#pv').src = url; }
+    altBigClear();
     $('#alts').hidden = true;
     altsSync();
   }

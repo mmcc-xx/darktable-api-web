@@ -181,6 +181,8 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .hist-pop { max-height: 40vh; overflow-y: auto; }
 .history { font-size: .8rem; padding-left: 0; list-style: none; margin: 0; }
 .history .current { font-weight: 700; color: var(--accent); }
+.hist-tools { margin: 0 0 .3rem; padding-bottom: .2rem; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: .2rem .8rem; font-size: .8rem; position: sticky; top: 0; background: var(--panel); }
+.hist-tools button { color: var(--accent); }
 .history .undone { opacity: .45; }
 .foot-buttons { display: flex; gap: .4rem; align-items: center; }
 .foot-buttons #save { flex: 1; }

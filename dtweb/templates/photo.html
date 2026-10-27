@@ -166,7 +166,10 @@
       </details>
     </div>
     <footer class="panel-foot">
-      <div id="hist-pop" class="hist-pop" hidden><ol id="history" class="history"></ol></div>
+      <div id="hist-pop" class="hist-pop" hidden>
+        <p class="hist-tools"><button id="compress" class="link" title="saves the edit, then merges the history into one step per module">compress history</button>
+          <button id="compress-trunc" class="link" hidden title="saves the edit, then drops the steps above the current one">drop the steps above</button></p>
+        <ol id="history" class="history"></ol></div>
       <button id="hist-line" class="hist-line" aria-expanded="false" aria-controls="hist-pop" title="show the whole history">
         <span id="hist-text">history</span><span class="dim">▴</span></button>
       <div class="foot-buttons">
@@ -453,8 +456,26 @@
     const cur = h.items[h.history_end - 1];
     $('#hist-text').textContent = h.history_end ? `step ${h.history_end} of ${h.items.length}: ${stepName(cur)}`
                                                 : `the original (${h.items.length} steps undone)`;
+    $('#compress-trunc').hidden = h.history_end >= h.items.length;
     markLast();
   }
+  // compress history stack, as darktable's history panel: the engine saves
+  // the edit first; truncate only drops the steps above the current one
+  async function compress(truncate) {
+    while (busy) await new Promise((r) => setTimeout(r, 50));   // edits still on their way
+    const n = hist ? hist.items.length - hist.history_end : 0;
+    if (!await ask(truncate ? `Saves the edit, then drops the ${n} step${n === 1 ? '' : 's'} above the current one.`
+                            : 'Saves the edit, then merges the history into one step per module.',
+                   {ok: truncate ? 'save and drop' : 'save and compress', danger: truncate})) return;
+    const r = await api('history/compress', {truncate});
+    const s = await r.json();
+    if (!r.ok) { status('compress failed: ' + s.detail); return; }
+    setDirty(false);
+    show(s);
+    preview(`history ${truncate ? 'truncated' : 'compressed'} to ${s.history.items.length} steps,`);
+  }
+  $('#compress').onclick = () => compress(false);
+  $('#compress-trunc').onclick = () => compress(true);
   // darktable's own name for the step ("local contrast", "exposure • sky"); older engines give only the operation
   const stepName = (it) => it.label || `${it.operation}${it.instance ? ' ' + it.instance : ''}${it.name ? ' ' + it.name : ''}`;
 

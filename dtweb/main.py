@@ -1131,6 +1131,21 @@ async def photo_history_end(image_id: int, body: EndBody):
         raise _bad(exc)
 
 
+class CompressBody(BaseModel):
+    truncate: bool = False
+
+
+@app.post("/api/photo/{image_id}/history/compress")
+async def photo_history_compress(image_id: int, body: CompressBody):
+    """darktable's compress history stack (truncate: only drop the steps
+    above history_end). The engine saves the edit first."""
+    try:
+        await engine.edit(image_id, "history_compress", truncate=body.truncate)
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
 @app.post("/api/photo/{image_id}/save")
 async def photo_save(image_id: int):
     try:

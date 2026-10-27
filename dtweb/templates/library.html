@@ -33,10 +33,12 @@
 <div class="lt">
   <div class="lt-main">
     <p class="count">{{ total }} photos · click shows a photo, double-click or Enter opens it · ⌘/Ctrl-click or the box selects (shift: a range, ⌘A: all shown, Esc: none) · arrows move, 0–5 rate, R rejects, F1–F5 toggle labels: the selection's, or the shown photo's</p>
+    <button id="pano-chip" class="pano-chip" hidden title="a panorama is being made: click to see it"></button>
     <div id="selbar" class="selbar" hidden>
       <span id="sel-count"></span>
       <button id="sel-export" aria-expanded="false" aria-controls="exform">export…</button>
       <button id="sel-dup" title="a virtual copy of each, with its saved edit">duplicate</button>
+      <button id="sel-pano" title="stitch the selected photos into a panorama with Hugin" hidden>panorama…</button>
       <span class="sel-tag" title="add a tag to the selection, or remove it from them (| for a hierarchy)">
         <input id="sel-tag" type="text" list="tag-list" placeholder="tag" aria-label="tag"><button id="sel-tag-add">tag</button><button id="sel-tag-rm" class="secondary">untag</button>
       </span>
@@ -315,6 +317,7 @@
   function selChanged() {
     $('#selbar').hidden = !selected.size;
     $('#sel-count').textContent = `${selected.size} selected`;
+    $('#sel-pano').hidden = selected.size < 2;
     if (exTarget === 'selection') { if (selected.size) exWhat(); else closeExport(); }
   }
   // the selection in grid order; keys and the selection bar act on it, or on the shown photo
@@ -427,6 +430,217 @@
     if (ids.length) dtCopy((ids.length > 1 ? 'photos ' : 'photo ') + ids.join(', '), $('#sel-ids'));
   };
   $('#sel-dup').onclick = () => duplicateAll(selection());
+
+  // ── panorama: check the frames' edits, stitch with Hugin in the background
+  const pano = {dlg: null, ids: [], job: null, timer: 0, report: null, thumbs: []};
+  const PANO_LABELS = {lens: 'lens correction', highlights: 'highlight reconstruction', denoise: 'denoise',
+                  toneequal: 'tone equalizer', agx: 'AgX', sigmoid: 'sigmoid', filmicrgb: 'filmic rgb',
+                  colorbalancergb: 'color balance rgb', channelmixerrgb: 'color calibration'};
+  const pLabel = (r) => (PANO_LABELS[r.module] || r.module) + (r.instance ? ' ' + r.instance : '');
+  const pIds = (ids) => 'on ' + ids.map((i) => '#' + i).join(', ');
+  const pEl = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  function panoDialog() {
+    if (pano.dlg) return pano.dlg;
+    const d = pano.dlg = pEl('dialog', 'connect pano-dlg');
+    d.innerHTML = '<form method="dialog"><h3 id="pano-title"></h3><div id="pano-thumbs" class="pano-thumbs"></div>' +
+      '<div id="pano-body"></div><div id="pano-btns" class="ask-btns"></div></form>';
+    document.body.appendChild(d);
+    d.onclick = (e) => { if (e.target === d) d.close(); };
+    d.addEventListener('keydown', (e) => e.stopPropagation());
+    d.addEventListener('close', () => {
+      if (pano.back && pano.back.focus && document.contains(pano.back)) pano.back.focus({preventScroll: true});
+      panoChip();
+    });
+    return d;
+  }
+  function panoButtons(list) {
+    $('#pano-btns').replaceChildren(...list.map(([label, kind, fn]) => {
+      const b = pEl('button', kind, label); b.type = 'button'; b.onclick = fn; return b;
+    }));
+    const p = $('#pano-btns .primary'); if (p) p.focus();
+  }
+  function panoShow() {
+    const d = panoDialog();
+    if (d.open) return;
+    pano.back = document.activeElement;
+    d.showModal();
+  }
+  function panoChip() {
+    const running = pano.job && pano.job.state === 'running', chip = $('#pano-chip');
+    chip.hidden = !running || (pano.dlg && pano.dlg.open);
+    if (running) chip.textContent = 'panorama: ' + pano.job.step + ' (' + pano.job.elapsed + ' s)';
+  }
+  function panoFrames() {
+    panoDialog();
+    $('#pano-title').textContent = `Panorama of ${pano.ids.length} photos`;
+    $('#pano-thumbs').replaceChildren(...pano.ids.map((id) => {
+      const f = pEl('figure'), t = tileOf(id), src = t && t.querySelector('img');
+      if (src) { const i = pEl('img'); i.src = src.src; i.alt = '#' + id; f.append(i); }
+      f.append(pEl('figcaption', null, '#' + id));
+      return f;
+    }));
+  }
+  async function panoStart() {
+    pano.ids = selection().map((t) => +t.dataset.id);
+    pano.report = null;
+    panoFrames();
+    $('#pano-body').replaceChildren(pEl('p', 'pano-wait', 'checking…'));
+    panoButtons([['cancel', '', () => pano.dlg.close()]]);
+    panoShow();
+    let r, j;
+    try {
+      r = await fetch('/api/panorama/check', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                              body: JSON.stringify({ids: pano.ids})});
+      j = await r.json();
+    } catch (e) { j = {detail: e.message}; r = {ok: false}; }
+    if (!r.ok) {
+      $('#pano-body').replaceChildren(pEl('p', 'pano-err', j.detail || 'the check failed'));
+      panoButtons([['close', 'primary', () => pano.dlg.close()]]);
+      return;
+    }
+    panoReport(j);
+  }
+  function panoRows(rows, boxText, checked) {
+    const box = pEl('div', 'pano-rows');
+    rows.forEach((r) => {
+      const frames = r.frames || [...new Set(Object.values(r.fields || {}).flatMap((v) => Object.keys(v).map(Number)))];
+      const li = pEl('p', 'pano-row');
+      li.append(pEl('span', null, `${pLabel(r)} ${pIds(frames)}`), pEl('span', 'pano-why', ' ' + (r.why || '')));
+      box.append(li);
+    });
+    const lab = pEl('label', 'pano-check'), cb = pEl('input');
+    cb.type = 'checkbox'; cb.checked = checked;
+    lab.append(cb, ' ' + boxText);
+    box.append(lab);
+    return [box, cb];
+  }
+  function panoReport(rep) {
+    pano.report = rep;
+    const body = $('#pano-body'), parts = [];
+    const miss = [...(rep.missing || []), ...(rep.differs || [])];
+    const unw = (rep.unwanted || []).filter((r) => !r.keep_by_default);
+    let cbMiss = null, cbUnw = null;
+    if (miss.length) {
+      const h = pEl('h4', null, 'Missing before stitching'); const [box, cb] = panoRows(miss, 'apply them', true);
+      cbMiss = cb; parts.push(h, box);
+    }
+    if (unw.length) {
+      const h = pEl('h4', null, 'Remove before stitching');
+      const [box, cb] = panoRows(unw, 'remove them, put the look back on the panorama afterwards', true);
+      cbUnw = cb; parts.push(h, box);
+    }
+    if (!miss.length && !unw.length) parts.push(pEl('p', 'pano-ready', 'Ready to stitch.'));
+    (rep.warnings || []).forEach((w) => parts.push(pEl('p', 'pano-warn', w)));
+    parts.push(pEl('p', 'pano-note', "Your photos' own edits aren't changed: this works on copies."));
+    const more = pEl('details'), sum = pEl('summary', null, 'more');
+    const mk = (label, input) => { const l = pEl('label', 'pano-opt', label + ' '); l.append(input); return l; };
+    const proj = pEl('select'); proj.id = 'pano-proj';
+    [['auto', 'auto'], ['cylindrical', 'cylindrical'], ['rectilinear', 'rectilinear'], ['equirectangular', 'spherical']]
+      .forEach(([v, t]) => { const o = pEl('option', null, t); o.value = v; proj.append(o); });
+    const edges = pEl('select'); edges.id = 'pano-edges';
+    [['crop', 'crop to a rectangle'], ['keep', 'keep the edges']].forEach(([v, t]) => { const o = pEl('option', null, t); o.value = v; edges.append(o); });
+    const ord = pEl('input'); ord.type = 'checkbox'; ord.id = 'pano-order';
+    const lord = pEl('label', 'pano-opt'); lord.append(ord, ' frames are in shooting order');
+    more.append(sum, mk('projection', proj), mk('edges', edges), lord);
+    parts.push(more);
+    body.replaceChildren(...parts);
+    pano.opts = () => ({
+      ids: pano.ids,
+      fixes: {add_missing: !!(cbMiss && cbMiss.checked), remove_unwanted: !!(cbUnw && cbUnw.checked),
+              move_to_panorama: !!(cbUnw && cbUnw.checked)},
+      projection: proj.value, crop: edges.value === 'crop', in_order: ord.checked});
+    panoButtons([['cancel', '', () => pano.dlg.close()], ['create', 'primary', () => panoCreate(pano.opts())]]);
+  }
+  async function panoCreate(opts) {
+    pano.last = opts;
+    let r, j;
+    try {
+      r = await fetch('/api/panorama', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(opts)});
+      j = await r.json();
+    } catch (e) { j = {detail: e.message}; r = {ok: false}; }
+    if (!r.ok) { panoFail(j.detail || 'could not start', opts); return; }
+    pano.job = j;
+    panoRunning();
+    panoPoll();
+  }
+  function panoRunning() {
+    const j = pano.job;
+    if (!pano.dlg || !pano.dlg.open) return panoChip();
+    panoFrames();
+    $('#pano-body').replaceChildren(pEl('p', 'pano-step', `${j.step} (${j.elapsed} s)`),
+      pEl('p', 'pano-note', 'This takes a minute or two. You can close this; it keeps going.'));
+    if (!$('#pano-btns .pano-close')) {
+      panoButtons([['close', 'pano-close primary', () => pano.dlg.close()]]);
+    }
+  }
+  function panoPoll() {
+    clearTimeout(pano.timer);
+    pano.timer = setTimeout(async () => {
+      const job = pano.job;
+      let j;
+      try { const r = await fetch('/api/panorama/' + job.id); if (r.ok) j = await r.json(); } catch (e) {}
+      if (!j) return panoPoll();
+      pano.job = j;
+      if (j.state === 'running') {
+        if (pano.dlg && pano.dlg.open) {
+          const s = $('#pano-body .pano-step'); if (s) s.textContent = `${j.step} (${j.elapsed} s)`; else panoRunning();
+        }
+        panoChip(); return panoPoll();
+      }
+      panoChip();
+      j.state === 'done' ? panoDone(j) : panoFail(j.error, {ids: j.ids, ...(pano.last || {})});
+    }, 1500);
+  }
+  async function panoDone(j) {
+    const res = j.result, id = res.image_id;
+    if (!tileOf(id)) {
+      const r = await fetch(`/tile/${id}?${query}`);
+      if (r.ok) {
+        const last = [...grid.querySelectorAll('.tile')].filter((t) => j.ids.includes(+t.dataset.id)).pop();
+        if (last) last.insertAdjacentHTML('afterend', await r.text());
+        else grid.insertAdjacentHTML('afterbegin', await r.text());
+      }
+    }
+    const t = tileOf(id);
+    if (t) {
+      selected.clear();
+      grid.querySelectorAll('.tile.selected').forEach(mark);
+      select(t, true); anchor = t; selChanged(); setCurrent(t, true);
+      t.scrollIntoView({block: 'center'});
+    }
+    const d = panoDialog();
+    $('#pano-title').textContent = 'Panorama made';
+    $('#pano-thumbs').replaceChildren();
+    const info = [pEl('p', 'pano-done', `Panorama #${id}: ${res.width}×${res.height}, ${res.file_mb} MB`)];
+    (res.warnings || []).forEach((w) => info.push(pEl('p', 'pano-warn', w)));
+    $('#pano-body').replaceChildren(...info);
+    const open = pEl('a', 'pbtn primary', 'open in darkroom'); open.href = `/photo/${id}`;
+    open.onclick = () => { if (t) remember(t); };
+    if (d.open) {
+      panoButtons([['close', '', () => d.close()]]);
+      $('#pano-btns').append(open); open.focus();
+    } else {
+      panoShow();
+      panoButtons([['close', '', () => d.close()]]); $('#pano-btns').append(open);
+    }
+  }
+  function panoFail(msg, opts) {
+    panoDialog();
+    $('#pano-body').replaceChildren(pEl('p', 'pano-err', msg));
+    const noMatch = /don't connect|unconnected/.test(msg);   // Hugin's own wording when it found stray points
+    const btns = [['close', noMatch ? '' : 'primary', () => pano.dlg.close()]];
+    if (noMatch && opts && opts.ids)
+      btns.push(['retry, frames are in order', 'primary', () => panoCreate({...opts, in_order: true})]);
+    if (!pano.dlg.open) panoShow();
+    panoButtons(btns);
+  }
+  $('#sel-pano').onclick = panoStart;
+  $('#pano-chip').onclick = () => {
+    panoFrames(); panoShow(); panoRunning();
+  };
+  fetch('/api/panorama').then((r) => r.ok ? r.json() : null).then((j) => {
+    if (j && j.state === 'running') { pano.job = j; pano.ids = j.ids; panoChip(); panoPoll(); }
+  }).catch(() => {});
   async function tagSelection(on) {
     const names = $('#sel-tag').value.split(',').map((s) => s.trim()).filter(Boolean);
     if (!names.length) return $('#sel-tag').focus();

@@ -206,6 +206,7 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_SOCKET` | `library-copy/darktable-api.sock` (or `/tmp/darktable-api-<uid>-<hash>.sock` if that path is too long) | where the engine listens; every app using the library must use the same one |
 | `DTAPI_MAX_SESSIONS`, `DTAPI_IDLE_EXIT` | 3, 600 | used when this app starts the engine |
 | `DTAPI_MCP` | `darktable-api-mcp` on the PATH, else `~/darktable-api-mcp/.venv/bin/darktable-api-mcp` | the MCP server the *AI assistant* dialog's config runs |
+| `DTWEB_PANORAMA_DIR` | beside the first frame | where *panorama…* writes the stitched TIFF |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
 To open the copy in darktable's GUI (it serves the library to the engine

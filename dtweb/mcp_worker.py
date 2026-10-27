@@ -20,6 +20,11 @@ ops: find {rebuild_map}, heal {spots: [ids]},
      raw file, from the file alone (no engine): {shares, png_b64}; image_id
      is ignored. clip_batch {items: [{id, path, iso}]}: {id: shares | null}
      (null when rawpy can't read the file: JPEG, TIFF...).
+     pano_check {ids, match_edits_from}: the panorama prerequisites report
+     (the MCP's make_panorama without fixes); image_id is ignored.
+     pano_make {ids, fixes, projection, crop, in_order}: stitch with Hugin;
+     progress lines go to stderr as "PROGRESS <message>". The folder is
+     DTWEB_PANORAMA_DIR, else beside the first frame.
 """
 
 import asyncio
@@ -114,6 +119,31 @@ async def fill(server, n: int, req: dict) -> dict:
         return {"error": str(exc)}
 
 
+async def pano_check(server, n: int, req: dict) -> dict:
+    from darktable_api_mcp import panorama
+    try:
+        await server._require("export.bpp", "image_duplicate", "history_paste")
+        return await panorama.check(server.engine, [int(i) for i in req["ids"]], req.get("match_edits_from"))
+    except (panorama.PanoramaError, server.ToolError, server.EngineError) as exc:
+        return {"error": str(exc)}
+
+
+async def pano_make(server, n: int, req: dict) -> dict:
+    from darktable_api_mcp import panorama
+
+    def say(msg: str) -> None:
+        print(f"PROGRESS {msg}", file=sys.stderr, flush=True)
+
+    try:
+        await server._require("export.bpp", "image_duplicate", "history_paste")
+        return await panorama.stitch(
+            server.engine, [int(i) for i in req["ids"]], fixes=req.get("fixes") or {},
+            projection=req.get("projection") or "auto", crop=bool(req.get("crop", True)),
+            in_order=bool(req.get("in_order")), folder=os.environ.get("DTWEB_PANORAMA_DIR") or None, log=say)
+    except (panorama.PanoramaError, server.ToolError, server.EngineError) as exc:
+        return {"error": str(exc)}
+
+
 def clip(req: dict) -> dict:
     from darktable_api_mcp import clipping
     r = clipping.measure(req["path"], req.get("iso"), int(req.get("mask_size") or 0) or None)
@@ -139,7 +169,7 @@ async def main(req: dict) -> dict:
     from darktable_api_mcp import server
     n = int(req["image_id"])
     op = {"find": find, "heal": heal, "heal_at": heal_at, "fill_models": fill_models,
-          "fill": fill}.get(req.get("op"))
+          "fill": fill, "pano_check": pano_check, "pano_make": pano_make}.get(req.get("op"))
     if not op:
         raise RuntimeError(f"unknown op {req.get('op')!r}")
     return await op(server, n, req)

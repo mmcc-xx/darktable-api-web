@@ -1222,7 +1222,8 @@ _mcp_lock = asyncio.Lock()
 DUST_TIMEOUT_S = 300
 
 
-async def _mcp_worker(op: str, image_id: int, lock: asyncio.Lock | None = None, **params) -> dict:
+def _worker_cmd(op: str, image_id: int, params: dict) -> tuple[list[str], dict]:
+    """The worker's command line and environment (the MCP's Python)."""
     mcp = _mcp_program()
     py = os.environ.get("DTAPI_MCP_PYTHON") or (str(Path(mcp).parent / "python") if mcp else None)
     if not py or not Path(py).exists():
@@ -1230,11 +1231,14 @@ async def _mcp_worker(op: str, image_id: int, lock: asyncio.Lock | None = None, 
                                  "(pip install 'darktable-api-mcp[dust]')")
     env = {**os.environ, "DTAPI_BIN": str(BIN), "DTAPI_CONFIGDIR": str(CONFIG), "DTAPI_SOCKET": str(SOCKET),
            "DTAPI_CLIENT_KIND": "web-worker"}
-    req = json.dumps({"op": op, "image_id": image_id, **params})
+    return [py, "-I", str(HERE / "mcp_worker.py"), json.dumps({"op": op, "image_id": image_id, **params})], env
+
+
+async def _mcp_worker(op: str, image_id: int, lock: asyncio.Lock | None = None, **params) -> dict:
+    cmd, env = _worker_cmd(op, image_id, params)
     async with lock or _mcp_lock:
         proc = await asyncio.create_subprocess_exec(
-            py, "-I", str(HERE / "mcp_worker.py"), req, env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), DUST_TIMEOUT_S)
         except asyncio.TimeoutError:
@@ -1322,6 +1326,126 @@ async def fill(image_id: int, body: FillBody):
     else:
         raise HTTPException(422, "shape must be circle or path")
     return await _mcp_worker("fill", image_id, **body.model_dump())
+
+
+# ── panoramas: the MCP's panorama.py (Hugin) in a worker; the stitch runs in
+# the background as a job whose progress lines (PROGRESS ... on the worker's
+# stderr) the page polls
+PANORAMA_TIMEOUT_S = 20 * 60
+PANORAMAS: dict[str, dict] = {}          # job id -> its state, step and result
+PROJECTIONS = ("auto", "cylindrical", "rectilinear", "equirectangular")
+
+
+class PanoCheckBody(BaseModel):
+    ids: list[int]
+
+
+class PanoFixes(BaseModel):
+    add_missing: bool = False
+    remove_unwanted: bool = False
+    move_to_panorama: bool = False
+
+
+class PanoBody(BaseModel):
+    ids: list[int]
+    fixes: PanoFixes = PanoFixes()
+    projection: str = "auto"
+    crop: bool = True
+    in_order: bool = False
+
+
+def _pano_ids(ids: list[int]) -> None:
+    if not 2 <= len(ids) <= 30:
+        raise HTTPException(422, "a panorama needs 2 to 30 photos")
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "the same photo is listed twice")
+
+
+def _pano_running() -> dict | None:
+    j = next((j for j in PANORAMAS.values() if j["state"] == "running"), None)
+    if j:
+        j["elapsed"] = round(time.time() - j["started"])
+    return j
+
+
+@app.post("/api/panorama/check")
+async def panorama_check(body: PanoCheckBody):
+    """What would make the seams show, from the frames' edits (the MCP's
+    make_panorama without fixes)."""
+    _pano_ids(body.ids)
+    return await _mcp_worker("pano_check", 0, ids=body.ids)
+
+
+async def _pano_run(job: dict, body: PanoBody) -> None:
+    try:
+        cmd, env = _worker_cmd("pano_make", 0, {"ids": body.ids, "fixes": body.fixes.model_dump(),
+                                                "projection": body.projection, "crop": body.crop,
+                                                "in_order": body.in_order})
+        async with _mcp_lock:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            tail: list[str] = []
+
+            async def progress():
+                async for raw in proc.stderr:
+                    line = raw.decode(errors="replace").strip()
+                    if line.startswith("PROGRESS "):
+                        job["step"] = line[9:]
+                    elif line:
+                        tail.append(line)
+
+            try:
+                async def drive():
+                    out, _ = await asyncio.gather(proc.stdout.read(), progress())
+                    await proc.wait()
+                    return out
+                out = await asyncio.wait_for(drive(), PANORAMA_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise RuntimeError(f"the panorama took more than {PANORAMA_TIMEOUT_S // 60} minutes")
+        lines = out.decode(errors="replace").strip().splitlines()
+        try:
+            r = json.loads(lines[-1])
+        except (IndexError, ValueError):
+            raise RuntimeError("panorama worker failed: " + (" / ".join(tail[-3:]) or "no output"))
+        if isinstance(r, dict) and r.get("error"):
+            raise RuntimeError(r["error"])
+        job.update(state="done", result=r, elapsed=round(time.time() - job["started"]))
+    except HTTPException as exc:
+        job.update(state="error", error=str(exc.detail), elapsed=round(time.time() - job["started"]))
+    except Exception as exc:
+        job.update(state="error", error=str(exc) or type(exc).__name__, elapsed=round(time.time() - job["started"]))
+
+
+@app.post("/api/panorama")
+async def panorama_make(body: PanoBody):
+    """Stitch the photos with Hugin, in the background; poll
+    /api/panorama/{id}. One at a time."""
+    _pano_ids(body.ids)
+    if body.projection not in PROJECTIONS:
+        raise HTTPException(422, "projection must be one of " + ", ".join(PROJECTIONS))
+    if _pano_running():
+        raise HTTPException(409, "a panorama is being made: wait for it to finish")
+    job_id = secrets.token_urlsafe(8)
+    PANORAMAS[job_id] = job = {"id": job_id, "state": "running", "step": "starting", "result": None,
+                               "error": None, "ids": body.ids, "started": time.time(), "elapsed": 0}
+    asyncio.create_task(_pano_run(job, body))
+    return job
+
+
+@app.get("/api/panorama")
+async def panorama_running():
+    """The panorama being made, or null (a reloaded page shows it again)."""
+    return _pano_running()
+
+
+@app.get("/api/panorama/{job}")
+async def panorama_status(job: str):
+    if job not in PANORAMAS:
+        raise HTTPException(404, "no such panorama job (they are kept until the web app restarts)")
+    _pano_running()
+    return PANORAMAS[job]
 
 
 class ExportBody(BaseModel):

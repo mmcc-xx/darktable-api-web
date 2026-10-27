@@ -434,6 +434,43 @@ async def _pipeline(image_id: int, mods: list[dict]) -> list[dict]:
     return out
 
 
+# capture sharpening (demosaic's cs_* settings): fields shown, as (name, label)
+CAPTURE_FIELDS = [("cs_radius", "radius"), ("cs_thrs", "contrast sensitivity"), ("cs_boost", "corner boost"),
+                  ("cs_iter", "iterations")]
+# demosaic methods without it: passthrough (monochrome, photosite color) and monochrome
+CAPTURE_NONE = ("PASSTHROUGH", "PASSTHR_", "DEMOSAIC_MONO")
+
+
+async def _capture(image_id: int) -> dict | None:
+    """The capture sharpening section, or None where it doesn't apply: an
+    engine without capture_autotune, a photo that isn't a raw, or a
+    demosaic method that has no capture sharpening."""
+    try:
+        if not await engine.supports("capture_autotune"):
+            return None
+        info = await engine.call("image_info", imgid=image_id)
+        if not (info.get("exif") or {}).get("raw"):
+            return None
+        g = await engine.edit(image_id, "module_get", operation="demosaic")
+    except EngineError:
+        return None
+    by = {x["name"]: x for x in g["fields"]}
+    if "cs_enabled" not in by or any(k in str(by["demosaicing_method"]["value"]) for k in CAPTURE_NONE):
+        return None
+    fields = [{"kind": "bool", "name": "cs_enabled", "label": "capture sharpening",
+               "value": bool(by["cs_enabled"]["value"]), "default": bool(by["cs_enabled"]["default"])}]
+    for name, label in CAPTURE_FIELDS:
+        x = by.get(name)
+        if x is None:
+            continue
+        whole = name == "cs_iter"
+        fields.append({"kind": "num", "name": name, "label": label, "value": x["value"], "default": x["default"],
+                       "lo": x["min"], "hi": x["max"], "factor": 1, "unit": "px" if name == "cs_radius" else "",
+                       "digits": 0 if whole else 2, "step": 1 if whole else None})
+    return {"operation": "demosaic", "instance": 0, "title": "capture sharpening", "enabled": True,
+            "fields": fields}
+
+
 async def _state(image_id: int) -> dict:
     mods = (await engine.edit(image_id, "module_list"))["modules"]
     listed = {m["operation"] for m in mods}
@@ -464,6 +501,7 @@ async def _state(image_id: int) -> dict:
     mono = await _mono(image_id)
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
             "geometry": geometry, "mono": mono, "others": _others(mods, mono),
+            "capture": await _capture(image_id),
             "wb": await _wb(image_id), "levels": await _levels(image_id),
             "pipeline": await _pipeline(image_id, mods)}
 
@@ -535,6 +573,17 @@ async def photo_wb(image_id: int, body: WbBody):
         r = await engine.edit(image_id, "module_set", operation="channelmixerrgb", instance=0,
                               values={"illuminant": "DT_ILLUMINANT_CUSTOM", "x": x, "y": y})
         return {**r, "history": await engine.edit(image_id, "history_list"), "wb": await _wb(image_id)}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+@app.post("/api/photo/{image_id}/capture_autotune")
+async def photo_capture_autotune(image_id: int):
+    """Measure capture sharpening's radius and threshold on this raw (the
+    engine turns it on, one history step); the new state."""
+    try:
+        r = await engine.edit(image_id, "capture_autotune")
+        return {**await _state(image_id), "values": r.get("values"), "ms": r.get("ms")}
     except EngineError as exc:
         raise _bad(exc)
 

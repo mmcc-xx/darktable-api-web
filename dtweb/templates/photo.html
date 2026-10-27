@@ -599,6 +599,7 @@
         if (m.operation === 'exposure' && s.wb) body.appendChild(tagged(wbPanel(s.wb, resum), 'channelmixerrgb', 0));
       });
       box.appendChild(d);
+      if (name === 'basic' && s.capture) box.appendChild(captureSection(s.capture));
     }
     box.appendChild(monoSection(s.mono));
     const as = areaSection();
@@ -1059,6 +1060,55 @@
       row.append(head, askBtn);
       body.appendChild(row);
     }
+    d.append(sum, body);
+    keepOpen(d);
+    return d;
+  }
+
+  // ── capture sharpening (demosaic): on/off and sliders as in any module panel,
+  // and a button that has the engine measure radius and threshold on this raw
+  function captureSection(c) {
+    const d = document.createElement('details');
+    d.className = 'sec'; d.dataset.sec = 'capture';
+    const sum = document.createElement('summary');
+    const line = document.createElement('span');
+    line.className = 'sum';
+    const resum = () => {
+      const on = c.fields[0].value, r = c.fields.find((f) => f.name === 'cs_radius');
+      line.textContent = !on ? 'off' : r ? `radius ${fmt(r, r.value)}` : 'on';
+    };
+    resum();
+    sum.append('capture\u00a0sharpening ', line);
+    const body = document.createElement('div');
+    body.className = 'sec-body';
+    body.appendChild(modulePanel(c, resum, true));
+    const row = document.createElement('div');
+    row.className = 'field';
+    const go = document.createElement('button');
+    go.className = 'secondary'; go.textContent = 'measure for this photo';
+    go.title = 'the engine measures the radius and the contrast sensitivity on the raw (about a second) and turns capture sharpening on';
+    const note = document.createElement('span');
+    note.className = 'dim'; note.setAttribute('role', 'status');
+    go.onclick = async () => {
+      if (busy) { status('wait for the last change to finish'); return; }
+      go.disabled = true; note.textContent = 'measuring…'; status('measuring capture sharpening…');
+      const r = await api('capture_autotune', {});
+      const j = await r.json().catch(() => ({}));
+      go.disabled = false;
+      if (!r.ok) { note.textContent = j.detail || 'failed'; status('not measured: ' + (j.detail || r.status)); return; }
+      setDirty(true);
+      show(j);
+      const o = $('details[data-sec="capture"]');
+      if (o) { o.open = true; opened.capture = true; }
+      const t = $('details[data-sec="capture"] [role=status]');
+      if (t) t.textContent = `measured in ${j.ms} ms`;
+      preview(`radius ${j.values.cs_radius.toFixed(2)},`);
+    };
+    row.append(go, note);
+    const hint = document.createElement('p');
+    hint.className = 'dim';
+    hint.textContent = 'restores detail lost to the lens; measure sets the radius for this photo. Watch noise on high-ISO photos.';
+    body.append(row, hint);
     d.append(sum, body);
     keepOpen(d);
     return d;

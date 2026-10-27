@@ -2539,12 +2539,14 @@
 
   $('#undo').onclick = () => step(-1);
   $('#redo').onclick = () => step(1);
-  $('#save').onclick = async () => {
+  async function save() {
     const r = await api('save', {});
     const s = await r.json();
     if (r.ok) setDirty(false);
     status(r.ok ? (s.changed ? `saved (${s.history_items} history items)` : 'nothing new to save') : 'save failed: ' + s.detail);
-  };
+    return r.ok;
+  }
+  $('#save').onclick = () => save();
   $('#reload').onclick = async () => { if (!dirty || await ask('Discard unsaved changes?', {ok: 'discard', danger: true})) open(true); };
   // duplicate: a virtual copy (the next version) with the saved edit, or
   // none; unsaved changes are saved first, after asking. This photo stays open
@@ -2586,7 +2588,38 @@
   }
   $('#full').onclick = fullScreen;
 
-  addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  // leaving for the library or the next photo (#back, #prev, #next, and
+  // Esc / PgUp / PgDn, which click them) with unsaved changes asks first:
+  // save, or don't save (the saved edit is reopened, as #reload does, else
+  // the changes stay in the shared session), or stay. beforeunload is left
+  // for closing the tab and the browser's back button
+  let leaving = false;
+  async function leave(href) {
+    while (busy) await new Promise((r) => setTimeout(r, 50));   // edits still on their way
+    if (dirty) {
+      const c = await choose('Save changes to this photo before leaving?', [
+        {label: 'cancel', value: null}, {label: "don't save", value: 'discard', kind: 'danger'},
+        {label: 'save', value: 'save', kind: 'primary'}]);
+      if (!c) return;
+      if (c === 'save' && !await save()) return;
+      if (c === 'discard') {
+        const r = await api('open?fresh=true', {});
+        if (!r.ok) { status('discard failed: ' + (await r.json()).detail); return; }
+        setDirty(false);
+      }
+    }
+    leaving = true;
+    location.href = href;
+  }
+  for (const id of ['back', 'prev', 'next']) {
+    const a = document.getElementById(id);
+    if (a) a.addEventListener('click', (e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;   // a new tab or window
+      e.preventDefault();
+      leave(a.href);
+    });
+  }
+  addEventListener('beforeunload', (e) => { if (dirty && !leaving) { e.preventDefault(); e.returnValue = ''; } });
   document.addEventListener('keydown', (e) => {
     // a focused slider has no undo of its own; text fields keep theirs
     const typing = e.target.closest('select, textarea') || (e.target.closest('input') && e.target.type !== 'range'

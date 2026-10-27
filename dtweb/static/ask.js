@@ -4,6 +4,9 @@
 //   ask(message, {ok, cancel, danger})  -> Promise<boolean>
 //   ask(message, {value})               -> Promise<string | null> (an input)
 //   tell(message, {value})              -> Promise<void> (one button)
+//   choose(message, [{label, value, kind}]) -> Promise<value | null>
+//     (one button per choice, in order; kind 'primary' or 'danger'; the
+//     primary one is the default)
 // Esc and the cancel button answer no (null); Enter answers the default
 // button. A modal <dialog> sits in the top layer, above the phone sheet and
 // the full screen view, keeps focus inside, and focus goes back afterwards.
@@ -47,6 +50,35 @@
       if (withValue) { input.focus(); input.select(); } else ok.focus();
     });
   }
+  let cdlg = null;
+  window.choose = (message, choices) => {
+    if (!cdlg) {
+      cdlg = document.createElement('dialog');
+      cdlg.className = 'connect ask-dlg';
+      cdlg.innerHTML = '<form method="dialog"><p class="ask-msg"></p><div class="ask-btns"></div></form>';
+      document.body.appendChild(cdlg);
+      cdlg.onclick = (e) => { if (e.target === cdlg) cdlg.close(''); };
+      cdlg.addEventListener('keydown', (e) => e.stopPropagation());
+    }
+    if (cdlg.open) cdlg.close('');
+    const back = document.activeElement, btns = cdlg.querySelector('.ask-btns');
+    cdlg.querySelector('.ask-msg').textContent = message;
+    btns.replaceChildren(...choices.map((c, i) => {
+      const b = document.createElement('button');
+      b.value = String(i); b.textContent = c.label; b.className = c.kind || '';
+      return b;
+    }));
+    cdlg.returnValue = '';
+    return new Promise((resolve) => {
+      cdlg.addEventListener('close', () => {
+        if (back && back.focus && document.contains(back)) back.focus({preventScroll: true});
+        const c = choices[cdlg.returnValue === '' ? -1 : +cdlg.returnValue];
+        resolve(c ? c.value : null);
+      }, {once: true});
+      cdlg.showModal();
+      (btns.querySelector('.primary') || btns.lastElementChild).focus();
+    });
+  };
   window.ask = (message, o = {}) => show(message, o, false);
   window.tell = (message, o = {}) => show(message, o, true).then(() => {});
 })();

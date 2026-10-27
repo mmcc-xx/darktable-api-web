@@ -442,7 +442,7 @@ CAPTURE_NONE = ("PASSTHROUGH", "PASSTHR_", "DEMOSAIC_MONO")
 
 
 async def _capture(image_id: int) -> dict | None:
-    """The capture sharpening section, or None where it doesn't apply: an
+    """Capture sharpening for the pipeline's demosaic panel, or None where it doesn't apply: an
     engine without capture_autotune, a photo that isn't a raw, or a
     demosaic method that has no capture sharpening."""
     try:

@@ -573,6 +573,8 @@
   }
 
   function show(s) {
+    // rebuilding the panel would scroll it back to the top: keep its place
+    const scrolled = [$('#sections'), $('.panel')].map((el) => [el, el.scrollTop]);
     state = s;
     genCache.clear(); genGen++;
     $('#pipe-n').textContent = (s.pipeline || []).filter((e) => e.in_history && !e.plumbing).length;
@@ -599,7 +601,6 @@
         if (m.operation === 'exposure' && s.wb) body.appendChild(tagged(wbPanel(s.wb, resum), 'channelmixerrgb', 0));
       });
       box.appendChild(d);
-      if (name === 'basic' && s.capture) box.appendChild(captureSection(s.capture));
     }
     box.appendChild(monoSection(s.mono));
     const as = areaSection();
@@ -612,6 +613,7 @@
     applyView();
     if (view === 'pipeline') renderPipeline(s);
     if (!deepDone) { deepDone = true; deepLink(); }
+    scrolled.forEach(([el, top]) => { el.scrollTop = top; });
   }
 
   // ── pipeline view: every instance in the edit, output at the top as in
@@ -627,8 +629,12 @@
       if (l) l.hidden = !it || r.dataset.key !== key(it.operation, it.instance);
     });
   }
+  let pipeLoads = 0;
   function renderPipeline(s) {
     const box = $('#pipeline');
+    // open rows load their controls after this: hold the height until they
+    // do, or the panel's scroll position jumps
+    box.style.minHeight = box.offsetHeight + 'px';
     box.textContent = '';
     const top = document.createElement('label');
     top.className = 'pdef dim';
@@ -651,6 +657,7 @@
     pipeRows = rows;
     for (const e of rows) box.appendChild(pipeRow(e));
     markLast();
+    if (!pipeLoads) box.style.minHeight = '';
   }
   // W30: reorder. Rows show output at the top, so above = later in the pipe (module_move `after`).
   let pipeRows = [];
@@ -767,20 +774,23 @@
     const k = key(e.operation, e.instance), gen = genGen;
     const draw = (g) => {
       body.textContent = '';
-      body.appendChild(modulePanel({operation: e.operation, instance: e.instance, enabled: e.enabled, title: e.label,
-                                    fields: g.fields}, noop, true));
+      const panel = modulePanel({operation: e.operation, instance: e.instance, enabled: e.enabled, title: e.label,
+                                 fields: g.fields}, noop, true);
+      if (e.operation === 'demosaic' && e.instance === 0 && state.capture) captureControls(panel, g.fields);
+      body.appendChild(panel);
       const line = (t) => { const p = document.createElement('p'); p.className = 'pnote dim'; p.textContent = t; body.appendChild(p); };
       if (g.notes.length) line(`${g.notes.join(', ')}: set in darktable or ask the assistant`);
       if (g.blend) line(`blend: ${g.blend.blend_mode} · ${g.blend.opacity} % · mask: ${g.blend.masks}`);
     };
     if (genCache.has(k)) { draw(genCache.get(k)); return; }
     body.textContent = 'loading…';
+    pipeLoads++;
     api(`module?operation=${encodeURIComponent(e.operation)}&instance=${e.instance}`).then(async (r) => {
       if (!r.ok) { body.textContent = 'not available: ' + (await r.json()).detail; return; }
       const g = await r.json();
       if (gen === genGen) genCache.set(k, g);
       draw(g);
-    });
+    }).finally(() => { if (!--pipeLoads) $('#pipeline').style.minHeight = ''; });
   }
   function openRow(op, inst) {
     inst = inst || 0;
@@ -981,7 +991,7 @@
     if (!bare) sec.appendChild(head);
     m.fields.forEach((f) => {
       const row = document.createElement('div');
-      row.className = 'field';
+      row.className = 'field'; row.dataset.field = f.name;
       const lab = document.createElement('span');
       lab.textContent = f.label; lab.title = 'double-click: back to default';
       if (f.kind === 'enum' || f.kind === 'bool') {
@@ -1065,53 +1075,50 @@
     return d;
   }
 
-  // ── capture sharpening (demosaic): on/off and sliders as in any module panel,
-  // and a button that has the engine measure radius and threshold on this raw
-  function captureSection(c) {
-    const d = document.createElement('details');
-    d.className = 'sec'; d.dataset.sec = 'capture';
-    const sum = document.createElement('summary');
-    const line = document.createElement('span');
-    line.className = 'sum';
-    const resum = () => {
-      const on = c.fields[0].value, r = c.fields.find((f) => f.name === 'cs_radius');
-      line.textContent = !on ? 'off' : r ? `radius ${fmt(r, r.value)}` : 'on';
-    };
-    resum();
-    sum.append('capture\u00a0sharpening ', line);
-    const body = document.createElement('div');
-    body.className = 'sec-body';
-    body.appendChild(modulePanel(c, resum, true));
-    const row = document.createElement('div');
-    row.className = 'field';
+  // ── capture sharpening, in the pipeline's demosaic panel: as in darktable's
+  // window, switching it on with radius 0 measures the radius on the raw (a
+  // zero radius sharpens nothing on a photo that has been edited), and a
+  // button next to the radius measures again
+  function captureControls(panel, fields) {
     const go = document.createElement('button');
-    go.className = 'secondary'; go.textContent = 'measure for this photo';
+    go.textContent = 'measure for this photo';
     go.title = 'the engine measures the radius and the contrast sensitivity on the raw (about a second) and turns capture sharpening on';
-    const note = document.createElement('span');
-    note.className = 'dim'; note.setAttribute('role', 'status');
     go.onclick = async () => {
       if (busy) { status('wait for the last change to finish'); return; }
-      go.disabled = true; note.textContent = 'measuring…'; status('measuring capture sharpening…');
+      go.disabled = true; status('measuring capture sharpening…');
       const r = await api('capture_autotune', {});
       const j = await r.json().catch(() => ({}));
       go.disabled = false;
-      if (!r.ok) { note.textContent = j.detail || 'failed'; status('not measured: ' + (j.detail || r.status)); return; }
+      if (!r.ok) { status('not measured: ' + (j.detail || r.status)); return; }
       setDirty(true);
       show(j);
-      const o = $('details[data-sec="capture"]');
-      if (o) { o.open = true; opened.capture = true; }
-      const t = $('details[data-sec="capture"] [role=status]');
-      if (t) t.textContent = `measured in ${j.ms} ms`;
+      status(`capture sharpening: radius ${j.values.cs_radius.toFixed(2)} px, contrast sensitivity ${j.values.cs_thrs.toFixed(2)} (measured in ${j.ms} ms)`);
       preview(`radius ${j.values.cs_radius.toFixed(2)},`);
     };
-    row.append(go, note);
-    const hint = document.createElement('p');
-    hint.className = 'dim';
-    hint.textContent = 'restores detail lost to the lens; measure sets the radius for this photo. Watch noise on high-ISO photos.';
-    body.append(row, hint);
-    d.append(sum, body);
-    keepOpen(d);
-    return d;
+    const row = document.createElement('div');
+    row.className = 'field';
+    const lab = document.createElement('span');
+    lab.textContent = 'auto radius';
+    row.append(lab, go);
+    // darktable's order: the method first, capture sharpening last with its
+    // switch on top (the params come in their stored order)
+    const field = (n) => panel.querySelector(`[data-field="${n}"]`);
+    if (field('demosaicing_method')) panel.prepend(field('demosaicing_method'));
+    const head = document.createElement('div');
+    head.className = 'subsec'; head.textContent = 'capture sharpening';
+    panel.appendChild(head);
+    for (const n of ['cs_enabled', 'cs_iter', 'cs_radius', 'auto', 'cs_thrs', 'cs_boost', 'cs_center']) {
+      const r = n === 'auto' ? row : field(n);
+      if (r) panel.appendChild(r);
+    }
+    const box = panel.querySelector('[data-field="cs_enabled"] input[type=checkbox]');
+    if (!box) return;
+    const plain = box.onchange;
+    box.onchange = () => {
+      const r = fields.find((f) => f.name === 'cs_radius');
+      if (box.checked && r && !r.value && !busy) go.onclick();
+      else plain();
+    };
   }
 
   // ── black & white: a second color calibration instance (the engine adds

@@ -44,6 +44,7 @@
         <button class="rej" data-rate="reject" title="reject">✕</button>{% for n in range(1, 6) %}<button class="star" data-rate="{{ n }}" title="{{ n }}">★</button>{% endfor %}
         {% for name in labels %}<button class="dot {{ name }} on" data-label="{{ loop.index0 }}" title="{{ name }}: on for all, or off if all have it"></button>{% endfor %}
       </span>
+      <button id="sel-ids" class="secondary" title="copy the selected photos' ids (&quot;photos 431, 432&quot;) to paste to Claude">copy ids</button>
       <button id="sel-clear" class="secondary" title="select none (Esc)">clear</button>
     </div>
     <form id="exform" class="exform" hidden>
@@ -421,6 +422,10 @@
 
   // ── the selection bar
   $('#sel-clear').onclick = clearSelection;
+  $('#sel-ids').onclick = () => {
+    const ids = [...selected].map(Number).sort((a, b) => a - b);
+    if (ids.length) dtCopy((ids.length > 1 ? 'photos ' : 'photo ') + ids.join(', '), $('#sel-ids'));
+  };
   $('#sel-dup').onclick = () => duplicateAll(selection());
   async function tagSelection(on) {
     const names = $('#sel-tag').value.split(',').map((s) => s.trim()).filter(Boolean);
@@ -524,6 +529,12 @@
   const detailOn = () => $('#detail').offsetParent !== null;   // not shown on narrow screens
   function detailSoon() { clearTimeout(detailTimer); detailTimer = setTimeout(showDetail, 100); }
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  function pidBtn(id) {
+    const b = el('button', 'pid', '#' + id);
+    b.type = 'button'; b.dataset.copy = 'photo ' + id;
+    b.title = `library id: click to copy "photo ${id}" for Claude`;
+    return b;
+  }
   async function showDetail() {
     const t = current;
     if (!t || !detailOn()) return;
@@ -550,7 +561,7 @@
     const wide = wideMQ.matches;
     infoDrawer = null;
     const info = el('div', 'detail-info');
-    if (!wide) { box.append(pv, info); pvSize(); info.append(el('h3', 'detail-name', t.dataset.name)); }
+    if (!wide) { box.append(pv, info); pvSize(); { const hd = el('div', 'detail-head'); hd.append(pidBtn(img.id), el('h3', 'detail-name', t.dataset.name)); info.append(hd); } }
     const acts = el('p', 'buttons');
     const op = el('a', 'detail-open', 'open in darkroom');
     op.href = t.querySelector('a').href;
@@ -589,7 +600,7 @@
     const bar = el('div', 'detail-bar');
     const ib = el('button', 'detail-i' + (infoOpen() ? ' on' : ''), 'i');
     ib.type = 'button'; ib.title = 'details (i)'; ib.onclick = () => infoSet(!infoShown());
-    bar.append(el('span', 'detail-name', t.dataset.name), el('span', 'detail-shot', d.shot.join(' · ')), ib);
+    bar.append(pidBtn(img.id), el('span', 'detail-name', t.dataset.name), el('span', 'detail-shot', d.shot.join(' · ')), ib);
     box.append(stage, bar);
     pvSize();
   }

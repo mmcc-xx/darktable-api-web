@@ -64,6 +64,17 @@ button.danger { background: #d0534a; color: #fff; border-color: #d0534a; font-we
 .tile.rejected img { opacity: .4; }
 .tile img { display: block; width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #111; }
 .tile figcaption { padding: .25rem .4rem; font-size: .75rem; display: flex; flex-direction: column; gap: .15rem; }
+.tile .cap { display: flex; align-items: baseline; gap: .35rem; min-width: 0; }
+.tile .cap .name { flex: 1 1 auto; min-width: 0; }
+button.pid { flex: none; font-size: .7rem; padding: 0 .3rem; line-height: 1.4; color: var(--dim); background: transparent; border: 1px solid transparent; border-radius: 3px; font-variant-numeric: tabular-nums; cursor: copy; }
+button.pid:hover, button.pid:focus-visible { color: var(--accent); border-color: var(--line); }
+@media (pointer: coarse) { button.pid { min-height: 28px; min-width: 28px; } }
+.detail-head { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+.detail-head .detail-name { min-width: 0; }
+.photo-nav .pid { font-size: .8rem; }
+.toast { position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%); z-index: 100; padding: .4rem .9rem; border-radius: 6px;
+         background: #3a2f1c; border: 1px solid #6b5228; color: var(--fg, #eee); font-size: .85rem; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.toast.on { opacity: 1; }
 .tile .name { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ctl { display: flex; align-items: center; gap: .1rem; }
 .ctl button { background: none; border: none; padding: 0 .1rem; color: #555; font-size: .9rem; line-height: 1; }

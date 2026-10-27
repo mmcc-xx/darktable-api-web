@@ -3,6 +3,7 @@
 {% block top %}
 <nav class="photo-nav">
   <a href="/?{{ query }}" id="back" title="back to the library (Esc)">‹ library</a>
+  <button class="pid" data-copy="photo {{ image_id }}" title="library id: click to copy &quot;photo {{ image_id }}&quot; for Claude">#{{ image_id }}</button>
   {% if prev %}<a href="/photo/{{ prev }}?{{ query }}" id="prev" title="previous (Page Up)">← prev</a>{% endif %}
   {% if total %}<span>{{ pos }} / {{ total }}</span>{% endif %}
   {% if next %}<a href="/photo/{{ next }}?{{ query }}" id="next" title="next (Page Down)">next →</a>{% endif %}

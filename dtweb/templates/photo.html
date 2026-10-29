@@ -254,12 +254,12 @@
     }
     img.style.transform = $('#clipov').style.transform = '';
     ov.place();
-    if (url) URL.revokeObjectURL(url);
+    if (url) { URL.revokeObjectURL(url); uncroppedUrls.delete(url); }
     url = URL.createObjectURL(blob);
+    if (cropping && !z) uncroppedUrls.add(url);
     altBigClear();
     // an alternative on show stays, rendered again on the new edit
     if (showing) altBig(showing); else img.src = url;
-    if (cropping) img.decode().then(drawBox, drawBox);
     status(`${note ? note + ' ' : ''}${shown ? Math.round(z * 100) + '%, ' : ''}render ${r.headers.get('X-Render-Ms')} ms, round trip ${Math.round(performance.now() - t)} ms${dirty ? ' · unsaved changes' : ''}`);
     looksSoon();
   }
@@ -2136,7 +2136,11 @@
   // ── crop & rotate ──────────────────────────────────────────────────────
   // geo: the engine's geometry_get. while cropping, the preview shows the
   // whole photo (uncropped) and box is the crop being drawn, in fractions
+  // uncroppedUrls: the preview images rendered uncropped; the box is shown
+  // only over one of them, once loaded (until then #pv holds the cropped
+  // render, and box's fractions would land on the wrong area)
   let geo = null, cropping = false, box = null;
+  const uncroppedUrls = new Set();
   const fmtAngle = (v) => (+v).toFixed(2) + '°';
   const swapAspect = (a) => a.includes(':') ? a.split(':').reverse().join(':') : a;
 
@@ -2186,7 +2190,10 @@
 
   function drawBox() {
     if (!cropping || !box) return;
-    const r = imgRect(), f = $('#cropframe'), b = $('#cropbox');
+    const img = $('#pv'), f = $('#cropframe'), b = $('#cropbox');
+    f.hidden = !(img.complete && uncroppedUrls.has(img.src));
+    if (f.hidden) return;
+    const r = imgRect();
     Object.assign(f.style, {left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px'});
     Object.assign(b.style, {left: box.left * r.w + 'px', top: box.top * r.h + 'px',
                             width: (box.right - box.left) * r.w + 'px', height: (box.bottom - box.top) * r.h + 'px'});
@@ -2267,7 +2274,9 @@
     $('#tool-crop').setAttribute('aria-pressed', on);
     $('#tool-crop').classList.toggle('on', on);
     $('#cropframe').hidden = !cropping;
-    if (cropping) { box = fitRatio({...geo.crop}); drawBox(); }
+    // the stored crop as is (a re-fit to the aspect would move it a little
+    // and make done write a new crop); dragging an edge fits it
+    if (cropping) { box = {...geo.crop}; drawBox(); }
     if (geo) preview(on ? 'drag the box, then done;' : '');
   }
   $('#tool-crop').onclick = () => setCropping($('#toolbar-crop').hidden);
@@ -2296,6 +2305,7 @@
   $('#aspect').onchange = () => { $('#aspect').dataset.portrait = ''; aspectChanged(); };
   $('#aspect-swap').onclick = () => { $('#aspect').dataset.portrait = $('#aspect').dataset.portrait ? '' : '1'; aspectChanged(); };
   addEventListener('resize', drawBox);
+  $('#pv').addEventListener('load', drawBox);
 
   // one change in flight; newer slider values replace the waiting one
   // (only a change of the same kind: a rotation isn't dropped for a slider)
@@ -2584,7 +2594,7 @@
   // alternatives show fitted: zooming goes back to the edit
   let altCache = new Map();
   function altBigClear() {
-    for (const p of altCache.values()) p.then((u) => u && URL.revokeObjectURL(u));
+    for (const p of altCache.values()) p.then((u) => { if (u) { URL.revokeObjectURL(u); uncroppedUrls.delete(u); } });
     altCache = new Map();
   }
   async function altBig(v) {
@@ -2593,7 +2603,11 @@
     const q = `path=${encodeURIComponent(v.path)}&w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`;
     const cache = altCache;
     if (!cache.has(q)) cache.set(q, fetch(`/api/photo/${ID}/alternative.jpg?${q}`).then(async (r) => {
-      if (r.ok) return URL.createObjectURL(await r.blob());
+      if (r.ok) {
+        const u = URL.createObjectURL(await r.blob());
+        if (cropping) uncroppedUrls.add(u);
+        return u;
+      }
       status('alternative render failed: ' + (await r.text()));
       cache.delete(q);
       return null;

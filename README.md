@@ -137,10 +137,10 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
 
    | Your darktable | Branch | What it is |
    |---|---|---|
-   | 5.6.x (5.6.2 on) | `darktable-api-5.6` | darktable's 5.6 release with the API; darktable's point releases are merged in as they come out. Most people want this one |
-   | built from master | `darktable-api` (the fork's default branch) | darktable's development version with the API; darktable master is merged in weekly once the tests pass. Its edits use module versions darktable 5.6 can't open |
+   | built from master | `darktable-api` (the fork's default branch) | darktable's development version with the API; darktable master is merged in weekly once the tests pass. Its edits use module versions darktable 5.6 can't open, so open the library with the `darktable` from the same build. Use this one |
+   | 5.6.x (5.6.2 on) | `darktable-api-5.6` | **frozen** (tag `api-dt5.6.2-final`, 2026-10-29): darktable 5.6.2 with the API as of 2026-10-15, no fixes or new methods since; this web app's newer features need `darktable-api` |
 
-       git clone -b darktable-api-5.6 --recurse-submodules https://github.com/mmcc-xx/darktable.git
+       git clone -b darktable-api --recurse-submodules https://github.com/mmcc-xx/darktable.git
        cd darktable
        cmake -B build -G Ninja -DUSE_API=ON
        cmake --build build

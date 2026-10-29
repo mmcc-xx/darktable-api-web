@@ -18,9 +18,12 @@
       <span id="lib-text">
         {% if lib.state == 'owned' and lib.server == 'gui' %}library served by darktable's window: {{ lib.library }}
         {% elif lib.state == 'owned' %}library: {{ lib.library }}
-        {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% endif %}
+        {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% else %}: start darktable on it{% endif %}{% if lib.auto_acquire %}; taken back when darktable quits{% endif %}
         {% else %}{{ lib.detail }}{% endif %}
       </span>
+      {% if lib.state == 'owned' and lib.server != 'gui' %}
+        <button data-lib="release" title="hand the library to darktable's own window; unsaved edits are kept and come back after">release to darktable</button>
+      {% endif %}
       {% if lib.state == 'released' %}
         <button data-lib="acquire">take back</button>
         {% if lib.holder_pid %}<button data-lib="takeover" title="quit darktable the normal way, then take the library back">quit darktable and take back</button>{% endif %}
@@ -72,10 +75,26 @@
       } catch (e) {}
     }
     refreshClients();
+    // The page is drawn for one library state: when it changes (released
+    // here or elsewhere, or taken back after darktable quits) draw it again.
+    // While released, poll too, for the holder appearing and missed events.
+    const libEl = document.getElementById('lib');
+    async function checkLib() {
+      try {
+        const s = await (await fetch('/api/library')).json();
+        if (s.state !== libEl.dataset.state && ['owned', 'released'].includes(s.state)) { location.reload(); return; }
+        if (s.state === 'released')
+          document.getElementById('lib-text').textContent = 'library released' +
+            (s.holder_pid ? ` to darktable (process ${s.holder_pid})` : ': start darktable on it') +
+            (s.auto_acquire ? '; taken back when darktable quits' : '');
+      } catch (e) {}
+    }
+    if (libEl.dataset.state === 'released') setInterval(checkLib, 3000);
     try {
       new EventSource('/api/events').onmessage = (m) => {
         const ev = JSON.parse(m.data);
         if (['clients', 'library_acquired', 'library_released'].includes(ev.type)) refreshClients();
+        if (['library_acquired', 'library_released'].includes(ev.type)) checkLib();
         if (!dr || ev.type !== 'darkroom') return;
         dr.hidden = !ev.imgid;
         dr.href = ev.imgid ? '/photo/' + ev.imgid : '#';
@@ -93,6 +112,7 @@
     document.querySelectorAll('[data-lib]').forEach((b) => b.onclick = async () => {
       const action = b.dataset.lib;
       if (action === 'takeover' && !await ask('Quit darktable (it saves its edits), then take the library back?', {ok: 'quit and take back'})) return;
+      if (action === 'release' && !await ask('Release the library to darktable? Start darktable on it next; unsaved edits are kept and come back when it quits.', {ok: 'release'})) return;
       b.disabled = true;
       document.getElementById('lib-text').textContent = action === 'takeover' ? 'asking darktable to quit…' : '…';
       const r = await fetch(`/api/library/${action}`, {method: 'POST'});

@@ -2089,16 +2089,22 @@ async def library_status():
 
 @app.post("/api/library/{action}")
 async def library_action(action: str):
-    """acquire: take back a library released to darktable's GUI;
-    takeover: quit that GUI the normal way, then take it back."""
+    """release: hand the library to darktable's own window (the engine takes
+    it back by itself when that window quits); acquire: take back a library
+    released to darktable's GUI; takeover: quit that GUI the normal way, then
+    take it back."""
+    calls = {"release": lambda: engine.library("library_release"),
+             "acquire": lambda: engine.library("library_acquire"),
+             "takeover": engine.takeover}
+    if action not in calls:
+        raise HTTPException(404, f"no library action '{action}'")
     try:
-        if action == "acquire":
-            return await engine.library("library_acquire")
-        if action == "takeover":
-            return await engine.takeover()
+        r = await calls[action]()
     except EngineError as exc:
         raise HTTPException(409, str(exc))
-    raise HTTPException(404, f"no library action '{action}'")
+    # the other tabs: the engine doesn't echo this connection's own change
+    engine.emit({"type": "library_released" if action == "release" else "library_acquired"})
+    return r
 
 
 @app.on_event("shutdown")

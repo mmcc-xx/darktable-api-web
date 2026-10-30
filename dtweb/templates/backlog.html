@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}backlog · darktable-api{% endblock %}
+{% block main %}
+<style>
+  .bl-tabs { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .8rem; }
+  .bl-tabs a { padding: .25rem .7rem; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--panel); }
+  .bl-tabs a.on { border-color: var(--accent); color: var(--accent); }
+  .bl-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .6rem; color: var(--dim); font-size: .8rem; }
+  .bl-wrap { overflow-x: auto; margin-bottom: 1rem; }
+  table.bl { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  .bl th, .bl td { border-bottom: 1px solid var(--line); padding: .3rem .5rem; text-align: left; vertical-align: top; }
+  .bl th { color: var(--dim); font-weight: 600; white-space: nowrap; cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--bg); }
+  .bl th.asc::after { content: " \25B2"; } .bl th.desc::after { content: " \25BC"; }
+  .bl td.item { min-width: 16rem; max-width: 46rem; }
+  .bl .clip { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; overflow-wrap: anywhere; }
+  .bl .clip.open { display: block; }
+  .bl tr.done td { opacity: .55; }
+  .bl tr:target td, .bl-item:target { background: #3a2f1c; }
+  .bl tr, .bl-item { scroll-margin-top: 4rem; }
+  .bl .acts { white-space: nowrap; }
+  .bl button, .bl-item button { font-size: .78rem; padding: .1rem .5rem; }
+  .bl code, .bl-text code { background: var(--panel); padding: 0 .25em; border-radius: 3px; font-size: .92em; }
+  .bl-item { border-bottom: 1px solid var(--line); padding: .5rem .2rem; display: flex; gap: .6rem; align-items: flex-start; }
+  .bl-item .body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .bl-item .notes { margin: .2rem 0 0 1rem; color: var(--dim); font-size: .82rem; }
+  .bl-item .btns { display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }
+  .badge { display: inline-block; min-width: 4.4rem; text-align: center; font-size: .72rem; padding: .05rem .4rem; border-radius: 9px; border: 1px solid var(--line); color: var(--dim); }
+  .badge.open { color: #5bbf6a; border-color: #5bbf6a; } .badge.partial { color: var(--accent); border-color: var(--accent); }
+  .est { color: var(--dim); font-size: .78rem; white-space: nowrap; }
+  .bl-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .6rem .8rem; }
+  .bl-h { margin: 1rem 0 .3rem; color: var(--dim); font-size: .95rem; }
+  dialog.bl-dlg { width: min(40rem, calc(100vw - 1.5rem)); }
+  .bl-dlg form { text-align: left; }
+  .bl-dlg label { display: block; margin: .4rem 0 .1rem; color: var(--dim); font-size: .78rem; }
+  .bl-dlg input, .bl-dlg textarea, .bl-dlg select { width: 100%; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .3rem .4rem; }
+  .bl-dlg .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; }
+  .bl-dlg pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .4rem .6rem; font-size: .78rem; margin: .2rem 0; }
+  .bl-dlg .btns { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .8rem; }
+  @media (max-width: 600px) { main { padding: .6rem .5rem 2rem; } .bl-item { flex-direction: column; } .bl-dlg .grid4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (pointer: coarse) { .bl button, .bl-item button, .bl-dlg button { min-height: 40px; } }
+</style>
+<nav class="bl-tabs">{% for key, name in tabs %}<a href="/backlog?f={{ key }}"{% if key == tab %} class="on"{% endif %}>{{ name }}</a>{% endfor %}</nav>
+{% if error %}<p class="banner">{{ error }}</p>{% endif %}
+{% if locked %}<p class="banner">A night run is working on the backlog: changes are refused until it ends.</p>{% endif %}
+<div id="bl" data-tab="{{ tab }}" data-qhash="{{ qhash }}">
+{% if tab == 'queue' %}
+  <div class="bl-bar"><span>{{ file }} in {{ dir }}</span></div>
+  {% for it in items %}
+    {% if loop.first or items[loop.index0 - 1].section != it.section %}<h4 class="bl-h">{{ it.section }}</h4>{% endif %}
+    <div class="bl-item" data-label="{{ it.label }}">
+      <span class="badge {{ it.status }}">{{ it.status }}</span>
+      <div class="body">{{ it.html }}
+        {% if it.est and "est" not in it.text %}<span class="est">est {{ it.est }}</span>{% endif %}
+        {% if it.notes_html %}<div class="notes">{% for n in it.notes_html %}<div>{{ n }}</div>{% endfor %}</div>{% endif %}
+      </div>
+      {% if it.can %}<div class="btns">
+        <button data-act="move" data-dir="up"{% if it.first %} disabled{% endif %}>up</button>
+        <button data-act="move" data-dir="down"{% if it.last %} disabled{% endif %}>down</button>
+        <button data-act="unqueue" class="secondary">unqueue</button>
+      </div>{% endif %}
+    </div>
+  {% endfor %}
+{% elif tables %}
+  <div class="bl-bar"><span>{{ file }} in {{ dir }}; click a header to sort</span>
+    {% if tab != 'done' %}<button data-act="add" data-kind="{{ 'bug' if tab == 'bugs' else 'feature' }}">add…</button>{% endif %}</div>
+  {% for t in tables %}
+    <h4 class="bl-h">{{ t.caption }}</h4>
+    <div class="bl-wrap"><table class="bl" data-file="{{ tab }}">
+      <thead><tr>{% for h in t.header %}<th data-type="{{ t.types[loop.index0] }}">{{ h }}</th>{% endfor %}{% if tab != 'done' %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+      {% for r in t.rows %}
+        <tr id="r-{{ r.id }}" data-id="{{ r.id }}" data-hash="{{ r.hash }}" data-i="{{ loop.index0 }}"{% if r.done %} class="done"{% endif %}
+            data-cells='{{ r.raw|tojson }}'>
+          {% for c in r.cells %}<td data-sort="{{ c.sort }}"{% if c.long %} class="item"{% endif %}>{% if c.long %}<div class="clip">{{ c.html }}</div>{% else %}{{ c.html }}{% endif %}</td>{% endfor %}
+          {% if tab != 'done' %}<td class="acts">{% if r.edit %}<button data-act="edit">edit</button> {% endif %}{% if r.queue %}<button data-act="queue">queue</button>{% endif %}</td>{% endif %}
+        </tr>
+      {% endfor %}
+      </tbody></table></div>
+  {% endfor %}
+{% else %}
+  {% for name, body in texts %}
+    <h4 class="bl-h">{{ name }}</h4>
+    <div class="bl-text">{{ body }}</div>
+  {% endfor %}
+  {% if not texts and not error %}<p class="dim">nothing here yet.</p>{% endif %}
+{% endif %}
+</div>
+<dialog class="connect bl-dlg" id="bl-dlg"><form method="dialog" id="bl-form"></form></dialog>
+<div class="toast" id="bl-toast"></div>
+<script src="/static/backlog.js?v={{ static_version('backlog.js') }}"></script>
+{% endblock %}

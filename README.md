@@ -218,6 +218,18 @@ while open):
 computer's folders (the import dialog) and add files to it. Keep it on 127.0.0.1, or put it behind something that
 authenticates, before exposing it to a network.
 
+## Backlog page
+
+`/backlog` (the *backlog* link in the header) shows the darktable-api backlog:
+the night queue, FEATURES.md, BUGS.md, the finished items, the latest night
+run note and the forecast. Tables sort by clicking a header. Features and bugs
+can be edited, added and queued, and queue items moved or unqueued. It needs
+no engine. The folder is `DTWEB_BACKLOG_DIR` (default
+`/Users/clark/darktableluamcp/darktable-api`); each change rewrites the one
+Markdown file there (atomically, one writer at a time, refused while
+`launchd/.daily-run.lock` exists) and makes a git commit of just that file in
+the folder's repo. Nothing is pushed.
+
 ## Layout
 
 | | |
@@ -226,6 +238,7 @@ authenticates, before exposing it to a network.
 | `dtweb/main.py` | FastAPI routes: library, thumbnails (cached by edit state), ratings/labels, photo editing, live updates (server-sent events), library hand-off |
 | `dtweb/templates`, `dtweb/static` | pages (plain HTML and JavaScript, no framework) |
 | `dtweb/static/meta.js` | the title, description and tags editor (library and darkroom) |
+| `dtweb/backlog.py` | the backlog page: parses and rewrites the Markdown backlog files, commits each change |
 | `make_library_copy.py` | makes the library copy |
 
 Tested on macOS. On Linux, *quit darktable and take back* uses darktable's

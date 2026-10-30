@@ -12,6 +12,7 @@
   <header class="top">
     <a href="/" class="brand" id="brand">darktable-api</a>
     {% block top %}{% endblock %}
+    <a href="/backlog" title="the darktable-api backlog: queue, features, bugs">backlog</a>
     {% if lib.server == 'gui' %}<a id="darkroom" href="{{ '/photo/%d' % lib.darkroom_imgid if lib.darkroom_imgid else '#' }}"{% if not lib.darkroom_imgid %} hidden{% endif %} title="the photo open in darktable's darkroom">darkroom: photo {{ lib.darkroom_imgid }}</a>{% endif %}
     <button class="claude-btn" id="claude-btn" title="edit these photos by asking an AI assistant"><span class="light" id="claude-light" hidden></span>AI assistant</button>
     <span class="lib" id="lib" data-state="{{ lib.state }}">

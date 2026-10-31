@@ -262,9 +262,18 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 
 /* crop & rotate: the box drawn over the uncropped preview */
 .cropframe { position: absolute; overflow: hidden; touch-action: none; cursor: crosshair; }
+/* guides (#153): thirds or golden ratio lines inside the box; grid: fine
+   lines over the whole frame, also shown while the angle slider moves */
 .cropbox { position: absolute; border: 1px solid #fff; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); cursor: move;
-           background-image: linear-gradient(to right, transparent calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% + .5px), transparent calc(66.67% + .5px)),
-                             linear-gradient(to bottom, transparent calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% - .5px), rgba(255,255,255,.35) calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% - .5px), rgba(255,255,255,.35) calc(66.67% + .5px), transparent calc(66.67% + .5px)); }
+           --g1: 33.33%; --g2: 66.67%; --gl: rgba(255,255,255,.35);
+           background-image: linear-gradient(to right, transparent calc(var(--g1) - .5px), var(--gl) calc(var(--g1) - .5px), var(--gl) calc(var(--g1) + .5px), transparent calc(var(--g1) + .5px), transparent calc(var(--g2) - .5px), var(--gl) calc(var(--g2) - .5px), var(--gl) calc(var(--g2) + .5px), transparent calc(var(--g2) + .5px)),
+                             linear-gradient(to bottom, transparent calc(var(--g1) - .5px), var(--gl) calc(var(--g1) - .5px), var(--gl) calc(var(--g1) + .5px), transparent calc(var(--g1) + .5px), transparent calc(var(--g2) - .5px), var(--gl) calc(var(--g2) - .5px), var(--gl) calc(var(--g2) + .5px), transparent calc(var(--g2) + .5px)); }
+.cropframe[data-guide="golden"] .cropbox { --g1: 38.2%; --g2: 61.8%; }
+.cropframe[data-guide="none"] .cropbox, .cropframe[data-guide="grid"] .cropbox, .cropframe.straightening .cropbox { background-image: none; }
+.cropframe[data-guide="grid"]::after, .cropframe.straightening::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: linear-gradient(to right, rgba(255,255,255,.4) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.4) 1px, transparent 1px);
+  background-size: 12.5% 12.5%; background-position: -.5px -.5px; }
 #export label { font-size: .85rem; display: inline-flex; align-items: center; gap: .3rem; }
 #export .num { width: 3.5rem; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .2rem .3rem; }
 #ex-result { word-break: break-all; }

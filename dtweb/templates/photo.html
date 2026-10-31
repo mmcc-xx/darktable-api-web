@@ -49,6 +49,10 @@
           <option value="1.91:1">1.91:1</option><option value="2:1">2:1</option><option value="65:24">65:24</option>
         </select>
         <button id="aspect-swap" title="portrait / landscape">⤾</button>
+        <select id="guide" title="guide lines (grid also shows while the angle moves)">
+          <option value="none">no guides</option><option value="thirds" selected>thirds</option>
+          <option value="grid">grid</option><option value="golden">golden ratio</option>
+        </select>
         <button id="crop-reset" class="secondary" title="remove the crop">no crop</button>
       </span>
       <button id="crop-cancel" class="secondary" title="leave the crop as it was (Esc)">cancel</button>
@@ -2291,11 +2295,26 @@
   $('#crop-reset').onclick = () => queueGeo({crop: null});
   document.querySelectorAll('#geo [data-rotate]').forEach((b) => b.onclick = () => queueGeo({rotate: +b.dataset.rotate}));
   document.querySelectorAll('#geo [data-flip]').forEach((b) => b.onclick = () => queueGeo({flip: b.dataset.flip}));
+  // guide lines: the chosen one (kept in localStorage), and the grid while
+  // the angle slider moves, to check a horizon against
+  try { const g = localStorage.getItem('dr:cropguide'); if ([...$('#guide').options].some((o) => o.value === g)) $('#guide').value = g; } catch (e) {}
+  $('#cropframe').dataset.guide = $('#guide').value;
+  $('#guide').onchange = () => {
+    $('#cropframe').dataset.guide = $('#guide').value;
+    try { localStorage.setItem('dr:cropguide', $('#guide').value); } catch (e) {}
+  };
+  let straightenTimer = null;
+  const straightening = () => {
+    $('#cropframe').classList.add('straightening');
+    clearTimeout(straightenTimer);
+    straightenTimer = setTimeout(() => $('#cropframe').classList.remove('straightening'), 1500);
+  };
+  $('#angle').addEventListener('input', straightening);
   $('#angle').oninput = () => { $('#angle-val').textContent = fmtAngle($('#angle').value); queueGeo({angle: +$('#angle').value}); };
   $('#angle-lab').ondblclick = () => { $('#angle').value = 0; $('#angle').oninput(); };
   $('#angle-val').onclick = async () => {
     const t = await ask('angle (degrees, -180 to 180)', {value: (+$('#angle').value).toFixed(2), ok: 'set'});
-    if (t !== null && !isNaN(parseFloat(t))) { $('#angle').value = t; queueGeo({angle: parseFloat(t)}); }
+    if (t !== null && !isNaN(parseFloat(t))) { $('#angle').value = t; straightening(); queueGeo({angle: parseFloat(t)}); }
   };
   // a new aspect reshapes the box being drawn, else the photo's crop
   const aspectChanged = () => {

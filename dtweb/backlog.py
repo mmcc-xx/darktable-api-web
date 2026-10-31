@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import threading
 from pathlib import Path
 
@@ -32,17 +33,20 @@ router = APIRouter()
 
 DEFAULT_DIR = "/Users/clark/darktableluamcp/darktable-api"
 FILES = {"queue": "QUEUE.md", "features": "FEATURES.md", "bugs": "BUGS.md", "done": "DONE.md",
-         "queue-done": "QUEUE-done.md"}
+         "queue-done": "QUEUE-done.md", "ideas": "IDEAS.md"}
 TABS = [("queue", "queue"), ("features", "features"), ("bugs", "bugs"), ("done", "done"),
-        ("queue-done", "queue done"), ("night", "night run"), ("forecast", "forecast")]
+        ("ideas", "ideas"), ("queue-done", "queue done"), ("night", "night run"), ("forecast", "forecast")]
 NUMERIC = {"Value", "Time", "Risk/enable", "CoD", "Size", "WSJF", "Est"}
 SCORES = ["Value", "Time", "Risk/enable", "Size"]
 EDITABLE = {"features": ["Item", "Area", "Value", "Time", "Risk/enable", "Size", "Est"],
-            "bugs": ["Item", "Area", "Severity", "Found", "Est"]}
+            "bugs": ["Item", "Area", "Severity", "Found", "Est"],
+            "ideas": ["Idea", "Serves", "Value", "Time", "Risk/enable", "Size"]}
+OPEN = {"features": ("Open", "Parked"), "bugs": ("Open", "Parked"), "ideas": ("The list",)}   # sections with editable rows
+IDEAS_SECTION = "From the web page"                                # where a new idea's bullet goes by default
 SEVERITY = {"high": 3, "medium": 2, "low": 1}
 
 CELL_SPLIT = re.compile(r"(?<!\\) \| ")
-ROW = re.compile(r"^\| (\d+[ab]?|W\d+) \| .* \|$")
+ROW = re.compile(r"^\| (\d+[ab]?|W\d+|[IP]\d+) \| .* \|$")
 FINISHED = re.compile(r"^(~~.*?~~\s*)?\*\*(Done|Dropped|Closed)\b"          # as archive_backlog.py
                       r"|^\*\*[^*]*\bdone 20\d\d-\d\d-\d\d[^*]*\*\*"
                       r"|\*\*Done 20\d\d-\d\d-\d\d")
@@ -52,7 +56,8 @@ QEST = re.compile(r"\best\s*~?(\d+(?:\.\d+)?)")
 QPARTIAL = re.compile(r"^ +- Partial")
 QUEUE_LABEL = re.compile(r"\*\*(#(\d+)|W(\d+))")
 TOKEN = re.compile(r"(`[^`\n]+`|\*\*.+?\*\*)")
-REF = re.compile(r"(?<![\w&/])(?:#(\d+[ab]?)|(W\d+))(?!\w)")
+REF = re.compile(r"(?<![\w&/])(?:#(\d+[ab]?)|(W\d+|[IP]\d+))(?!\w)")
+BULLET = re.compile(r"^- (\*\*.+?\*\*)")                                   # an idea's description: "- **I1 Title.** text"
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 _thread_lock = threading.Lock()
@@ -239,12 +244,49 @@ def queue_section_text(lines: list[str]) -> str:
     return "\n".join(lines[s:e])
 
 
+def bullets(lines: list[str]) -> list[dict]:
+    """IDEAS.md's description bullets ("- **I1 Title.** text", wrapped with a
+    two-space indent): lines, the bold lead, the ids it covers ("I29-I32"
+    covers four, owned by none), the text after the lead unwrapped."""
+    out = []
+    for i, l in enumerate(lines):
+        m = BULLET.match(l)
+        lm = m and re.match(r"\*\*([IP])(\d+)(?:-\1?(\d+))?(?=[\s*.,])", m.group(1))
+        if not lm:
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
+            j += 1
+        a, z = int(lm.group(2)), int(lm.group(3) or lm.group(2))
+        flat = " ".join(x.strip() for x in lines[i:j])[2:]
+        out.append({"start": i, "end": j, "lead": m.group(1), "ids": {f"{lm.group(1)}{k}" for k in range(a, z + 1)},
+                    "own": None if lm.group(3) else f"{lm.group(1)}{a}", "flat": flat,
+                    "body": flat[len(m.group(1)):].strip(), "text": "\n".join(lines[i:j])})
+    return out
+
+
+def bullet_of(lines_or_bullets: list, rid: str) -> tuple[dict | None, bool]:
+    """The idea's own bullet, else a shared one that covers it (True)."""
+    bl = lines_or_bullets if lines_or_bullets and isinstance(lines_or_bullets[0], dict) else bullets(lines_or_bullets)
+    for b in bl:
+        if b["own"] == rid:
+            return b, False
+    return next(((b, True) for b in bl if rid in b["ids"]), (None, False))
+
+
+def wrap_bullet(lead: str, body: str) -> list[str]:
+    """One bullet at 76 columns; the lead stays whole on the first line."""
+    text = "- " + lead.replace(" ", "\0") + (" " + body if body else "")
+    return [l.replace("\0", " ") for l in textwrap.wrap(text, width=76, subsequent_indent="  ",
+                                                          break_long_words=False, break_on_hyphens=False)]
+
+
 # ── rendering helpers ───────────────────────────────────────────────────────
 
 def link_index() -> dict[str, str]:
     """Row id -> the file that holds it (features, then bugs, then done)."""
     idx: dict[str, str] = {}
-    for key in ("features", "bugs", "done"):
+    for key in ("features", "bugs", "done", "ideas"):
         try:
             for t in parse_tables(read_lines(FILES[key])):
                 for r in t["rows"]:
@@ -302,12 +344,14 @@ def table_view(tables: list[dict], file_key: str, queued: set[str], idx: dict, e
     for t in tables:
         rows = []
         for r in t["rows"]:
-            cells = [{"html": inline(shown(c), idx), "sort": sort_key(h, c), "long": h == "Item"}
+            cells = [{"html": inline(shown(c), idx), "sort": sort_key(h, c), "long": h in ("Item", "Idea")}
                      for h, c in zip(t["header"], r["cells"])]
-            can = editable and t["section"] == "Open" and not r["done"] and len(r["cells"]) == len(t["header"])
+            can = (editable and t["section"] in OPEN.get(file_key, ("Open",)) and not r["done"]
+                   and len(r["cells"]) == len(t["header"]))
             rows.append({"id": r["id"], "hash": sha(r["text"]), "cells": cells, "done": r["done"],
                          "raw": {h: shown(c) for h, c in zip(t["header"], r["cells"])},
-                         "edit": can, "queue": can and r["id"] not in queued})
+                         "edit": can, "queue": can and file_key != "ideas" and r["id"] not in queued,
+                         "delete": can and file_key == "ideas"})
         out.append({"caption": t["caption"], "header": t["header"], "types": [col_type(h) for h in t["header"]],
                     "rows": rows})
     return out
@@ -337,7 +381,8 @@ async def backlog_page(request: Request, f: str = "queue"):
     tab = f if f in dict(TABS) else "queue"
     d = backlog_dir()
     ctx: dict = {"tab": tab, "tabs": TABS, "dir": str(d), "locked": (d / "launchd/.daily-run.lock").exists(),
-                 "error": None, "tables": [], "items": [], "texts": [], "qhash": "", "file": FILES.get(tab, "")}
+                 "error": None, "tables": [], "items": [], "texts": [], "qhash": "", "file": FILES.get(tab, ""),
+                 "themes": []}
     try:
         idx = link_index()
         if tab == "queue":
@@ -351,10 +396,18 @@ async def backlog_page(request: Request, f: str = "queue"):
                 it["can"] = is_open(it)
                 it["first"], it["last"] = it is opens[0], it is opens[-1]
             ctx["items"] = items
-        elif tab in ("features", "bugs", "done"):
+        elif tab in ("features", "bugs", "done", "ideas"):
             lines = read_lines(FILES[tab])
-            queued = queued_ids(read_lines("QUEUE.md"))
+            queued = queued_ids(read_lines("QUEUE.md")) if tab != "ideas" else set()
             ctx["tables"] = table_view(parse_tables(lines), tab, queued, idx, tab != "done")
+            if tab == "ideas":                               # each idea's description bullet, shown when expanded
+                ctx["themes"] = [n for n in sections(lines) if n not in OPEN["ideas"]]
+                bl = bullets(lines)
+                for tv in ctx["tables"]:
+                    for row in tv["rows"]:
+                        b, shared = bullet_of(bl, row["id"])
+                        row["desc"] = {"text": b["body"], "hash": sha(b["text"]), "shared": shared and b["lead"]} if b else None
+                        row["desc_html"] = inline(b["flat"] if shared else b["body"], idx) if b else ""
         elif tab == "queue-done":
             ctx["texts"] = [("QUEUE-done.md", inline_block(read_text("QUEUE-done.md"), idx))]
         elif tab == "night":
@@ -397,20 +450,34 @@ class EditBody(BaseModel):
     file: str
     id: str
     row_hash: str
-    cells: dict[str, str]
+    cells: dict[str, str] = {}
+    description: str | None = None      # ideas: the bullet's text after its bold lead
+    desc_hash: str | None = None
 
 
-def compute_scores(header: list[str], cells: list[str]) -> None:
-    """CoD = value + time + risk/enable and WSJF = CoD / size, when all four are numbers."""
+def compute_scores(header: list[str], cells: list[str], two: bool = False) -> None:
+    """CoD = value + time + risk/enable and WSJF = CoD / size, when all four are
+    numbers. two: a WSJF that is exact in two decimals keeps them (1.75), as
+    IDEAS.md writes it."""
     v = [num(cells[header.index(k)]) for k in SCORES]
     if None in v or not v[3]:
         return
     cod = int(round(v[0] + v[1] + v[2]))
+    w = cod / v[3]
     cells[header.index("CoD")] = str(cod)
-    cells[header.index("WSJF")] = f"{cod / v[3]:.1f}"
+    exact2 = abs(w * 100 - round(w * 100)) < 1e-9 and round(w, 1) != round(w, 2)
+    cells[header.index("WSJF")] = f"{w:.2f}" if two and exact2 else f"{w:.1f}"
 
 
-def apply_edit(header: list[str], cells: list[str], new: dict[str, str], key: str) -> list[str]:
+def two_decimals(t: dict) -> bool:
+    """Does this table write some WSJF values with two decimals?"""
+    if "WSJF" not in t["header"]:
+        return False
+    k = t["header"].index("WSJF")
+    return any(len(r["cells"]) > k and re.fullmatch(r"\d+\.\d\d", r["cells"][k]) for r in t["rows"])
+
+
+def apply_edit(header: list[str], cells: list[str], new: dict[str, str], key: str, two: bool = False) -> list[str]:
     allowed = EDITABLE[key]
     out = list(cells)
     for col, val in new.items():
@@ -419,32 +486,48 @@ def apply_edit(header: list[str], cells: list[str], new: dict[str, str], key: st
         c = cell_text(val)
         if c != cells[header.index(col)] and c != cell_text(shown(cells[header.index(col)])):
             out[header.index(col)] = c
-    if key == "features" and any(k in new for k in SCORES):
-        compute_scores(header, out)
+    if key in ("features", "ideas") and any(k in new for k in SCORES):
+        compute_scores(header, out, two)
     return out
 
 
 def do_edit(b: EditBody) -> dict:
     if b.file not in EDITABLE:
-        raise Reply(400, "file must be features or bugs")
+        raise Reply(400, "file must be features, bugs or ideas")
     name = FILES[b.file]
     lines = read_lines(name)
-    t, r = find_row(lines, b.id)
+    t, r = find_row(lines, b.id, OPEN[b.file])
     if not r:
         raise Reply(409, f"{b.id} is no longer an open row of {name}", current="", yours=", ".join(
             f"{k}: {v}" for k, v in b.cells.items()))
     if len(r["cells"]) != len(t["header"]):
         raise Reply(400, "this row doesn't have the table's columns; edit it in the file")
-    cells = apply_edit(t["header"], r["cells"], b.cells, b.file)
+    cells = apply_edit(t["header"], r["cells"], b.cells, b.file, b.file == "ideas" and two_decimals(t))
     if sha(r["text"]) != b.row_hash:
         raise Reply(409, "the row changed since you opened it; nothing was written",
                     current=r["text"], yours=join_cells(cells))
-    if cells == r["cells"]:
+    bl, new_bullet = None, None
+    if b.description is not None:
+        if b.file != "ideas":
+            raise Reply(400, "only ideas have a description")
+        bl, _ = bullet_of(lines, b.id)
+        if not bl:
+            raise Reply(400, f"{b.id} has no description bullet in {name}; add one in the file")
+        new_bullet = wrap_bullet(bl["lead"], " ".join(b.description.split()))
+        if sha(bl["text"]) != b.desc_hash:
+            raise Reply(409, "the description changed since you opened it; nothing was written",
+                        current=bl["text"], yours="\n".join(new_bullet))
+        if new_bullet == lines[bl["start"]:bl["end"]]:
+            new_bullet = None
+    if cells == r["cells"] and new_bullet is None:
         return {"changed": False}
     lines[r["line"]] = join_cells(cells)
+    if new_bullet is not None:                             # below the list: the row's line number still holds
+        lines[bl["start"]:bl["end"]] = new_bullet
     write_lines(name, lines)
     cols = [k for k in b.cells if cells[t["header"].index(k)] != r["cells"][t["header"].index(k)]]
     what = "scores" if cols and all(k in SCORES for k in cols) else ", ".join(c.lower() for c in cols)
+    what = ", ".join(w for w in (what, "description" if new_bullet is not None else "") if w)
     return {"changed": True, "id": b.id, **commit([name], f"edit {label_of(b.id)} {what}")}
 
 
@@ -456,6 +539,7 @@ class AddBody(BaseModel):
     area: str | None = None
     scores: dict[str, str] | None = None
     severity: str | None = None
+    section: str | None = None          # ideas: the ## theme for the description bullet
 
 
 def next_number(series: str) -> int:
@@ -476,6 +560,8 @@ def next_number(series: str) -> int:
 
 
 def do_add(b: AddBody) -> dict:
+    if b.kind == "idea":
+        return do_add_idea(b)
     if b.kind not in ("feature", "bug") or b.series not in ("#", "W"):
         raise Reply(400, "kind is feature or bug; series is # or W")
     title = cell_text(b.title).replace("**", "").strip()
@@ -508,6 +594,102 @@ def do_add(b: AddBody) -> dict:
     lines.insert(last + 1, join_cells(cells))
     write_lines(name, lines)
     return {"id": label_of(rid), "file": key, **commit([name], f"add {label_of(rid)} {title[:50]}")}
+
+
+def next_idea_number(text: str, series: str) -> int:
+    return max((int(n) for n in re.findall(rf"(?<![\w&/]){series}(\d+)(?!\w)", text)), default=0) + 1
+
+
+def do_add_idea(b: AddBody) -> dict:
+    """A row in IDEAS.md's list at its WSJF place (unscored: last) and a
+    description bullet at the end of a ## theme section."""
+    if b.series not in ("I", "P"):
+        raise Reply(400, "series is I or P")
+    title = cell_text(b.title).replace("**", "").strip().rstrip(".").strip()
+    if not title:
+        raise Reply(400, "a title is needed")
+    name = FILES["ideas"]
+    lines = read_lines(name)
+    t = next((t for t in parse_tables(lines) if t["section"] in OPEN["ideas"]), None)
+    if not t or not t["rows"]:
+        raise Reply(400, f"{name} has no table under ## {OPEN['ideas'][0]}")
+    sec = (b.section or "").strip() or IDEAS_SECTION
+    if sec in OPEN["ideas"] or (sec != IDEAS_SECTION and sec not in sections(lines)):
+        raise Reply(400, f"no theme section {sec!r} in {name}")
+    rid = f"{b.series}{next_idea_number(chr(10).join(lines), b.series)}"
+    sc = b.scores or {}
+    row = {"#": rid, "Idea": title, "Serves": cell_text(b.area or "") or "?",
+           **{k: cell_text(sc.get(k, "")) or "?" for k in SCORES}}
+    header = t["header"]
+    cells = [row.get(h, "?") for h in header]
+    compute_scores(header, cells, two_decimals(t))
+    w, k = num(cells[header.index("WSJF")]), header.index("WSJF")
+    lower = [r["line"] for r in t["rows"] if w is not None and len(r["cells"]) > k
+             and num(r["cells"][k]) is not None and num(r["cells"][k]) < w]
+    lines.insert(lower[0] if lower else t["rows"][-1]["line"] + 1, join_cells(cells))
+    body = " ".join(b.text.split())
+    bullet = wrap_bullet(f"**{rid} {title}.**", (body + " " if body else "") + f"(Added {today()} from the web page.)")
+    secs = sections(lines)
+    if sec in secs:
+        s, e = secs[sec]
+        last = max((i for i in range(s + 1, e) if lines[i].strip()), default=s)
+        top = last
+        while top > s and lines[top].startswith("  "):
+            top -= 1
+        lines[last + 1:last + 1] = bullet if lines[top].startswith("- ") else [""] + bullet
+    else:
+        end = len(lines)
+        while end and not lines[end - 1].strip():
+            end -= 1
+        lines[end:end] = ["", f"## {sec}", ""] + bullet
+    write_lines(name, lines)
+    return {"id": rid, "file": "ideas", **commit([name], f"add {rid} {title[:50]}")}
+
+
+class DeleteBody(BaseModel):
+    file: str
+    id: str
+    row_hash: str
+
+
+def mentions_of(rid: str) -> list[dict]:
+    """Lines of the backlog files that still name the id (alone or in a range like I29-I32)."""
+    m = re.fullmatch(r"([IP])(\d+)", rid)
+    one = re.compile(rf"(?<![\w&/]){rid}(?!\w)")
+    rng = re.compile(rf"(?<![\w&/]){m.group(1)}(\d+)-{m.group(1)}?(\d+)(?!\w)")
+    out = []
+    for key in ("ideas", "features", "bugs", "queue"):
+        with contextlib.suppress(OSError):
+            for i, l in enumerate(read_lines(FILES[key])):
+                if one.search(l) or any(int(a) <= int(m.group(2)) <= int(z) for a, z in rng.findall(l)):
+                    out.append({"file": FILES[key], "line": i + 1, "text": l.strip()[:200]})
+    return out[:40]
+
+
+def do_delete(b: DeleteBody) -> dict:
+    """Ideas only: the list's row and the idea's own bullet (a shared one stays)."""
+    if b.file != "ideas":
+        raise Reply(400, "only ideas can be deleted here")
+    name = FILES["ideas"]
+    lines = read_lines(name)
+    t, r = find_row(lines, b.id, OPEN["ideas"])
+    if not r:
+        raise Reply(409, f"{b.id} is no longer in {name}'s list", current="", yours=f"delete {b.id}")
+    if sha(r["text"]) != b.row_hash:
+        raise Reply(409, "the row changed since you opened it; nothing was written",
+                    current=r["text"], yours=f"delete {b.id}")
+    title = shown(r["cells"][t["header"].index("Idea")]) if "Idea" in t["header"] else ""
+    bl, shared = bullet_of(lines, b.id)
+    cuts = [(r["line"], r["line"] + 1)] + ([(bl["start"], bl["end"])] if bl and not shared else [])
+    for s, e in sorted(cuts, reverse=True):
+        del lines[s:e]
+        if 0 < s < len(lines) and not lines[s - 1].strip() and not lines[s].strip():
+            del lines[s]                                  # the bullet was alone between blank lines
+    s, e = sections(lines).get(IDEAS_SECTION, (None, None))
+    if s is not None and not any(l.strip() for l in lines[s + 1:e]):   # the web page's section, now empty
+        del lines[s:e]                                 # the blank line before it stays (or ends the file)
+    write_lines(name, lines)
+    return {"deleted": b.id, "mentions": mentions_of(b.id), **commit([name], f"delete {b.id} {title[:50]}")}
 
 
 class QueueBody(BaseModel):
@@ -611,6 +793,11 @@ def backlog_edit(body: EditBody):
 @router.post("/api/backlog/add")
 def backlog_add(body: AddBody):
     return run_write(do_add, body)
+
+
+@router.post("/api/backlog/delete")
+def backlog_delete(body: DeleteBody):
+    return run_write(do_delete, body)
 
 
 @router.post("/api/backlog/queue")

@@ -14,6 +14,9 @@
   .bl td.item { min-width: 16rem; max-width: 46rem; }
   .bl .clip { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; overflow-wrap: anywhere; }
   .bl .clip.open { display: block; }
+  .bl .idesc { display: none; margin-top: .3rem; color: var(--dim); }
+  .bl .clip.open .idesc { display: block; }
+  .bl-dlg .shared { color: var(--dim); font-size: .78rem; }
   .bl tr.done td { opacity: .55; }
   .bl tr:target td, .bl-item:target { background: #3a2f1c; }
   .bl tr, .bl-item { scroll-margin-top: 4rem; }
@@ -42,7 +45,7 @@
 <nav class="bl-tabs">{% for key, name in tabs %}<a href="/backlog?f={{ key }}"{% if key == tab %} class="on"{% endif %}>{{ name }}</a>{% endfor %}</nav>
 {% if error %}<p class="banner">{{ error }}</p>{% endif %}
 {% if locked %}<p class="banner">A night run is working on the backlog: changes are refused until it ends.</p>{% endif %}
-<div id="bl" data-tab="{{ tab }}" data-qhash="{{ qhash }}">
+<div id="bl" data-tab="{{ tab }}" data-qhash="{{ qhash }}"{% if themes %} data-themes='{{ themes|tojson }}'{% endif %}>
 {% if tab == 'queue' %}
   <div class="bl-bar"><span>{{ file }} in {{ dir }}</span></div>
   {% for it in items %}
@@ -62,7 +65,7 @@
   {% endfor %}
 {% elif tables %}
   <div class="bl-bar"><span>{{ file }} in {{ dir }}; click a header to sort</span>
-    {% if tab != 'done' %}<button data-act="add" data-kind="{{ 'bug' if tab == 'bugs' else 'feature' }}">add…</button>{% endif %}</div>
+    {% if tab != 'done' %}<button data-act="add" data-kind="{{ 'bug' if tab == 'bugs' else 'idea' if tab == 'ideas' else 'feature' }}">add{{ ' idea' if tab == 'ideas' }}…</button>{% endif %}</div>
   {% for t in tables %}
     <h4 class="bl-h">{{ t.caption }}</h4>
     <div class="bl-wrap"><table class="bl" data-file="{{ tab }}">
@@ -70,9 +73,9 @@
       <tbody>
       {% for r in t.rows %}
         <tr id="r-{{ r.id }}" data-id="{{ r.id }}" data-hash="{{ r.hash }}" data-i="{{ loop.index0 }}"{% if r.done %} class="done"{% endif %}
-            data-cells='{{ r.raw|tojson }}'>
-          {% for c in r.cells %}<td data-sort="{{ c.sort }}"{% if c.long %} class="item"{% endif %}>{% if c.long %}<div class="clip">{{ c.html }}</div>{% else %}{{ c.html }}{% endif %}</td>{% endfor %}
-          {% if tab != 'done' %}<td class="acts">{% if r.edit %}<button data-act="edit">edit</button> {% endif %}{% if r.queue %}<button data-act="queue">queue</button>{% endif %}</td>{% endif %}
+            data-cells='{{ r.raw|tojson }}'{% if r.desc %} data-desc='{{ r.desc|tojson }}'{% endif %}>
+          {% for c in r.cells %}<td data-sort="{{ c.sort }}"{% if c.long %} class="item"{% endif %}>{% if c.long %}<div class="clip">{{ c.html }}{% if r.desc_html %}<div class="idesc">{{ r.desc_html }}</div>{% endif %}</div>{% else %}{{ c.html }}{% endif %}</td>{% endfor %}
+          {% if tab != 'done' %}<td class="acts">{% if r.edit %}<button data-act="edit">edit</button> {% endif %}{% if r.queue %}<button data-act="queue">queue</button>{% endif %}{% if r.delete %}<button data-act="delete" class="secondary">delete</button>{% endif %}</td>{% endif %}
         </tr>
       {% endfor %}
       </tbody></table></div>

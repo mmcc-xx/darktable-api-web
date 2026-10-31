@@ -1,5 +1,5 @@
 // The backlog page: sort a table by its header, expand long items, and the
-// writes (edit, add, queue, move, unqueue). Every write answers with the new
+// writes (edit, add, queue, move, unqueue; ideas: delete). Every write answers with the new
 // commit; the page then reloads the tab (new hashes) and shows it in a toast.
 (function () {
   const root = document.getElementById('bl'), dlg = document.getElementById('bl-dlg'),
@@ -43,6 +43,14 @@
     let r, j = {};
     try { r = await fetch('/api/backlog/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); j = await r.json(); }
     catch (err) { await tell('The server did not answer: ' + err.message); return null; }
+    if (r.ok && j.mentions && j.mentions.length) {      // a deleted idea: show where it is still named, then reload
+      form.innerHTML = `<h3>Deleted ${esc(j.deleted)}</h3><p>${esc(j.commit ? 'committed ' + j.commit : j.warning || 'written')}. Still mentioned in:</p>` +
+        `<pre>${j.mentions.map((m) => esc(`${m.file}:${m.line}: ${m.text}`)).join('\n')}</pre>` +
+        '<div class="btns"><button value="" class="primary">close</button></div>';
+      dlg.onclose = () => location.reload();
+      dlg.showModal();
+      return j;
+    }
     if (r.ok) {
       const text = (j.commit ? `committed ${j.commit}` : j.changed === false ? 'nothing changed' : 'written') + (j.warning ? ` (${j.warning})` : '');
       try { sessionStorage.setItem('bl-toast', text); } catch (err) {}
@@ -67,8 +75,44 @@
     return `<label>${esc(label)}</label>${input}`;
   }
 
+  function ideaDialog(tr) {
+    const cells = JSON.parse(tr.dataset.cells), desc = tr.dataset.desc ? JSON.parse(tr.dataset.desc) : null;
+    form.innerHTML = `<h3>Edit ${esc(tr.dataset.id)}</h3>${field('Idea', 'Idea', cells.Idea)}` +
+      '<div class="grid4">' + SCORES.map((c) => `<div>${field(c, c, cells[c])}</div>`).join('') + '</div>' + field('Serves', 'Serves', cells.Serves) +
+      (desc ? field('description', 'description (after the bold lead; rewrapped)', desc.text, 'textarea') +
+        (desc.shared ? `<p class="shared">This bullet is shared: ${esc(desc.shared)}</p>` : '') : '<p class="shared">No description bullet in IDEAS.md.</p>') +
+      '<div class="btns"><button value="">cancel</button><button value="ok" class="primary">save</button></div>';
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return;
+      const out = {}, body = {file: 'ideas', id: tr.dataset.id, row_hash: tr.dataset.hash, cells: out};
+      for (const el of form.elements) if (el.name && el.name !== 'description' && el.value !== cells[el.name]) out[el.name] = el.value;
+      const d = form.elements.description;
+      if (desc && d && d.value.trim().split(/\s+/).join(' ') !== desc.text) Object.assign(body, {description: d.value, desc_hash: desc.hash});
+      post('edit', body);
+    };
+    dlg.showModal();
+  }
+
+  function addIdeaDialog() {
+    const themes = JSON.parse(root.dataset.themes || '[]'), def = 'From the web page';
+    if (!themes.includes(def)) themes.push(def);
+    form.innerHTML = '<h3>Add an idea</h3><label>numbered</label><select name="series"><option value="I">IN (general)</option><option value="P">PN (printing)</option></select>' +
+      field('title', 'title', '') + field('text', 'description', '', 'textarea') + field('area', 'serves', '') +
+      `<label>section for the description</label><select name="section">${themes.map((t) => `<option${t === def ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>` +
+      '<div class="grid4">' + SCORES.map((c) => `<div>${field(c, c + ' (number or ?)', '')}</div>`).join('') + '</div>' +
+      '<div class="btns"><button value="">cancel</button><button value="ok" class="primary">add</button></div>';
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return;
+      const f = form.elements, scores = {};
+      SCORES.forEach((c) => { if (f[c].value.trim()) scores[c] = f[c].value; });
+      post('add', {kind: 'idea', series: f.series.value, title: f.title.value, text: f.text.value, area: f.area.value, section: f.section.value, scores});
+    };
+    dlg.showModal();
+  }
+
   function editDialog(tr) {
     const file = tr.closest('table').dataset.file, cells = JSON.parse(tr.dataset.cells);
+    if (file === 'ideas') return ideaDialog(tr);
     const cols = file === 'features' ? ['Area', ...SCORES, 'Est'] : ['Area', 'Severity', 'Found', 'Est'];
     const sev = (v) => `<label>Severity</label><select name="Severity">${['high', 'medium', 'low'].map((s) => `<option${s === v ? ' selected' : ''}>${s}</option>`).join('')}</select>`;
     form.innerHTML = `<h3>Edit ${esc(tr.dataset.id)}</h3>${field('Item', 'Item', cells.Item, 'textarea')}` +
@@ -108,7 +152,11 @@
     if (!b) return;
     const act = b.dataset.act, tr = b.closest('tr'), item = b.closest('.bl-item');
     if (act === 'edit') editDialog(tr);
-    else if (act === 'add') addDialog(b.dataset.kind);
+    else if (act === 'add') b.dataset.kind === 'idea' ? addIdeaDialog() : addDialog(b.dataset.kind);
+    else if (act === 'delete') {
+      if (await ask(`Delete ${tr.dataset.id} and its description?`, {ok: 'delete'}))
+        post('delete', {file: 'ideas', id: tr.dataset.id, row_hash: tr.dataset.hash});
+    }
     else if (act === 'queue') { b.disabled = true; post('queue', {id: tr.dataset.id, file: tr.closest('table').dataset.file}).then((j) => { if (!j) b.disabled = false; }); }
     else if (act === 'move') post('move', {label: item.dataset.label, dir: b.dataset.dir, queue_hash: root.dataset.qhash});
     else if (act === 'unqueue') {

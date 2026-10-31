@@ -266,7 +266,7 @@
     if (!le && tag !== 'MM') return 0;
     const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
     const magic = v.getUint16(2, le);
-    if (!(magic === 42 || (le && magic === 0x55))) return 0;
+    if (!(magic === 42 || magic === 0x4F52 || magic === 0x5352 || (le && magic === 0x55))) return 0;   // TIFF, ORF (RO/RS), RW2
     try {
       const ifd = v.getUint32(4, le);
       const n = v.getUint16(ifd, le);

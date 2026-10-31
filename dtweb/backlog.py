@@ -54,6 +54,8 @@ QITEM = re.compile(r"^- \[( |x|~|-)\] ")
 QLABEL = re.compile(r"^- \[.\] \*\*(.+?)\*\*")
 QEST = re.compile(r"\best\s*~?(\d+(?:\.\d+)?)")
 QPARTIAL = re.compile(r"^ +- Partial")
+QLEFT = re.compile(r"\bleft\s*~?(\d+(?:\.\d+)?)\b")
+NO_EST = 1.0  # what forecast/queue_forecast.py counts for an unsized item
 QUEUE_LABEL = re.compile(r"\*\*(#(\d+)|W(\d+))")
 TOKEN = re.compile(r"(`[^`\n]+`|\*\*.+?\*\*)")
 REF = re.compile(r"(?<![\w&/])(?:#(\d+[ab]?)|(W\d+|[IP]\d+))(?!\w)")
@@ -211,14 +213,20 @@ def parse_queue(lines: list[str]) -> list[dict]:
                 j += 1
             lab, est = QLABEL.match(lines[i]), QEST.search(lines[i])
             status = {" ": "open", "x": "done", "~": "skipped", "-": "deferred"}[m.group(1)]
-            partial = any(QPARTIAL.match(n) for n in lines[i + 1:j])
+            pnotes = [n for n in lines[i + 1:j] if QPARTIAL.match(n)]
+            partial, left = bool(pnotes), QLEFT.search(pnotes[0]) if pnotes else None
             items.append({"section": name, "start": i, "end": j, "status": "partial" if status == "open" and partial else status,
                           "mark": m.group(1), "label": lab.group(1) if lab else "",
                           "text": lines[i][6:], "notes": lines[i + 1:j],
                           "est": est.group(1) if est else ("draft" if re.search(r"\best draft\b", lines[i]) else ""),
-                          "lines": lines[i:j]})
+                          "left": left.group(1) if left else "", "lines": lines[i:j]})
             i = j
     return items
+
+
+def pts_str(x: float) -> str:
+    """Points for display: 1.0, 2.35, 0.05."""
+    return f"{x:.2f}".rstrip("0").rstrip(".") if round(x, 1) != round(x, 2) else f"{x:.1f}"
 
 
 def is_open(item: dict) -> bool:
@@ -382,7 +390,7 @@ async def backlog_page(request: Request, f: str = "queue"):
     d = backlog_dir()
     ctx: dict = {"tab": tab, "tabs": TABS, "dir": str(d), "locked": (d / "launchd/.daily-run.lock").exists(),
                  "error": None, "tables": [], "items": [], "texts": [], "qhash": "", "file": FILES.get(tab, ""),
-                 "themes": []}
+                 "qtotal": "", "no_est": pts_str(NO_EST), "themes": []}
     try:
         idx = link_index()
         if tab == "queue":
@@ -395,6 +403,13 @@ async def backlog_page(request: Request, f: str = "queue"):
                 it["notes_html"] = [inline(n.strip(), idx) for n in it["notes"]]
                 it["can"] = is_open(it)
                 it["first"], it["last"] = it is opens[0], it is opens[-1]
+            total = 0.0
+            for it in opens:                                 # points as queue_forecast.py counts them, before bias
+                base = float(it["est"]) if it["est"] not in ("", "draft") else NO_EST
+                pts = (float(it["left"]) if it["left"] else base * 0.5 + 0.3) if it["status"] == "partial" else base
+                total += pts
+                it["pts"], it["total"] = pts_str(pts), pts_str(total)
+            ctx["qtotal"] = pts_str(total)
             ctx["items"] = items
         elif tab in ("features", "bugs", "done", "ideas"):
             lines = read_lines(FILES[tab])

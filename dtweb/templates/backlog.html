@@ -30,6 +30,10 @@
   .badge { display: inline-block; min-width: 4.4rem; text-align: center; font-size: .72rem; padding: .05rem .4rem; border-radius: 9px; border: 1px solid var(--line); color: var(--dim); }
   .badge.open { color: #5bbf6a; border-color: #5bbf6a; } .badge.partial { color: var(--accent); border-color: var(--accent); }
   .est { color: var(--dim); font-size: .78rem; white-space: nowrap; }
+  .bl-item .size, .bl-head .size { flex: 0 0 4.2rem; text-align: right; font-size: .78rem; color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .bl-item .size b { color: var(--text); font-weight: 600; }
+  .bl-head { display: flex; gap: .6rem; padding: 0 .2rem .2rem; color: var(--dim); font-size: .72rem; border-bottom: 1px solid var(--line); }
+  .bl-head .grow { flex: 1; }
   .bl-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .6rem .8rem; }
   .bl-h { margin: 1rem 0 .3rem; color: var(--dim); font-size: .95rem; }
   dialog.bl-dlg { width: min(40rem, calc(100vw - 1.5rem)); }
@@ -39,7 +43,7 @@
   .bl-dlg .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; }
   .bl-dlg pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .4rem .6rem; font-size: .78rem; margin: .2rem 0; }
   .bl-dlg .btns { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .8rem; }
-  @media (max-width: 600px) { main { padding: .6rem .5rem 2rem; } .bl-item { flex-direction: column; } .bl-dlg .grid4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { main { padding: .6rem .5rem 2rem; } .bl-item { flex-direction: column; } .bl-item .size { flex: none; text-align: left; } .bl-item .size:empty, .bl-head { display: none; } .bl-dlg .grid4 { grid-template-columns: repeat(2, 1fr); } }
   @media (pointer: coarse) { .bl button, .bl-item button, .bl-dlg button { min-height: 40px; } }
 </style>
 <nav class="bl-tabs">{% for key, name in tabs %}<a href="/backlog?f={{ key }}"{% if key == tab %} class="on"{% endif %}>{{ name }}</a>{% endfor %}</nav>
@@ -47,13 +51,15 @@
 {% if locked %}<p class="banner">A night run is working on the backlog: changes are refused until it ends.</p>{% endif %}
 <div id="bl" data-tab="{{ tab }}" data-qhash="{{ qhash }}"{% if themes %} data-themes='{{ themes|tojson }}'{% endif %}>
 {% if tab == 'queue' %}
-  <div class="bl-bar"><span>{{ file }} in {{ dir }}</span></div>
+  <div class="bl-bar"><span>{{ file }} in {{ dir }}; open items {{ qtotal or "0.0" }} pts (unsized count {{ no_est }}, a partial its <code>left</code> or half its est + 0.3; before bias)</span></div>
   {% for it in items %}
-    {% if loop.first or items[loop.index0 - 1].section != it.section %}<h4 class="bl-h">{{ it.section }}</h4>{% endif %}
+    {% if loop.first or items[loop.index0 - 1].section != it.section %}<h4 class="bl-h">{{ it.section }}</h4>
+      <div class="bl-head"><span class="badge" style="visibility:hidden">status</span><span class="size">est</span><span class="size">total</span><span class="grow">item</span></div>{% endif %}
     <div class="bl-item" data-label="{{ it.label }}">
       <span class="badge {{ it.status }}">{{ it.status }}</span>
+      <span class="size"{% if it.status == 'partial' and it.pts %} title="counts {{ it.pts }} (partial)"{% endif %}>{% if it.est %}{{ it.est }}{% elif it.pts %}<i title="unsized: counts {{ no_est }}">{{ it.pts }}?</i>{% else %}–{% endif %}{% if it.left %}<br>left {{ it.left }}{% endif %}</span>
+      <span class="size">{% if it.total %}<b>{{ it.total }}</b>{% endif %}</span>
       <div class="body">{{ it.html }}
-        {% if it.est and "est" not in it.text %}<span class="est">est {{ it.est }}</span>{% endif %}
         {% if it.notes_html %}<div class="notes">{% for n in it.notes_html %}<div>{{ n }}</div>{% endfor %}</div>{% endif %}
       </div>
       {% if it.can %}<div class="btns">

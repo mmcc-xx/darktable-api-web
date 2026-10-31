@@ -99,6 +99,11 @@
   </section>
   <section data-pane="upload" hidden>
     <p><input type="file" id="imp-files" multiple aria-label="photos to upload"></p>
+    <p id="imp-cullbar" class="cull-bar" hidden><span id="imp-counts" aria-live="polite"></span>
+      <button type="button" id="imp-rej-all" class="secondary">reject all</button>
+      <button type="button" id="imp-keep-all" class="secondary">keep all</button></p>
+    <div id="imp-cull" class="cull" aria-label="photos to send; click one to reject it"></div>
+    <p class="dim">Rejected photos stay on the card: a web page can't delete files there. They're remembered here, so next time they come up rejected.</p>
     <p class="dim">Sent to the web app, then copied into <code>{{ import_dir.copy_to or "darktable's import folders" }}</code> as darktable's copy &amp; import does.</p>
   </section>
   <p id="imp-jc" hidden><label title="fills $(JOBCODE) in the folder names">job code <input id="imp-jobcode" type="text" value="{{ import_dir.jobcode }}"></label></p>
@@ -107,6 +112,14 @@
     <button type="button" id="imp-stop" class="secondary" hidden>stop</button>
     <button type="button" id="imp-close" class="secondary">close</button></p>
   <p id="imp-result" class="status" aria-live="polite"></p>
+  <div id="imp-big" class="cull-big" role="dialog" aria-label="review photo" hidden>
+    <div class="cb-stage"><img id="cb-img" alt="" hidden><p id="cb-none" class="cb-none" hidden></p></div>
+    <p class="cb-name"><span id="cb-name"></span> · <span id="cb-n"></span></p>
+    <p class="cb-buttons"><button type="button" id="cb-prev" aria-label="previous">‹</button>
+      <button type="button" id="cb-toggle" aria-pressed="false"></button>
+      <button type="button" id="cb-next" aria-label="next">›</button>
+      <button type="button" id="cb-close" class="secondary">close</button></p>
+  </div>
 </dialog>
 <script>
 (() => {
@@ -210,6 +223,231 @@
     stalled = false;
     return true;
   }
+  // ── review before sending (#156): a grid of previews made in the browser
+  // (the file itself, or a raw's biggest embedded JPEG); rejected photos are
+  // not sent and are remembered on the server by name, size and time
+  const IMG_EXT = /\.(jpe?g|png|webp|heic|heif|avif)$/i;
+  const isImg = (f) => /^image\/(jpeg|png|webp|heic)$/.test(f.type) || IMG_EXT.test(f.name);
+  const fkey = (f) => ({name: f.name, size: f.size, mtime: Math.floor(f.lastModified / 1000)});
+  const post = (url, body) => fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  // end (exclusive) of the JPEG starting at i: walk its marker segments, so a
+  // thumbnail nested in an APP1 isn't taken for a JPEG of its own; -1 when cut off
+  function jpegEnd(b, i) {
+    let p = i + 2;
+    while (p + 2 <= b.length) {
+      if (b[p] !== 0xFF) return -1;
+      const m = b[p + 1];
+      if (m === 0xFF) { p++; continue; }
+      if (m === 0xD9) return p + 2;
+      if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { p += 2; continue; }
+      if (p + 4 > b.length) return -1;
+      p += 2 + ((b[p + 2] << 8) | b[p + 3]);
+      if (m === 0xDA) {       // entropy-coded data up to the next real marker
+        while (p + 1 < b.length && !(b[p] === 0xFF && b[p + 1] !== 0 && !(b[p + 1] >= 0xD0 && b[p + 1] <= 0xD7))) p++;
+      }
+    }
+    return -1;
+  }
+  function biggestJpeg(b) {
+    let best = null;
+    for (let i = 0; i + 3 < b.length; i++) {
+      if (b[i] !== 0xFF || b[i + 1] !== 0xD8 || b[i + 2] !== 0xFF) continue;
+      const e = jpegEnd(b, i);
+      if (e < 0) continue;
+      if (!best || e - i > best[1] - best[0]) best = [i, e];
+      i = e - 1;
+    }
+    return best;
+  }
+  // IFD0's Orientation (1-8) of a TIFF-based raw, else 0
+  function tiffOrientation(b) {
+    const tag = String.fromCharCode(b[0], b[1]);
+    const le = tag === 'II';
+    if (!le && tag !== 'MM') return 0;
+    const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const magic = v.getUint16(2, le);
+    if (!(magic === 42 || (le && magic === 0x55))) return 0;
+    try {
+      const ifd = v.getUint32(4, le);
+      const n = v.getUint16(ifd, le);
+      for (let k = 0; k < n; k++) {
+        const e = ifd + 2 + 12 * k;
+        if (v.getUint16(e, le) === 0x112) return v.getUint16(e + 8, le) || 0;
+      }
+    } catch (x) { /* header only partly there */ }
+    return 0;
+  }
+  // [blob to decode, rotation] of a file: itself, or a raw's embedded JPEG (rotated by the raw's
+  // Orientation unless the JPEG has its own); null if none
+  async function source(f) {
+    if (isImg(f)) return [f, null];
+    for (const whole of [false, true]) {
+      const b = new Uint8Array(await (whole ? f : f.slice(0, 8 << 20)).arrayBuffer());
+      const j = biggestJpeg(b);
+      if (j) {
+        const jb = b.subarray(j[0], j[1]);
+        // the decoder applies the JPEG's own Orientation; the raw's counts only when the JPEG has none
+        const own = jb[3] === 0xE1 && String.fromCharCode(...jb.subarray(6, 10)) === 'Exif' ? tiffOrientation(jb.subarray(12)) : 0;
+        // a slice of the file, not a copy: 300 raws' previews would fill a phone's memory
+        return [f.slice(j[0], j[1], 'image/jpeg'), own ? null : {3: 180, 6: 90, 8: 270}[tiffOrientation(b)] || 0];
+      }
+      if (b.length >= f.size) break;
+    }
+    return null;
+  }
+  // blob URL of the image at most w wide (rotated); null if it won't decode
+  async function decode(blob, rot, w) {
+    try {
+      const bmp = await createImageBitmap(blob, {resizeWidth: w, resizeQuality: 'medium'});
+      const c = document.createElement('canvas');
+      c.width = rot % 180 ? bmp.height : bmp.width; c.height = rot % 180 ? bmp.width : bmp.height;
+      const g = c.getContext('2d');
+      g.translate(c.width / 2, c.height / 2); g.rotate(rot * Math.PI / 180);
+      g.drawImage(bmp, -bmp.width / 2, -bmp.height / 2);
+      bmp.close();
+      return URL.createObjectURL(await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.85)));
+    } catch (e) {
+      return rot ? null : URL.createObjectURL(blob);   // Safari HEIC: let <img> try
+    }
+  }
+  let cull = [], gen = 0, big = -1, bigTok = 0, bigUrl = null, queue = [], active = 0;
+  const grid = $('#imp-cull');
+  const ext = (f) => (f.name.match(/\.([^.]+)$/) || ['', '?'])[1].toUpperCase();
+  const counts = () => {
+    const rej = cull.filter((c) => c.rej).length, early = cull.filter((c) => c.rej && c.earlier).length;
+    $('#imp-counts').textContent = `${cull.length - rej} to send · ${rej} rejected` + (early ? ` (${early} of them earlier)` : '');
+    $('#imp-cullbar').hidden = !cull.length;
+  };
+  function mark(c) {
+    c.el.classList.toggle('rej', c.rej);
+    c.el.setAttribute('aria-pressed', c.rej);
+    c.el.title = c.rej ? 'rejected: click to keep' : 'click to reject';
+    counts();
+    if (big >= 0 && cull[big] === c) showBig();
+  }
+  const toggle = (c, v = !c.rej) => { c.rej = v; c.touched = true; mark(c); };
+  function noPreview(c) {
+    c.el.querySelector('.cull-img').replaceChildren(Object.assign(document.createElement('b'), {textContent: ext(c.f)}),
+      Object.assign(document.createElement('small'), {textContent: 'no preview'}));
+    c.none = true;
+  }
+  async function makeThumb(c) {
+    try {
+      c.src = await source(c.f);
+      const url = c.src && await decode(c.src[0], c.src[1], 320);
+      if (c.gen !== gen) { url && URL.revokeObjectURL(url); return; }
+      if (!url) return noPreview(c);
+      c.url = url;
+      const img = new Image();
+      img.alt = ''; img.src = url; img.onerror = () => noPreview(c);
+      c.el.querySelector('.cull-img').replaceChildren(img);
+    } catch (e) { if (c.gen === gen) noPreview(c); }
+  }
+  function pump() {       // two at a time, in grid order
+    while (active < 2 && queue.length) {
+      queue.sort((a, b) => a.i - b.i);
+      const c = queue.shift();
+      if (c.gen !== gen) continue;
+      active++;
+      makeThumb(c).finally(() => { active--; pump(); });
+    }
+  }
+  const seen = new IntersectionObserver((es) => {
+    for (const e of es) if (e.isIntersecting) { seen.unobserve(e.target); queue.push(e.target._c); }
+    pump();
+  }, {rootMargin: '300px'});
+  async function build() {
+    gen++; big = -1; $('#imp-big').hidden = true;
+    seen.disconnect(); queue = [];
+    for (const c of cull) { if (c.url) URL.revokeObjectURL(c.url); }
+    if (bigUrl) { URL.revokeObjectURL(bigUrl); bigUrl = null; }
+    grid.textContent = '';
+    const myGen = gen;
+    cull = [...$('#imp-files').files].map((f, i) => ({f, i, gen: myGen, rej: false, earlier: false, touched: false}));
+    for (const c of cull) {
+      const el = document.createElement('div');
+      el.className = 'cull-t'; el.tabIndex = 0; el.setAttribute('role', 'button'); el.setAttribute('aria-pressed', 'false');
+      el.title = 'click to reject';
+      const view = document.createElement('button');
+      view.type = 'button'; view.className = 'cull-view'; view.textContent = '⤢'; view.title = 'look closer'; view.setAttribute('aria-label', 'look closer at ' + c.f.name);
+      view.onclick = (e) => { e.stopPropagation(); openBig(c.i); };
+      const badge = Object.assign(document.createElement('em'), {textContent: 'earlier', title: 'rejected in an earlier session'});
+      const name = Object.assign(document.createElement('span'), {textContent: c.f.name, className: 'cull-name'});
+      const img = Object.assign(document.createElement('div'), {className: 'cull-img'});
+      el.append(img, view, badge, name);
+      el.onclick = () => toggle(c);
+      el.onkeydown = (e) => { if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(c); } };
+      el._c = c; c.el = el;
+      grid.append(el);
+      seen.observe(el);
+    }
+    counts();
+    if (!cull.length) return;
+    try {
+      const r = await post('/api/import/rejects/check', {files: cull.map((c) => fkey(c.f))});
+      if (!r.ok || gen !== myGen) return;
+      (await r.json()).rejected.forEach((v, i) => {
+        const c = cull[i];
+        if (!v || c.touched) return;
+        c.earlier = true; c.el.classList.add('earlier'); toggle(c, true); c.touched = false;
+      });
+    } catch (e) { /* offline: nothing remembered */ }
+  }
+  $('#imp-files').onchange = build;
+  $('#imp-rej-all').onclick = () => cull.forEach((c) => toggle(c, true));
+  $('#imp-keep-all').onclick = () => cull.forEach((c) => toggle(c, false));
+
+  // the big view: an overlay in the dialog
+  async function showBig() {
+    const c = cull[big], n = big;
+    $('#cb-name').textContent = c.f.name; $('#cb-n').textContent = `${big + 1} of ${cull.length}`;
+    const t = $('#cb-toggle');
+    t.textContent = c.rej ? 'keep' : 'reject'; t.setAttribute('aria-pressed', c.rej);
+    t.classList.toggle('rej', c.rej);
+    $('#imp-big').classList.toggle('rej', c.rej);
+    if (c.shown === n) return;
+    const tok = ++bigTok, img = $('#cb-img'), none = $('#cb-none');
+    img.hidden = true; none.hidden = true; img.removeAttribute('src');
+    if (bigUrl) { URL.revokeObjectURL(bigUrl); bigUrl = null; }
+    if (c.src === undefined) c.src = await source(c.f).catch(() => null);
+    const url = c.src && await decode(c.src[0], c.src[1], 1600);
+    if (tok !== bigTok) { url && URL.revokeObjectURL(url); return; }
+    if (!url) { none.textContent = ext(c.f) + ' · no preview'; none.hidden = false; return; }
+    bigUrl = url; img.src = url; img.hidden = false; c.shown = n;
+  }
+  function openBig(i) {
+    big = (i + cull.length) % cull.length;
+    cull.forEach((c) => { c.shown = -1; });
+    $('#imp-big').hidden = false;
+    showBig();
+    $('#cb-toggle').focus();
+  }
+  function closeBig() {
+    const i = big; big = -1; bigTok++; $('#imp-big').hidden = true;
+    if (cull[i]) cull[i].el.focus();
+  }
+  $('#cb-prev').onclick = () => openBig(big - 1);
+  $('#cb-next').onclick = () => openBig(big + 1);
+  $('#cb-toggle').onclick = () => toggle(cull[big]);
+  $('#cb-close').onclick = closeBig;
+  document.addEventListener('keydown', (e) => {
+    if (big < 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key;
+    const act = {ArrowLeft: () => openBig(big - 1), ArrowRight: () => openBig(big + 1), Escape: closeBig,
+                 x: () => toggle(cull[big], true), k: () => toggle(cull[big], false)}[k];
+    if (!act) return;
+    e.preventDefault(); e.stopPropagation(); act();
+  }, true);
+  dlg.addEventListener('cancel', (e) => { if (big >= 0) { e.preventDefault(); closeBig(); } });
+  let sx = null, sy = 0;
+  $('#imp-big').addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, {passive: true});
+  $('#imp-big').addEventListener('touchend', (e) => {
+    if (sx === null) return;
+    const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+    sx = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > 2 * Math.abs(dy)) openBig(big + (dx < 0 ? 1 : -1));
+  }, {passive: true});
+
   $('#imp-go').onclick = async () => {
     const go = $('#imp-go');
     const body = {copy_files: mode() === 'copy', jobcode: $('#imp-jobcode').value};
@@ -217,8 +455,17 @@
     wake();
     try {
       if (tab === 'upload') {
-        const files = [...$('#imp-files').files];
-        if (!files.length) { out('choose some files first'); return; }
+        if (!cull.length) { out('choose some files first'); return; }
+        const files = cull.filter((c) => !c.rej).map((c) => c.f);
+        try {      // remember the culling; a photo rejected after an earlier send is taken out of the batch
+          await post('/api/import/rejects', {reject: cull.filter((c) => c.rej).map((c) => fkey(c.f)), keep: files.map(fkey)});
+          if (batch) {
+            const have = (await (await fetch(`/api/import/upload/${batch}`)).json()).files;
+            const rej = new Set(cull.filter((c) => c.rej).map((c) => c.f.name));
+            for (const x of have) if (rej.has(x.file)) await fetch(`/api/import/upload/${batch}?name=${encodeURIComponent(x.file)}`, {method: 'DELETE'});
+          }
+        } catch (e) { /* offline: the send below reports it */ }
+        if (!files.length) { out('nothing to send: every photo is rejected'); return; }
         if (!await upload(files)) return;
         body.upload = batch;
         batch = null;

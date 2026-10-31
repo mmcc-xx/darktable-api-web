@@ -1991,6 +1991,79 @@ async def import_uploaded(batch: str):
     return {"files": [{"file": p.name, "bytes": p.stat().st_size} for p in files]}
 
 
+REJECTS = CONFIG.parent / "web-upload-rejects.json"   # photos culled before upload: "name|size|mtime" -> date
+REJECTS_MAX = 20000
+
+
+def _rejects_read() -> dict[str, str]:
+    try:
+        d = json.loads(REJECTS.read_text())
+        return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _rejects_write(d: dict[str, str]) -> None:
+    if len(d) > REJECTS_MAX:      # keep the newest dates
+        d = dict(sorted(d.items(), key=lambda kv: kv[1])[-REJECTS_MAX:])
+    tmp = REJECTS.with_name(REJECTS.name + ".tmp")
+    tmp.write_text(json.dumps(d))
+    tmp.replace(REJECTS)
+
+
+class CullFile(BaseModel):
+    name: str
+    size: int
+    mtime: int = 0
+
+    def key(self) -> str:
+        return f"{Path(self.name).name}|{self.size}|{self.mtime}"
+
+
+class CullCheck(BaseModel):
+    files: list[CullFile]
+
+
+class CullSet(BaseModel):
+    reject: list[CullFile] = []
+    keep: list[CullFile] = []
+
+
+@app.post("/api/import/rejects/check")
+async def import_rejects_check(body: CullCheck):
+    """Which of these files were rejected in an earlier session (name, size
+    and mtime all match)."""
+    d = _rejects_read()
+    return {"rejected": [f.key() in d for f in body.files]}
+
+
+@app.post("/api/import/rejects")
+async def import_rejects(body: CullSet):
+    """Remember the rejected photos, forget the ones kept again."""
+    d = _rejects_read()
+    for f in body.keep:
+        d.pop(f.key(), None)
+    today = time.strftime("%Y-%m-%d")
+    for f in body.reject:
+        d[f.key()] = today
+    _rejects_write(d)
+    return {"rejected": len(d)}
+
+
+@app.delete("/api/import/upload/{batch}")
+async def import_upload_remove(batch: str, name: str):
+    """Take one file (and its .part) out of a batch: it was rejected after an
+    interrupted send already uploaded it."""
+    if not batch.isalnum() or len(batch) > 40:
+        raise HTTPException(400, "bad batch id")
+    safe = Path(name).name
+    if not safe or safe.startswith(".") or safe.endswith(".part"):
+        raise HTTPException(400, "bad file name")
+    for p in (UPLOADS / batch / safe, UPLOADS / batch / (safe + ".part")):
+        p.unlink(missing_ok=True)
+    return {"file": safe}
+
+
 class ImportBody(BaseModel):
     """paths: files or folders on this computer; upload: a batch sent with
     /api/import/upload (always copied, as it lives in a temporary folder);

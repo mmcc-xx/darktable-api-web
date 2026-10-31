@@ -40,7 +40,10 @@ owner.
   added where it is or copied into darktable's import folders (*copy &
   import*, with a job code), or files uploaded from the browser (always
   copied in). Photos already in the library are skipped, as darktable's
-  import does; the dialog lists what was imported and skipped.
+  import does; the dialog lists what was imported and skipped. Uploads
+  start with a review grid (previews from the files themselves, raws'
+  embedded JPEGs): rejected photos aren't sent, and are remembered
+  (name, size, time) so the same card comes up with them rejected.
 - **Tags & metadata:** title, description and tags in the library's
   detail panel and the darkroom's *info & tags* section, written as
   darktable's metadata editor and tagging module do (`|` for the

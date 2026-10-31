@@ -37,6 +37,7 @@
     <div id="selbar" class="selbar" hidden>
       <span id="sel-count"></span>
       <button id="sel-export" aria-expanded="false" aria-controls="exform">export…</button>
+      <button id="sel-photos" title="export the saved edits as JPEGs and save them to the phone's photo library" hidden>save to Photos</button>
       <button id="sel-dup" title="a virtual copy of each, with its saved edit">duplicate</button>
       <button id="sel-pano" title="stitch the selected photos into a panorama with Hugin" hidden>panorama…</button>
       <span class="sel-tag" title="add a tag to the selection, or remove it from them (| for a hierarchy)">
@@ -762,6 +763,98 @@
     }
     return true;
   }
+
+  // W56: the selection to Photos: one batch export, then one share per
+  // part; iOS's limits aren't documented, so a part holds at most
+  // PART_FILES files and PART_MB MB (and what canShare accepts)
+  const PART_FILES = 20, PART_MB = 200;
+  function shareParts(files) {
+    const parts = [];
+    let cur = [], mb = 0;
+    for (const f of files) {
+      const fmb = f.size / 1e6;
+      if (cur.length && (cur.length >= PART_FILES || mb + fmb > PART_MB ||
+          (navigator.canShare && !navigator.canShare({files: [...cur, f]})))) { parts.push(cur); cur = []; mb = 0; }
+      cur.push(f); mb += fmb;
+    }
+    if (cur.length) parts.push(cur);
+    return parts;
+  }
+  function selPhotosMenu() {
+    closeTileMenu();
+    const ids = selection().map((t) => +t.dataset.id);
+    if (!ids.length) return;
+    const m = tmenu = el('div', 'tile-menu');
+    m.setAttribute('role', 'menu');
+    const go = el('button', 'primary', `save ${ids.length} to Photos`);
+    go.type = 'button'; go.setAttribute('role', 'menuitem');
+    const size = el('select');
+    size.title = 'longest side';
+    for (const [v, txt] of [['0', 'full size'], ['3840', '3840 px'], ['2560', '2560 px'], ['2048', '2048 px'], ['1600', '1600 px'], ['1080', '1080 px']]) {
+      const o = el('option', null, txt); o.value = v; size.append(o);
+    }
+    size.value = photosSize();
+    size.onchange = () => { try { localStorage.setItem('lt:photos-size', size.value); } catch (e) {} };
+    const cancel = el('button', 'secondary', 'cancel'); cancel.type = 'button'; cancel.onclick = closeTileMenu;
+    const status = el('p', 'status'), notes = el('p', 'status');
+    m.append(el('strong', null, `${ids.length} photos`), go, size, cancel, status, notes);
+    const name = (id) => { const t = tileOf(id); return t ? t.dataset.name : 'photo ' + id; };
+    let parts = null, n = 0;
+    const label = () => parts.length > 1 ? `save part ${n + 1} of ${parts.length} to Photos (${parts[n].length})` : `save ${parts[0].length} to Photos`;
+    go.onclick = async () => {
+      try {
+        if (!parts) {
+          go.disabled = size.disabled = true;
+          status.textContent = 'exporting…';
+          let r = await fetch('/api/export_batch', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({imgids: ids, save: false, format: 'jpeg', size: +size.value})});
+          let s = await r.json();
+          while (r.ok && s.state !== 'done') {
+            status.textContent = `exporting ${s.done + 1} of ${s.total}…`;
+            await sleep(400);
+            r = await fetch(`/api/export_batch/${s.id}`);
+            s = await r.json();
+          }
+          if (!r.ok) throw new Error(s.detail);
+          const ok = s.results.filter((x) => x.download), unsaved = s.results.filter((x) => x.unsaved),
+                failed = s.results.filter((x) => !x.download && !x.unsaved);
+          const files = [];
+          for (const x of ok) {
+            status.textContent = `fetching ${files.length + 1} of ${ok.length}…`;
+            const f = await fetch(x.download);
+            if (!f.ok) { failed.push({imgid: x.imgid, error: 'the exported file could not be fetched'}); continue; }
+            files.push(new File([await f.blob()], decodeURIComponent(x.download.split('/').pop()), {type: 'image/jpeg'}));
+          }
+          const left = [];
+          if (unsaved.length) left.push(`left out, unsaved changes: ${unsaved.map((x) => name(x.imgid)).join(', ')}`);
+          for (const x of failed) left.push(`${name(x.imgid)}: ${x.skipped ? 'darktable kept an existing file' : x.error}`);
+          notes.textContent = left.join(' · ');
+          go.disabled = size.disabled = false;
+          if (!files.length) { status.textContent = 'nothing to save'; go.disabled = true; return; }
+          parts = shareParts(files);
+          size.disabled = true;
+          const mb = files.reduce((a, f) => a + f.size, 0) / 1e6;
+          status.textContent = `exported ${files.length} (${mb.toFixed(1)} MB)` + (parts.length > 1 ? `, in ${parts.length} parts` : '');
+        }
+        if (!await shareFiles(parts[n])) {
+          go.textContent = label() + ': ready';       // the export outlived the tap: a fresh tap shares
+          return;
+        }
+        if (++n >= parts.length) { closeTileMenu(); return; }
+        go.textContent = label();
+        status.textContent = `part ${n} saved; tap for the next`;
+      } catch (e) {
+        go.disabled = size.disabled = false;
+        status.textContent = 'failed: ' + e.message;
+      }
+    };
+    document.body.append(m);
+    const b = $('#sel-photos').getBoundingClientRect(), w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = Math.max(8, Math.min(b.left, innerWidth - w - 8)) + 'px';
+    m.style.top = Math.max(8, Math.min(b.bottom + 6, innerHeight - h - 8)) + 'px';
+  }
+  $('#sel-photos').hidden = !canShareFiles();
+  $('#sel-photos').onclick = selPhotosMenu;
 
   // a long press on a tile (touch) opens a small menu; it doesn't select,
   // open or scroll, and iOS's own image callout is off for tiles (CSS)

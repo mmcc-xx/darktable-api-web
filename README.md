@@ -155,6 +155,14 @@ change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
    when that branch was still rebased, needs one
    `git fetch origin && git reset --hard origin/darktable-api`).
 2. Python 3.10 or later.
+3. [darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp): the
+   app's engine client (`dtweb/engine.py`) is its client, imported from this
+   Python if installed there, else from its checkout (the one `DTAPI_MCP`
+   runs from, else `~/darktable-api-mcp`). With its dust extras
+   (`pip install 'darktable-api-mcp[dust]'`) it also gives dust finding and
+   healing, AI fill, sensor clipping and panoramas, which the app runs in
+   `dtweb/mcp_worker.py` under darktable-api-mcp's own Python (found via
+   `DTAPI_MCP` or `DTAPI_MCP_PYTHON`), not its own.
 
 ## Run
 
@@ -206,6 +214,10 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_SOCKET` | `library-copy/darktable-api.sock` (or `/tmp/darktable-api-<uid>-<hash>.sock` if that path is too long) | where the engine listens; every app using the library must use the same one |
 | `DTAPI_MAX_SESSIONS`, `DTAPI_IDLE_EXIT` | 3, 600 | used when this app starts the engine |
 | `DTAPI_MCP` | `darktable-api-mcp` on the PATH, else `~/darktable-api-mcp/.venv/bin/darktable-api-mcp` | the MCP server the *AI assistant* dialog's config runs |
+| `DTAPI_MCP_PYTHON` | `python` next to `DTAPI_MCP` | the Python that runs `dtweb/mcp_worker.py` (dust, AI fill, clipping, panoramas); it needs darktable-api-mcp's packages |
+| `DTAPI_CLIP_DIR` | `~/.cache/darktable-api-web/clip` | cached sensor clipping overlays |
+| `DTAPI_VARIANTS_DIR` | `~/.cache/darktable-api-mcp/variants` | where an AI's alternatives (propose_alternatives) are rendered; must match the MCP server's |
+| `DTWEB_BACKLOG_DIR` | this project's author's backlog folder | the backlog page's folder (QUEUE.md, FEATURES.md, BUGS.md, DONE.md) |
 | `DTWEB_PANORAMA_DIR` | beside the first frame | where *panorama…* writes the stitched TIFF |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
@@ -238,6 +250,7 @@ the folder's repo. Nothing is pushed.
 | `dtweb/main.py` | FastAPI routes: library, thumbnails (cached by edit state), ratings/labels, photo editing, live updates (server-sent events), library hand-off |
 | `dtweb/templates`, `dtweb/static` | pages (plain HTML and JavaScript, no framework) |
 | `dtweb/static/meta.js` | the title, description and tags editor (library and darkroom) |
+| `dtweb/mcp_worker.py` | runs darktable-api-mcp's functions (dust, AI fill, clipping, panoramas) for the app, under the MCP's Python, on the same engine |
 | `dtweb/backlog.py` | the backlog page: parses and rewrites the Markdown backlog files, commits each change |
 | `make_library_copy.py` | makes the library copy |
 

@@ -725,6 +725,110 @@
     for (const x of failed) line(`${name(x)}: ${x.error}`);
   }
 
+  // ── save to the phone's photo library (W55): export the saved edit as a
+  // JPEG, then the share sheet (iOS: "Save Image"); without Web Share
+  // (plain http, most desktops) the file downloads instead
+  const canShareFiles = () => { try { return !!navigator.canShare && navigator.canShare({files: [new File([''], 'x.jpg', {type: 'image/jpeg'})]}); } catch (e) { return false; } };
+  const photosSize = () => { try { return localStorage.getItem('lt:photos-size') || '0'; } catch (e) { return '0'; } };
+  // the photo's saved edit as a File, or null (refused, or unsaved changes kept)
+  async function exportFile(id, size, name) {
+    const call = (save) => fetch(`/api/photo/${id}/export`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: 'jpeg', size, save})});
+    let r = await call(false);
+    if (r.status === 409 && await ask(`${name} has unsaved changes in the darkroom. Save them, then export?`, {ok: 'save and export'}))
+      r = await call(true);
+    else if (r.status === 409) return null;
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail);
+    if (!d.download) throw new Error("darktable kept an existing file (its conflict setting) and exported nothing");
+    const f = await fetch(d.download);
+    if (!f.ok) throw new Error('the exported file could not be fetched');
+    return new File([await f.blob()], decodeURIComponent(d.download.split('/').pop()), {type: 'image/jpeg'});
+  }
+  // share the files; false: the share needs a fresh tap (the export took too long)
+  async function shareFiles(files) {
+    if (!canShareFiles()) {
+      for (const f of files) {
+        const a = document.createElement('a'), u = URL.createObjectURL(f);
+        a.href = u; a.download = f.name; a.click();
+        setTimeout(() => URL.revokeObjectURL(u), 60000);
+      }
+      return true;
+    }
+    try { await navigator.share({files}); }
+    catch (e) {
+      if (e.name === 'NotAllowedError') return false;
+      if (e.name !== 'AbortError') throw e;     // AbortError: the sheet was dismissed
+    }
+    return true;
+  }
+
+  // a long press on a tile (touch) opens a small menu; it doesn't select,
+  // open or scroll, and iOS's own image callout is off for tiles (CSS)
+  let tmenu = null, press = null, pressed = false;
+  function closeTileMenu() { if (tmenu) { tmenu.remove(); tmenu = null; } }
+  function tileMenu(t, x, y) {
+    closeTileMenu();
+    const m = tmenu = el('div', 'tile-menu');
+    m.setAttribute('role', 'menu');
+    const share = canShareFiles();
+    const go = el('button', 'primary', share ? 'save to Photos' : 'download JPEG');
+    go.type = 'button'; go.setAttribute('role', 'menuitem');
+    go.title = share ? "export the saved edit and save it to the phone's photo library" : 'export the saved edit and download it';
+    const size = el('select');
+    size.title = 'longest side';
+    for (const [v, txt] of [['0', 'full size'], ['3840', '3840 px'], ['2560', '2560 px'], ['2048', '2048 px'], ['1600', '1600 px'], ['1080', '1080 px']]) {
+      const o = el('option', null, txt); o.value = v; size.append(o);
+    }
+    size.value = photosSize();
+    size.onchange = () => { try { localStorage.setItem('lt:photos-size', size.value); } catch (e) {} };
+    const cancel = el('button', 'secondary', 'cancel'); cancel.type = 'button'; cancel.onclick = closeTileMenu;
+    const status = el('p', 'status');
+    m.append(el('strong', null, t.dataset.name), go, size, cancel, status);
+    let file = null;
+    go.onclick = async () => {
+      try {
+        if (!file) {
+          go.disabled = size.disabled = true;
+          status.textContent = 'exporting…';
+          file = await exportFile(+t.dataset.id, +size.value, t.dataset.name);
+          go.disabled = size.disabled = false;
+          if (!file) { status.textContent = 'not exported: unsaved changes'; return; }
+        }
+        status.textContent = '';
+        if (await shareFiles([file])) { closeTileMenu(); return; }
+        go.textContent = share ? 'save to Photos: ready' : 'download: ready';    // a fresh tap shares it
+        status.textContent = `exported (${(file.size / 1e6).toFixed(1)} MB): tap the button again`;
+      } catch (e) {
+        go.disabled = size.disabled = false;
+        status.textContent = 'failed: ' + e.message;
+      }
+    };
+    document.body.append(m);
+    const w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = Math.max(8, Math.min(x - w / 2, innerWidth - w - 8)) + 'px';
+    m.style.top = Math.max(8, Math.min(y + 12, innerHeight - h - 8)) + 'px';
+  }
+  grid.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch' || !e.isPrimary) return;
+    const a = e.target.closest('.tile a');
+    if (!a) return;
+    const t = a.closest('.tile');
+    press = {x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+      press = null; pressed = true;
+      setTimeout(() => { pressed = false; }, 1000);     // no click came after the press
+      tileMenu(t, e.clientX, e.clientY);
+    }, 550)};
+  });
+  const unpress = () => { if (press) { clearTimeout(press.timer); press = null; } };
+  grid.addEventListener('pointermove', (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) unpress(); });
+  grid.addEventListener('pointerup', unpress);
+  grid.addEventListener('pointercancel', unpress);          // the page scrolls
+  grid.addEventListener('click', (e) => { if (pressed) { pressed = false; e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  grid.addEventListener('contextmenu', (e) => { if (press || pressed || tmenu) e.preventDefault(); });
+  document.addEventListener('pointerdown', (e) => { if (tmenu && !tmenu.contains(e.target) && !e.target.closest('dialog')) closeTileMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tmenu) { e.stopImmediatePropagation(); closeTileMenu(); } }, true);
+
   // ── the detail panel: the shown photo larger, with its rating, labels,
   // exif, title, description and tags
   let detailTimer = null, detailKey = null, detailId = null;

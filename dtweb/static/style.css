@@ -375,6 +375,13 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .tile:hover .sel, .tile .sel:checked, .tile .sel:focus-visible, .grid:has(.selected) .sel { opacity: 1; }
 .tile.selected { border-color: #8a6a3a; background: #33302a; }
 .tile.selected.current { border-color: var(--accent); }
+/* W55: a long press opens .tile-menu, not iOS's image callout or a text selection */
+.tile a, .tile img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-user-drag: none; }
+.tile-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; gap: .4rem; min-width: 12rem; max-width: calc(100vw - 16px);
+             padding: .6rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, .6); font-size: .9rem; }
+.tile-menu strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-menu button, .tile-menu select { min-height: 44px; }
+.tile-menu .status:empty { display: none; }
 .selbar { position: sticky; top: var(--top-h, 3rem); z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem;
           margin: 0 0 .6rem; padding: .4rem .7rem; background: #3a2f1c; border: 1px solid #6b5228; border-radius: 6px; font-size: .85rem; }
 .selbar .ctl button { font-size: 1rem; }

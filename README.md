@@ -10,153 +10,110 @@ edits and writes the history to the library exactly as darktable does.
 does that). Saving writes darktable's history in the engine's module
 versions, which an older darktable may not be able to read.
 
-The app works with the current engine but lags behind it: many newer
-engine features (drawn and AI masks, dust removal, AI denoise, styles,
-alternatives, ...) are only reachable through
-[darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp) for now.
+darktable-api is three repositories: the
+[darktable fork](https://github.com/mmcc-xx/darktable/tree/darktable-api)
+(the engine), [darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp)
+(an MCP server for AI assistants, and the setup instructions for all three)
+and this web app. [Demo video](https://www.youtube.com/watch?v=VDfZbxvvniY)
 
 Written with AI assistance (Claude), directed and reviewed by the repository
 owner.
 
-[Demo Video](https://www.youtube.com/watch?v=VDfZbxvvniY)
-
 ## What it does
+
+Desktop and phone (up to 800 px wide the darkroom is one column with the
+edit panel as a sheet; swipe for the next photo, pinch to zoom).
 
 - **Library:** film rolls, filters (film roll, rating, color label, tag:
   a tag also takes the tags under it, `places` takes `places|paris`), a
-  thumbnail grid with paging. A click shows a photo in the detail panel at
-  the right (larger, rating and labels, camera and exposure, *open in
-  darkroom*, duplicate, export, and its title, description and tags to
-  edit: a tag links to the library filtered by it); double-click
-  or Enter opens it. ⌘/Ctrl-click or a tile's box selects (shift: a range,
-  ⌘/Ctrl+A: all shown, Esc: none); a bar over the grid then rates, labels,
-  tags or untags, duplicates or exports the selection. Rate, reject and set color labels by
-  click or keyboard (arrows, 0–5, R, F1–F5: the selection's, else the shown
-  photo's); ⧉ or ⌘/Ctrl+D makes a duplicate (a virtual copy with the saved
-  edit). Thumbnails come from darktable's
-  own thumbnail cache, rendered with each photo's current edit.
+  thumbnail grid from darktable's own thumbnail cache. A click shows a
+  photo in the detail panel (above 1400 px a large preview beside the grid,
+  details in a drawer): rating and labels, camera and exposure, title,
+  description and tags to edit, *open in darkroom*, duplicate, export, and
+  its library id (a click copies "photo 431" for an AI). ⌘/Ctrl-click or a
+  tile's box selects (shift: a range, ⌘/Ctrl+A, Esc); a bar then rates,
+  labels, tags, duplicates, exports, saves to the phone's photos or makes a
+  **panorama** (Hugin, after a check of what would make seams show). Keys:
+  arrows, 0–5, R, F1–F5, ⌘/Ctrl+D (duplicate), f (full screen), o (sensor
+  clipping from the raw file over the preview; tiles get a chip for clipped
+  or blocked photos). AI fill patches are hidden (pick their
+  `darktable_fills` roll to see them). On a phone, a long press on a tile
+  saves the photo to the photo library.
+- **Full screen:** the photo alone on black, from the lighttable or the
+  darkroom; rate, prev/next (arrows, swipe), pinch or wheel zoom.
 - **Import:** *import…* in the library's header: a folder on this
-  computer (picked in a folder browser; its subfolders too if asked),
-  added where it is or copied into darktable's import folders (*copy &
-  import*, with a job code), or files uploaded from the browser (always
-  copied in). Photos already in the library are skipped, as darktable's
-  import does; the dialog lists what was imported and skipped. Uploads
-  start with a review grid (previews from the files themselves, raws'
-  embedded JPEGs): rejected photos aren't sent, and are remembered
-  (name, size, time) so the same card comes up with them rejected.
-- **Tags & metadata:** title, description and tags in the library's
-  detail panel and the darkroom's *info & tags* section, written as
-  darktable's metadata editor and tagging module do (`|` for the
-  hierarchy; new tags are created; the library's tags are suggested).
-- **Export:** one or many photos with one set of settings (format, longest
-  side, quality, high quality) into darktable's export folder, and for
-  several as one zip to download; photos with unsaved changes in the
-  darkroom are left out until you choose to save them. In the darkroom,
-  the export section or ⋯ exports the photo open there.
-- **Photo (darkroom):** the photo with a toolbar above it (one tool at a
-  time; the active tool's controls in a bar under the toolbar) and a panel
-  at the right. At the panel's top, an RGB + luminance histogram of the
-  preview (click: logarithmic / linear) with the clipped highlight and
-  shadow shares, rgb levels' black, gray and white handles under it (with
-  pickers: click *black*, *gray* or *white*, then the photo), then the
-  camera, date, lens and exposure (shutter,
-  aperture, ISO, focal length, bias). Live preview from darktable's pipeline with sliders for
-  exposure, white balance (color calibration's illuminant as temperature
-  and tint, and *pick a neutral spot*: click something gray in the photo), AgX (or sigmoid, for photos edited with it), the tone
-  equalizer's nine bands (−8 EV to 0 EV) and color balance rgb in
-  collapsible sections (basic, tone, color, export), each summing up its
-  settings in one line when closed; module on/off. A black & white
-  section: one checkbox adds a second color calibration instance with a
-  gray mix (the first keeps the white balance), and a strip of looks
-  (luminance, red/orange/yellow/green/blue filters, darktable's film
-  presets) rendered on the current edit; a click applies one. *Other
-  modules* lists the edit's modules no panel shows (lens correction, or
-  local contrast and the like added by the assistant or a preset), each with on/off
-  and *ask the assistant*, which copies a question about it. Pinned under the panel:
-  the history step ("step 14 of 14: local contrast", click for the whole
-  history), undo/redo, save, discard unsaved, and ⋯ for export,
-  duplicate (with this edit, ⌘/Ctrl+D, or unedited) and start over from
-  darktable's defaults (your workflow and auto-apply presets).
-  Previous/next within the current filter.
-- **Crop & rotate:** turn by 90°, mirror, straighten by an angle (darktable's
-  rotate and perspective module, with its automatic crop so no blank
-  corners show), and crop: the *crop & rotate* tool shows the whole photo
-  with a box to drag (edges and corners resize, inside moves; *done* or
-  Enter applies, Esc cancels),
-  optionally held to an aspect ratio (⤾ swaps portrait/landscape). These
-  edit darktable's own flip, ashift and crop modules, so darktable shows
-  the same crop.
-- **Zoom:** *fit*, *100%* (one photo pixel per screen pixel) and *200%*
-  at the toolbar's right, or double-click the photo for 100% there (again:
-  fit). Zoomed, drag to pan; the engine renders just the region shown, so
-  edits, the clipping overlay and the pickers work on it, and the
-  histogram counts the area shown.
-- **Clipping:** *clipping* in the toolbar (or O) paints blown highlights
-  (a channel at 255) red and crushed shadows (black) blue over the
-  preview, counted from the preview in the browser.
-- **Before/after:** *before / after* in the toolbar compares the edit with the
-  original: a wipe with a line to drag over the photo, or side by side when
-  the crop changed. An AI (darktable-api-mcp's `compare_before_after`) opens
-  the same comparison from its own "before" step; `#compare=N` in the
-  address opens one with step N.
-- **Alternatives:** versions an AI rendered for you to choose from
-  (`propose_alternatives`: crops, B&W filters, looks) show as a strip under
-  the photo, not applied: click one to see it large, *apply* applies it as
-  history steps, ✕ dismisses them. A page opened later still shows them.
-- **Export:** darktable's own export of the saved edit (format, longest
-  side, quality, high quality; darktable's export settings for anything left
-  at its default, including the folder, by default
-  `$(FILE_FOLDER)/darktable_exported/`), with a download link for the file.
-  Unsaved changes are saved first, after asking.
-- **Connect an AI assistant:** *AI assistant* in the header (its light is
-  green while one is connected) shows how to let any MCP client edit this
-  library: the MCP server as the generic stdio JSON config (`mcpServers`:
-  command, args, env) filled in with this app's engine and library (set
-  `DTAPI_MCP` if `darktable-api-mcp` isn't on the PATH or in
-  `~/darktable-api-mcp/.venv`), which Claude Desktop, Cursor, VS Code,
-  Codex and others take in their MCP settings; then Claude Code as the
-  worked example: the `claude mcp add` command, linking the editing skills
-  (Claude Code's; other clients get the server's own instructions), and a
-  prompt to start with. The assistant's edits show up here live.
+  computer (its subfolders too if asked), added where it is or copied into
+  darktable's import folders (*copy & import*, with a job code), or files
+  uploaded from the browser (resumable, with progress). Uploads start with
+  a review grid (previews from the files themselves): rejected photos
+  aren't sent, and are remembered so the same card comes up with them
+  rejected. Photos already in the library are skipped, as darktable does.
+- **Darkroom:** a toolbar above the photo and a panel at the right. The
+  panel: an RGB + luminance histogram with clipped shares and rgb levels'
+  handles and pickers, the camera data, then two views. *Quick*: exposure,
+  white balance (color calibration as temperature and tint, *pick a neutral
+  spot*), AgX (or sigmoid), the tone equalizer's nine bands, color balance
+  rgb, capture sharpening (with *measure for this photo*), a black & white
+  section (a second color calibration with a gray mix, film looks and a
+  color filter wheel previewed as you hover), tags and export. *Pipeline*:
+  the edit's modules in pipe order, on/off, drag to reorder, each with its
+  settings. Pinned under it: the history step (click: the whole history,
+  compress), undo/redo, save (it shows when a save is needed; leaving with
+  unsaved changes asks), discard, ⋯ for export, duplicate and start over.
+- **Tools** (one at a time, its controls in a bar under the toolbar):
+  - *crop & rotate*: turn, mirror, straighten (with darktable's automatic
+    crop) and a crop box over the whole photo, optionally held to an
+    aspect ratio, with thirds, grid or golden ratio guides; edits
+    darktable's own flip, ashift and crop modules;
+  - *dust*: the film roll's sensor dust found in this photo circled on it,
+    *heal N*, or click a spot to heal it;
+  - *erase*: draw around an object (or click a round spot) and an AI model
+    fills it (`ai_fill`: LaMa on this computer, or Black Forest Labs' FLUX
+    models online with your key), as a composite instance;
+  - *sky / subject*: click an area, darktable's AI mask finds it, and it
+    gets its own exposure, vibrance, contrast and saturation;
+  - *markers*: name points and areas ("left tree") so an AI assistant can
+    refer to them;
+  - zoom (*fit*, *100%*, *200%*, double-click; drag to pan, the engine
+    renders the region shown), *clipping* (O), *before / after* (a wipe, or
+    side by side when the crop changed).
+- **Working with an AI:** *AI assistant* in the header (green while one is
+  connected) gives the MCP config for this app's engine and library
+  (Claude Desktop, Cursor, VS Code, Codex, ...) and Claude Code's
+  `claude mcp add` with the skills. The assistant's edits show up live;
+  its comparisons (`compare_before_after`) and alternatives
+  (`propose_alternatives`: crops, B&W filters, looks, shown as a strip to
+  pick from) appear here.
+- **Export:** darktable's export of the saved edit (format, longest side,
+  quality; darktable's export settings for the rest, by default into
+  `$(FILE_FOLDER)/darktable_exported/`), a download link, a zip for
+  several photos; unsaved changes are saved first, after asking.
 - **Sharing the library with darktable:** darktable and the engine can't
-  have one library open at the same time. Use the darktable-api build of
-  darktable's window, which serves the library to the engine itself. If the
-  library was released to darktable (through the API), the header has
-  *take back* and *quit darktable and take back* (asks darktable to quit
-  the normal way, so it saves; never kills it).
+  have one library open at the same time. darktable's window from the same
+  fork serves the library itself (see below). For a darktable started
+  without it, the header releases the library to it, and has *take back*
+  and *quit darktable and take back* (asks darktable to quit the normal
+  way; never kills it).
+
+Features that need the `darktable-api` branch (AI fill, AI masks,
+markers) are greyed out on an engine without them.
 
 Measured on an Apple M1 (CPU only) with a 20 MP raw: a preview after a slider
 change takes 0.15–0.4 s at 1200 px; the first preview of a photo about 0.5 s.
 
 ## Requirements
 
-1. **darktable-api**, from the darktable fork
-   https://github.com/mmcc-xx/darktable (see `src/api/README.md` there). Build darktable as usual with the API
-   enabled (`-DUSE_API=ON`, off by default), which builds `darktable-api`
-   alongside:
+The setup for all three repositories, tested on clean macOS and Ubuntu
+machines each week: darktable-api-mcp's
+[Quick start](https://github.com/mmcc-xx/darktable-api-mcp#quick-start-engine-mcp-server-and-web-app).
+In short:
 
-   Which branch: the one matching the darktable you edit the library with
-   (a newer darktable writes module versions an older one can't open):
-
-   | Your darktable | Branch | What it is |
-   |---|---|---|
-   | built from master | `darktable-api` (the fork's default branch) | darktable's development version with the API; darktable master is merged in weekly once the tests pass. Its edits use module versions darktable 5.6 can't open, so open the library with the `darktable` from the same build. Use this one |
-   | 5.6.x (5.6.2 on) | `darktable-api-5.6` | **frozen** (tag `api-dt5.6.2-final`, 2026-10-29): darktable 5.6.2 with the API as of 2026-10-15, no fixes or new methods since; this web app's newer features need `darktable-api` |
-
-       git clone -b darktable-api --recurse-submodules https://github.com/mmcc-xx/darktable.git
-       cd darktable
-       cmake -B build -G Ninja -DUSE_API=ON
-       cmake --build build
-
-   darktable's README lists the build dependencies (on macOS:
-   `brew bundle --file=.ci/Brewfile`). `darktable` (the GUI) from the same
-   build is the one to open the library copy with.
-
-   To update: `git pull --recurse-submodules` and the `cmake --build` line
-   again, then restart the app. darktable's changes come in as merges, so
-   a pull always works (a `darktable-api` clone made before 2026-10-13,
-   when that branch was still rebased, needs one
-   `git fetch origin && git reset --hard origin/darktable-api`).
+1. **darktable-api**, built from the fork's `darktable-api` branch with
+   `-DUSE_API=ON` (and `-DUSE_AI=ON` for AI fill and masks); the frozen
+   `darktable-api-5.6` branch lacks most of this app's tools. Open the
+   library copy only with the `darktable` from the same build (its edits
+   use module versions an older darktable can't open). To update:
+   `git pull --recurse-submodules`, `cmake --build build`, restart the app.
 2. Python 3.10 or later.
 3. [darktable-api-mcp](https://github.com/mmcc-xx/darktable-api-mcp): the
    app's engine client (`dtweb/engine.py`) is its client, imported from this
@@ -224,11 +181,6 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTWEB_PANORAMA_DIR` | beside the first frame | where *panorama…* writes the stitched TIFF |
 | `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
-To open the copy in darktable's GUI (it serves the library to the engine
-while open):
-
-    /path/to/darktable/build/bin/darktable --configdir library-copy/config --cachedir library-copy/cache
-
 **No authentication.** Anyone who can reach the app can browse this
 computer's folders (the import dialog) and add files to it. Keep it on 127.0.0.1, or put it behind something that
 authenticates, before exposing it to a network.
@@ -257,7 +209,8 @@ the folder's repo. Nothing is pushed.
 | `dtweb/backlog.py` | the backlog page: parses and rewrites the Markdown backlog files, commits each change |
 | `make_library_copy.py` | makes the library copy |
 
-Tested on macOS. On Linux, *quit darktable and take back* uses darktable's
+Tested on macOS (desktop and phone browsers); the Quick start's weekly
+run also starts it on Ubuntu 24.04. On Linux, *quit darktable and take back* uses darktable's
 D-Bus `Quit` method (untested).
 
 ## License

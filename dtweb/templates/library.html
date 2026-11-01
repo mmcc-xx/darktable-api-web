@@ -4,7 +4,7 @@
 <form class="filters" method="get" action="/">
   <select name="roll" onchange="this.form.submit()">
     <option value="">all film rolls</option>
-    {% for r in rolls %}<option value="{{ r.id }}"{% if filters.roll == r.id %} selected{% endif %}>{{ r.folder.rsplit('/', 1)[-1] }} ({{ r.count }})</option>{% endfor %}
+    {% for r in rolls %}<option value="{{ r.id }}"{% if filters.roll == r.id %} selected{% endif %}>{{ '/'.join(r.folder.rsplit('/', 2)[-2:]) if r.folder.endswith('/darktable_fills') else r.folder.rsplit('/', 1)[-1] }} ({{ r.count }})</option>{% endfor %}
   </select>
   <select name="rating" onchange="this.form.submit()">
     {% for r in ratings %}<option value="{{ r }}"{% if filters.rating == r %} selected{% endif %}>{{ {'visible': 'not rejected', 'all': 'all', 'rejected': 'rejected'}.get(r, '★ ' ~ r ~ ' or more') }}</option>{% endfor %}

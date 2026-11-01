@@ -137,6 +137,30 @@ def _list_args(f: dict) -> dict:
     return a
 
 
+FILLS = "darktable_fills"     # ai_fill's patches: images in the photo's group, under <roll>/darktable_fills
+
+
+def _is_fill(img: dict) -> bool:
+    return img.get("folder", "").rstrip("/").rsplit("/", 1)[-1] == FILLS
+
+
+def _shown(images: list[dict], f: dict) -> list[dict]:
+    """The images the lighttable shows: AI fill patches left out (darktable
+    hides them by folding the group), unless their own roll is picked."""
+    return images if f["roll"] is not None else [i for i in images if not _is_fill(i)]
+
+
+async def _fills_total(f: dict, rolls: list[dict]) -> int:
+    """How many images of the filtered list _shown leaves out."""
+    if f["roll"] is not None:
+        return 0
+    n = 0
+    for roll in rolls:
+        if _is_fill(roll):
+            n += (await engine.call("images_list", limit=1, **{**_list_args(f), "film_id": roll["id"]}))["total"]
+    return n
+
+
 def _version(img: dict) -> str:
     """Changes whenever the photo's rendering may: part of thumbnail URLs."""
     return f"{img['changed']}-{img['history_end']}"
@@ -165,7 +189,7 @@ async def library_page(request: Request):
             ctx["tag_filter"] = await engine.supports("images_list.tag")
             ctx["rolls"] = (await engine.call("film_rolls"))["film_rolls"]
             r = await engine.call("images_list", offset=0, limit=PAGE, **_list_args(f))
-            ctx.update(images=r["images"], total=r["total"],
+            ctx.update(images=_shown(r["images"], f), total=r["total"] - await _fills_total(f, ctx["rolls"]),
                        next_offset=PAGE if PAGE < r["total"] else None)
         except EngineError as exc:
             ctx["error"] = str(exc)
@@ -180,7 +204,7 @@ async def grid(request: Request, offset: int = 0):
     except EngineError as exc:
         raise HTTPException(409, str(exc))
     return templates.TemplateResponse(request, "_tiles.html", {
-        "images": r["images"], "query": _query(f), "labels": LABELS, "version": _version,
+        "images": _shown(r["images"], f), "query": _query(f), "labels": LABELS, "version": _version,
         "next_offset": offset + PAGE if offset + PAGE < r["total"] else None})
 
 
@@ -331,7 +355,7 @@ async def _collection(f: dict) -> list[dict]:
         total = r["total"]
         images += r["images"]
         offset += 1000
-    return images
+    return _shown(images, f)
 
 
 async def _neighbours(image_id: int, f: dict) -> tuple[int | None, int | None, int, int]:

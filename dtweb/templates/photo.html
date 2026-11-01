@@ -74,11 +74,12 @@
       <button id="area-done" class="secondary" title="leave the sky / subject tool (Esc)">done</button>
     </div>
     <div id="toolbar-erase" class="toolbar-bar" hidden>
-      <span id="erase-status" class="status" role="status">draw around the object, or click for a round spot</span>
+      <span id="erase-status" class="status" role="status">draw around the object, or click to place a round spot</span>
       <select id="erase-model" title="what fills the area"></select>
       <input id="erase-prompt" type="text" size="26" hidden>
-      <span class="size"><label id="erase-size-lab" for="erase-size" title="the circle a click on the photo fills">spot size</label>
+      <span class="size"><label id="erase-size-lab" for="erase-size" title="the size of the circle a click places (the wheel over the photo resizes it too)">spot size</label>
         <input type="range" id="erase-size" min="0.005" max="0.08" step="0.001" value="0.02"></span>
+      <button id="erase-fill" title="fill the circle (Enter)" hidden>fill</button>
       <button id="erase-done" class="secondary" title="leave the erase tool (Esc)">done</button>
       <span id="erase-note" class="status" hidden>sends the area around the shape to Black Forest Labs and uses credits</span>
     </div>
@@ -1536,13 +1537,20 @@
 
   // ── erase: remove an object with ai_fill (the MCP's, run by
   // dtweb/mcp_worker.py on the open edit). With the tool on, a drag draws a
-  // freehand outline that is filled from its surroundings; a click fills a
-  // round spot. Drawing wins over panning while the tool is on.
+  // freehand outline that is filled from its surroundings; a click places a
+  // round spot, which the size slider or the wheel resizes and a drag moves,
+  // filled by "fill" or Enter. Drawing wins over panning while the tool is on.
   let erase = false, eraseBusy = false, eraseModels = null, eraseDraw = null, eraseOutline = null, eraseSure = false;
+  let erasePending = null;   // [x, y]: the placed round spot, not filled yet
+  const ERASE_HINT = 'draw around the object, or click to place a round spot';
   const eraseMsg = (t) => { $('#erase-status').textContent = t; };
   const eraseModel = () => (eraseModels || []).find((m) => m.id === $('#erase-model').value);
   try { const v = parseFloat(localStorage.getItem('dr:erasesize')); if (v >= 0.005 && v <= 0.08) $('#erase-size').value = v; } catch (e) {}
-  $('#erase-size').oninput = () => { try { localStorage.setItem('dr:erasesize', $('#erase-size').value); } catch (e) {} };
+  $('#erase-size').oninput = () => {
+    try { localStorage.setItem('dr:erasesize', $('#erase-size').value); } catch (e) {}
+    if (erasePending) erasePendingShow();
+  };
+  $('#erase-size').addEventListener('keydown', (e) => { if (e.key === 'Enter' && erasePending) { e.preventDefault(); eraseFillPending(); } });
   function eraseControls() {
     const m = eraseModel(), p = $('#erase-prompt');
     p.hidden = !m || !['flux', 'flux3'].includes(m.id);
@@ -1580,13 +1588,45 @@
   function eraseShow(d) {
     ov.set(d ? [{id: 'erase', kind: 'polygon', points: d.pts, cls: 'lasso'}] : []);
   }
+  function erasePendingShow() {
+    $('#erase-fill').hidden = !erasePending;
+    ov.set(erasePending ? [eraseCircle(erasePending, +$('#erase-size').value, 'lasso pending')] : []);
+  }
+  function erasePlace(pt) {
+    erasePending = pt;
+    erasePendingShow();
+    eraseMsg('size the circle (slider or wheel), drag to move it, then fill (Enter)');
+  }
+  function eraseClear() {   // false: there was no placed spot
+    if (!erasePending) return false;
+    erasePending = null;
+    erasePendingShow();
+    eraseMsg(ERASE_HINT);
+    return true;
+  }
+  function eraseFillPending() {
+    if (!erasePending || eraseBusy) return;
+    const radius = +$('#erase-size').value, pt = erasePending;
+    eraseFill({shape: 'circle', x: +pt[0].toFixed(5), y: +pt[1].toFixed(5), radius}, eraseCircle(pt, radius, 'lasso'));
+  }
+  // is a client point on the placed spot's circle (a few px of slack)?
+  function eraseOnPending(e) {
+    if (!erasePending) return false;
+    const r = imgRect(), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1}, p = erasePoint(e);
+    const kx = r.w / (R.right - R.left), ky = r.h / (R.bottom - R.top);
+    const rpx = Math.max(8, eraseCircle(erasePending, +$('#erase-size').value).r * kx);
+    const slack = matchMedia('(pointer: coarse)').matches ? 16 : 6;
+    return Math.hypot((p[0] - erasePending[0]) * kx, (p[1] - erasePending[1]) * ky) <= rpx + slack;
+  }
   async function eraseFill(body, outline) {
     const m = eraseModel();
     if (!m || eraseBusy) return;
     if (m.online && !eraseSure) {
-      if (!await ask('Send the area around the shape to Black Forest Labs? It uses credits.', {ok: 'send'})) { ov.set([]); return; }
+      if (!await ask('Send the area around the shape to Black Forest Labs? It uses credits.', {ok: 'send'})) { erasePendingShow(); return; }
       eraseSure = true;
     }
+    erasePending = null;
+    $('#erase-fill').hidden = true;
     eraseBusy = true;
     ov.set([outline]);
     eraseMsg(`filling with ${m.id === 'local' ? 'LaMa' : m.label}… ${m.online ? '(online: up to a minute)' : ''}`);
@@ -1604,13 +1644,11 @@
     const xs = d.px.map((p) => p[0]), ys = d.px.map((p) => p[1]);
     const box = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
     if (d.pts.length >= 3 && box > 10) {
+      erasePending = null;
       let pts = d.pts;
       if (pts.length > 60) { const k = Math.ceil(pts.length / 60); pts = pts.filter((_, i) => i % k === 0); }
       eraseFill({shape: 'path', points: pts.map((p) => p.map((v) => +v.toFixed(5)))}, {id: 'erase', kind: 'polygon', points: pts, cls: 'lasso'});
-    } else {
-      const radius = +$('#erase-size').value, pt = d.pts[0];
-      eraseFill({shape: 'circle', x: +pt[0].toFixed(5), y: +pt[1].toFixed(5), radius}, eraseCircle(pt, radius, 'lasso'));
-    }
+    } else erasePlace(d.pts[0]);
   }
   $('.view').addEventListener('pointerdown', (e) => {
     if (!erase || eraseBusy || e.button !== 0 || eraseDraw) return;
@@ -1618,8 +1656,17 @@
     const v = $('.view');
     v.setPointerCapture(e.pointerId);
     const d = eraseDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]]};
+    if (eraseOnPending(e)) {   // drag the placed spot (a click on it leaves it)
+      const p0 = d.pts[0], c0 = erasePending;
+      d.move = (ev) => {
+        const p = erasePoint(ev);
+        erasePending = [0, 1].map((i) => Math.min(1, Math.max(0, c0[i] + p[i] - p0[i])));
+        erasePendingShow();
+      };
+    }
     const move = (ev) => {
       if (ev.pointerId !== d.id || eraseDraw !== d) return;
+      if (d.move) { d.move(ev); return; }
       const last = d.px[d.px.length - 1];
       if (Math.hypot(ev.clientX - last[0], ev.clientY - last[1]) < 4) return;
       d.px.push([ev.clientX, ev.clientY]); d.pts.push(erasePoint(ev));
@@ -1630,12 +1677,20 @@
       if (ev.pointerId !== d.id) return;
       v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
       eraseDraw = null;
-      if (!erase) return;
-      if (ok) eraseEnd(d); else ov.set([]);
+      if (!erase || d.move) return;
+      if (ok) eraseEnd(d); else erasePendingShow();
     };
     const up = (ev) => finish(ev, true), cancel = (ev) => finish(ev, false);
     v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
   });
+  $('.view').addEventListener('wheel', (e) => {
+    if (!erase || !erasePending || eraseBusy) return;
+    e.preventDefault();
+    const s = $('#erase-size'), v = +s.value * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+    s.value = Math.min(+s.max, Math.max(+s.min, v));
+    s.oninput();
+  }, {passive: false});
+  $('#erase-fill').onclick = eraseFillPending;
   function setErase(on) {
     if (on === erase || (on && !CAN_FILL)) return;
     if (on) {
@@ -1653,7 +1708,9 @@
     $('.view').classList.toggle('erasing', on);
     ov.interactive(false);
     ov.show(on);
-    if (on) { eraseMsg('draw around the object, or click for a round spot'); eraseLoadModels(); }
+    erasePending = null;
+    $('#erase-fill').hidden = true;
+    if (on) { eraseMsg(ERASE_HINT); eraseLoadModels(); }
     else { eraseDraw = null; ov.set([]); areaDraw(); }
   }
   $('#tool-erase').onclick = () => setErase(!erase);
@@ -2774,7 +2831,8 @@
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && k === 'd') { e.preventDefault(); duplicate(false); return; }
     if (picking && e.key === 'Escape') { e.preventDefault(); setPicking(null); status('picker cancelled'); return; }
     if (dust && e.key === 'Escape') { e.preventDefault(); setDust(false); return; }
-    if (erase && e.key === 'Escape') { e.preventDefault(); setErase(false); return; }
+    if (erase && e.key === 'Escape') { e.preventDefault(); if (!eraseClear()) setErase(false); return; }
+    if (erase && erasePending && e.key === 'Enter') { e.preventDefault(); eraseFillPending(); return; }
     if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
     if (mark && e.key === 'Escape') { e.preventDefault(); if (markDraft || markSel) markClear(); else setMark(false); return; }
     if (mark && markSel && !markDraft && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); markDelete(); return; }

@@ -212,7 +212,7 @@ async function run(mode, port) {
       assert(m.length === 4 && m.every((x) => x.shapes >= 1), 'brush: ' + JSON.stringify(m.map((x) => [x.name, x.shapes])));
     });
     await c('remove "left tree": its user goes back, the instance is gone', async () => {
-      await page.click(`#mask-list .mark-chip:nth-child(1) .mark-x`);
+      await page.click(`#mask-list .mark-x[aria-label="remove left tree"]`);
       await page.waitFor("document.querySelector('dialog.ask-dlg') && document.querySelector('dialog.ask-dlg').open", {what: 'the confirmation (it has a user)'});
       await page.click('dialog.ask-dlg .ask-ok');
       await page.waitFor(`fetch('${API}/masks').then((r) => r.json()).then((d) => !d.masks.some((m) => m.instance === ${tree}))`, {what: 'the mask gone'});
@@ -224,9 +224,14 @@ async function run(mode, port) {
       assert(!ex.ok, 'the exposure instance is still there');
     });
     await c('Esc leaves the tool; no js errors', async () => {
-      await page.send('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
-      await page.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
-      await page.waitFor("document.querySelector('#toolbar-masks').hidden || document.querySelector('#mask-sel').hidden === false", {});
+      // the first Esc deselects the mask (if one is selected), the next leaves the tool
+      await page.eval('document.activeElement && document.activeElement.blur()');
+      for (let i = 0; i < 2; i++) {
+        await page.send('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
+        await page.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
+        await sleep(200);
+      }
+      await page.waitFor("document.querySelector('#toolbar-masks').hidden", {what: 'the masks bar closed'});
       assert(!page.errors.length, page.errors.join('; '));
     });
     await discard();

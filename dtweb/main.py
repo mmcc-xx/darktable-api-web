@@ -891,6 +891,11 @@ def _leaf_paths(shapes: list[dict]) -> list[dict]:
     return out
 
 
+def _leaf_count(shapes: list[dict]) -> int:
+    """Shapes in a mask, counting the members of nested groups (a subtracted shape makes one)."""
+    return sum(_leaf_count(sh["members"]) if sh.get("members") else 1 for sh in shapes)
+
+
 def _stride(pts: list, n: int = AREA_OUTLINE_POINTS) -> list:
     if len(pts) <= n:
         return pts
@@ -1120,7 +1125,7 @@ async def _mask_holders(image_id: int, mods: list[dict]) -> list[dict]:
             shapes = (await engine.edit(image_id, "mask_list", operation="exposure", instance=m["instance"])).get("shapes", [])
         except (EngineError, StopIteration):
             continue
-        out.append((m, bl, len(shapes)))
+        out.append((m, bl, _leaf_count(shapes)))
     return out
 
 
@@ -1176,11 +1181,20 @@ def _free_mask_name(mods: list[dict], want: str | None, stem: str = "mask") -> s
     return name
 
 
+async def _require_holder(image_id: int, instance: int, mods: list[dict] | None = None) -> None:
+    """400 unless exposure `instance` is a named mask (never the photo's own exposure or an area)."""
+    if mods is None:
+        mods = (await engine.edit(image_id, "module_list"))["modules"]
+    if not any(m["instance"] == instance for m, _, _ in await _mask_holders(image_id, mods)):
+        raise HTTPException(400, f"exposure {instance} isn't a named mask")
+
+
 async def _mask_holder(image_id: int, name: str | None, instance: int | None, stem: str = "mask") -> tuple[int, bool]:
     """The holder to draw on: the given instance, or a new exposure instance (named, at 0 EV)."""
-    if instance is not None:
-        return instance, False
     mods = (await engine.edit(image_id, "module_list"))["modules"]
+    if instance is not None:
+        await _require_holder(image_id, instance, mods)
+        return instance, False
     name = _free_mask_name(mods, name, stem)
     ex = (await engine.edit(image_id, "module_add", operation="exposure", instance=0))["instance"]
     try:
@@ -1270,6 +1284,7 @@ class MaskSetBody(BaseModel):
 async def photo_mask_set(image_id: int, body: MaskSetBody):
     """Rename a named mask, or set its opacity / soft edge (blur radius)."""
     try:
+        await _require_holder(image_id, body.instance)
         if body.name is not None:
             mods = (await engine.edit(image_id, "module_list"))["modules"]
             cur = next((m.get("name") or "" for m in mods if m["operation"] == "exposure" and m["instance"] == body.instance), "")
@@ -1313,6 +1328,7 @@ class MaskRemoveBody(BaseModel):
 async def photo_mask_remove(image_id: int, body: MaskRemoveBody):
     """Remove a named mask; the modules using it go back to their own."""
     try:
+        await _require_holder(image_id, body.instance)
         for u in (await _masks(image_id))["targets"]:
             if u["mask"] == body.instance:
                 await engine.edit(image_id, "blend_set", operation=u["operation"], instance=u["instance"],

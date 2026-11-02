@@ -2071,8 +2071,8 @@
   let masks = false, masksData = {masks: [], targets: []}, masksKey = null, masksSyncing = false;
   let maskKind = 'circle', maskSel = null, maskSub = false, maskBusy = false, maskDraw = null, maskVals = null, maskRunning = false;
   const MASK_KINDS = ['circle', 'ellipse', 'gradient', 'path', 'brush', ...(CAN_MASK ? ['sky', 'subject'] : [])];
-  // gradient: degrees added to the drag's direction so that the drag's start is the full side
-  const GRAD_TURN = 0;
+  // gradient: rotation is the angle of the transition line, so turn the drag 90 degrees; the sign makes the drag's start the full side
+  const GRAD_TURN = -90;
   const maskMsg = (t) => { $('#mask-status').textContent = t; };
   try { const v = localStorage.getItem('dr:maskkind'); if (MASK_KINDS.includes(v)) maskKind = v; } catch (e) {}
   try { const v = parseFloat(localStorage.getItem('dr:maskfeather')); if (v >= 0 && v <= 0.2) $('#mask-feather').value = v; } catch (e) {}

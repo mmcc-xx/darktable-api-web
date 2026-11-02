@@ -566,3 +566,10 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .pano-chip { margin: 0 0 .4rem; font-size: .8rem; }
 @media (max-width: 600px) { .pano-dlg { width: calc(100vw - 1rem); max-width: none; } }
 @media (pointer: coarse) { .pano-dlg .ask-btns button, .pano-dlg a.pbtn { min-height: 44px; } }
+/* masks tool: its bar, the mask rows in module panels */
+.view.masking, .view.masking.zoomed { cursor: crosshair; touch-action: none; }
+.mask-sel { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.mask-sel[hidden], #mask-feather-w[hidden], #mask-brush-w[hidden] { display: none; }
+.mask-row[hidden] { display: none; }
+.mask-row select { min-width: 0; max-width: 100%; }
+.mask-inv { white-space: nowrap; }

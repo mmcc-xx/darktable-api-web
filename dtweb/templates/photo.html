@@ -24,6 +24,7 @@
       <button id="tool-erase" data-tool="erase" aria-pressed="false" {% if not can_fill %}disabled {% endif %}title="{{ "remove an object: draw around it, or click for a round spot (e)" if can_fill else "erase needs darktable-api on darktable master (ai_fill); this engine doesn't have it" }}">erase</button>
       <button id="tool-area" data-tool="area" aria-pressed="false" {% if not can_mask %}disabled {% endif %}title="{{ "adjust the sky or the subject on its own: click it on the photo (a)" if can_mask else "sky / subject needs darktable-api on darktable master (mask_ai); this engine doesn't have it" }}">sky / subject</button>
       <button id="tool-mark" data-tool="mark" aria-pressed="false" {% if not can_mark %}disabled {% endif %}title="{{ "name points and areas on the photo, so others (and your AI assistant) can refer to them: \"the left tree\" (m)" if can_mark else "markers need darktable-api with marker_set; this engine doesn't have it" }}">markers</button>
+      <button id="tool-masks" data-tool="masks" aria-pressed="false" {% if not can_masks %}disabled {% endif %}title="{{ "draw named masks (circle, ellipse, gradient, path, brush, sky, subject); a module works through one with its mask row (k)" if can_masks else "masks need darktable-api with mask_add; this engine doesn't have it" }}">masks</button>
       <span class="sep"></span>
       <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
@@ -92,6 +93,23 @@
       <button id="mark-save" class="primary" hidden title="save the marker (Enter)">save</button>
       <button id="mark-delete" class="secondary" hidden title="remove this marker">delete</button>
       <button id="mark-done" class="secondary" title="leave the markers tool (Esc)">done</button>
+    </div>
+    <div id="toolbar-masks" class="toolbar-bar" hidden>
+      <span class="seg" role="group" aria-label="shape of the next mask"><button class="secondary" data-maskkind="circle" aria-pressed="false" title="a circle: drag from the center out">circle</button><button class="secondary" data-maskkind="ellipse" aria-pressed="false" title="an ellipse: drag its bounding box">ellipse</button><button class="secondary" data-maskkind="gradient" aria-pressed="false" title="a gradient: drag from where the effect is full to where it ends">gradient</button><button class="secondary" data-maskkind="path" aria-pressed="false" title="a path: draw around the area">path</button><button class="secondary" data-maskkind="brush" aria-pressed="false" title="a brush stroke: paint along it">brush</button>{% if can_mask %}<button class="secondary" data-maskkind="sky" aria-pressed="false" title="the sky: click it (Alt-click subtracts)">sky</button><button class="secondary" data-maskkind="subject" aria-pressed="false" title="the subject: click it (Alt-click subtracts)">subject</button>{% endif %}</span>
+      <span id="mask-feather-w" class="size"><label for="mask-feather" title="the soft edge of a new circle, ellipse or path, as a fraction of the shorter side">feather</label>
+        <input type="range" id="mask-feather" min="0" max="0.2" step="0.005" value="0.03"></span>
+      <span id="mask-brush-w" class="size" hidden><label for="mask-brush" title="the width of a new brush stroke, as a fraction of the shorter side">brush size</label>
+        <input type="range" id="mask-brush" min="0.005" max="0.1" step="0.005" value="0.02"></span>
+      <span id="mask-list" class="mark-list" role="list" aria-label="masks on this photo" hidden></span>
+      <button id="mask-new" class="secondary" hidden title="the next shape makes a new mask">new</button>
+      <span id="mask-sel" class="mask-sel" hidden>
+        <button id="mask-sub" class="secondary" aria-pressed="false" title="the next shape is subtracted from this mask">subtract</button>
+        <input id="mask-name" type="text" maxlength="64" size="14" placeholder="name" aria-label="mask name" title="rename (Enter)">
+        <span class="size"><label for="mask-opacity">opacity</label><input type="range" id="mask-opacity" min="0" max="100" step="1" data-maskval="opacity" data-inst="-1"></span>
+        <span class="size"><label for="mask-blur">soft edge</label><input type="range" id="mask-blur" min="0" max="100" step="1" data-maskval="blur_radius" data-inst="-1"></span>
+      </span>
+      <span id="mask-status" class="status" role="status"></span>
+      <button id="mask-done" class="secondary" title="leave the masks tool (Esc)">done</button>
     </div>
     <div class="view">
       <button id="alts-open" class="secondary" hidden>alternatives</button>
@@ -206,6 +224,7 @@
   const CAN_FILL = {{ 'true' if can_fill else 'false' }};
   const CAN_MASK = {{ 'true' if can_mask else 'false' }};
   const CAN_MARK = {{ 'true' if can_mark else 'false' }};
+  const CAN_MASKS = {{ 'true' if can_masks else 'false' }};
   const api = (p, body) => fetch(`/api/photo/${ID}/${p}`, body === undefined ? {} : {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const $ = (s) => document.querySelector(s);
@@ -236,6 +255,7 @@
       const w = Math.min(2048, Math.round((v.clientWidth || 800) * dpr));
       q = `w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`;
     }
+    if (masks && maskSel !== null) q += `&mask=${maskSel}`;
     const sent = {...center};
     const t = performance.now();
     const r = await fetch(`/api/photo/${ID}/preview.jpg?${q}`);
@@ -612,11 +632,14 @@
     box.appendChild(monoSection(s.mono));
     const as = areaSection();
     if (as) box.appendChild(as);
+    const ms = masksSection();
+    if (ms) box.appendChild(ms);
     if (s.others && s.others.length) box.appendChild(othersSection(s.others));
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
     drawLevels();
     areaSync();
+    masksSync();
     applyView();
     if (view === 'pipeline') renderPipeline(s);
     if (!deepDone) { deepDone = true; deepLink(); }
@@ -625,7 +648,8 @@
 
   // ── pipeline view: every instance in the edit, output at the top as in
   // darktable; a row opens to the module's controls
-  const ROLE = (op, inst) => ({exposure: 'basic', agx: 'tone mapper', sigmoid: 'tone mapper', filmicrgb: 'tone mapper',
+  const ROLE = (op, inst) => op === 'exposure' && masksData.masks.some((m) => m.instance === inst) ? 'mask' : ROLE0(op, inst);
+  const ROLE0 = (op, inst) => ({exposure: 'basic', agx: 'tone mapper', sigmoid: 'tone mapper', filmicrgb: 'tone mapper',
     toneequal: 'tone', colorbalancergb: 'color'}[op] || (op === 'channelmixerrgb' ? (state.mono && inst === state.mono.instance ? 'black & white' : inst === 0 ? 'white balance' : '')
     : op === 'rgblevels' && inst === 0 ? 'levels' : ''));
   const noop = () => {};
@@ -760,7 +784,10 @@
     if (open) {
       const body = document.createElement('div');
       body.className = 'pbody';
-      pipeBody(body, e);
+      const inner = document.createElement('div');
+      pipeBody(inner, e);
+      body.appendChild(inner);
+      if (e.in_history && !e.plumbing && !(e.operation === 'exposure' && masksData.masks.some((m) => m.instance === e.instance))) body.appendChild(maskRow(e.operation, e.instance));
       row.appendChild(body);
     }
     return row;
@@ -901,6 +928,7 @@
     if (btn && erase) setErase(false);
     if (btn && area) setArea(false);
     if (btn && mark) setMark(false);
+    if (btn && masks) setMasks(false);
     if (btn && cmp) closeCompare();
     picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
     document.querySelectorAll('[data-pick]').forEach((b) => {
@@ -1035,6 +1063,7 @@
       row.append(lab, val, sl);
       sec.appendChild(row);
     });
+    if (!bare && !m.missing) sec.appendChild(maskRow(m.operation, m.instance));
     return sec;
   }
 
@@ -1518,7 +1547,7 @@
       if (cmp) closeCompare();
       if (erase) setErase(false);
       if (area) setArea(false);
-      if (mark) setMark(false);
+      if (mark) setMark(false); if (masks) setMasks(false);
     }
     dust = on;
     $('#toolbar-dust').hidden = !on;
@@ -1699,7 +1728,7 @@
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (area) setArea(false);
-      if (mark) setMark(false);
+      if (mark) setMark(false); if (masks) setMasks(false);
     }
     erase = on;
     $('#toolbar-erase').hidden = !on;
@@ -2018,6 +2047,7 @@
       if (dust) setDust(false);
       if (erase) setErase(false);
       if (area) setArea(false);
+      if (masks) setMasks(false);
     }
     mark = on;
     $('#toolbar-mark').hidden = !on;
@@ -2031,6 +2061,367 @@
   }
   $('#tool-mark').onclick = () => setMark(!mark);
   $('#mark-done').onclick = () => setMark(false);
+
+  // ── masks: named masks, each an exposure instance at 0 EV named after the mask,
+  // with a drawn mask (the server's GET masks: {masks: [{name, instance, pos,
+  // opacity, blur_radius, shapes, users}], targets: [{operation, instance, pos,
+  // mask, inverted}]}). Any module after it in the pipe works through it (its
+  // raster mask). With the tool on, a drag draws a shape on the selected mask or
+  // on a new one; the preview shows the selected mask. Sky / subject: a click.
+  let masks = false, masksData = {masks: [], targets: []}, masksKey = null, masksSyncing = false;
+  let maskKind = 'circle', maskSel = null, maskSub = false, maskBusy = false, maskDraw = null, maskVals = null, maskRunning = false;
+  const MASK_KINDS = ['circle', 'ellipse', 'gradient', 'path', 'brush', ...(CAN_MASK ? ['sky', 'subject'] : [])];
+  // gradient: degrees added to the drag's direction so that the drag's start is the full side
+  const GRAD_TURN = 0;
+  const maskMsg = (t) => { $('#mask-status').textContent = t; };
+  try { const v = localStorage.getItem('dr:maskkind'); if (MASK_KINDS.includes(v)) maskKind = v; } catch (e) {}
+  try { const v = parseFloat(localStorage.getItem('dr:maskfeather')); if (v >= 0 && v <= 0.2) $('#mask-feather').value = v; } catch (e) {}
+  try { const v = parseFloat(localStorage.getItem('dr:maskbrush')); if (v >= 0.005 && v <= 0.1) $('#mask-brush').value = v; } catch (e) {}
+  const maskCur = () => masksData.masks.find((m) => m.instance === maskSel) || null;
+  const maskHelp = () => ({circle: 'drag from the center out', ellipse: 'drag its bounding box', gradient: 'drag from where the effect is full to where it ends',
+    path: 'draw around the area', brush: 'paint a stroke', sky: 'click the sky', subject: 'click the subject'}[maskKind]
+    + (maskCur() ? ` (adds to '${maskCur().name}')` : ' (makes a new mask)'));
+  function maskKinds() {
+    document.querySelectorAll('[data-maskkind]').forEach((b) => { const on = b.dataset.maskkind === maskKind; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+    $('#mask-feather-w').hidden = ['gradient', 'brush', 'sky', 'subject'].includes(maskKind);
+    $('#mask-brush-w').hidden = maskKind !== 'brush';
+  }
+  document.querySelectorAll('[data-maskkind]').forEach((b) => {
+    b.onclick = () => { maskKind = b.dataset.maskkind; try { localStorage.setItem('dr:maskkind', maskKind); } catch (e) {} maskKinds(); maskMsg(maskHelp()); };
+  });
+  $('#mask-feather').oninput = () => { try { localStorage.setItem('dr:maskfeather', $('#mask-feather').value); } catch (e) {} };
+  $('#mask-brush').oninput = () => { try { localStorage.setItem('dr:maskbrush', $('#mask-brush').value); } catch (e) {} };
+  maskKinds();
+  const maskUsers = (m) => m.users.map((u) => u.label).join(', ');
+  function maskList() {
+    const box = $('#mask-list');
+    box.hidden = !masksData.masks.length;
+    box.textContent = '';
+    for (const m of masksData.masks) {
+      const chip = document.createElement('span'), pick = document.createElement('button'), x = document.createElement('button'), on = maskSel === m.instance;
+      chip.setAttribute('role', 'listitem'); chip.className = 'mark-chip';
+      pick.className = 'secondary mark-pick' + (on ? ' on' : ''); pick.textContent = m.name;
+      pick.title = `${m.name}: ${m.shapes} shape${m.shapes === 1 ? '' : 's'}` + (m.users.length ? ', used by ' + maskUsers(m) : '') + ' (click to select)';
+      pick.setAttribute('aria-pressed', on);
+      pick.onclick = () => maskSelect(on ? null : m.instance);
+      x.className = 'secondary mark-x'; x.textContent = '×';
+      x.setAttribute('aria-label', 'remove ' + m.name); x.title = 'remove ' + m.name;
+      x.onclick = () => maskRemove(m.instance);
+      chip.append(pick, x); box.append(chip);
+    }
+    $('#mask-new').hidden = maskSel === null;
+  }
+  // the controls for the selected mask
+  function maskFields() {
+    const m = maskCur();
+    $('#mask-sel').hidden = !m;
+    $('#mask-sub').classList.toggle('on', maskSub); $('#mask-sub').setAttribute('aria-pressed', maskSub);
+    if (!m) return;
+    if (document.activeElement !== $('#mask-name')) $('#mask-name').value = m.name;
+    $('#mask-opacity').dataset.inst = $('#mask-blur').dataset.inst = m.instance;
+    maskSliders();
+  }
+  for (const [id, val] of [['#mask-opacity', 'opacity'], ['#mask-blur', 'blur_radius']]) {
+    $(id).oninput = () => { const m = maskCur(); if (!m) return; m[val] = +$(id).value; maskSliders(); maskValues(m.instance, {[val]: m[val]}); };
+  }
+  function maskSliders() {
+    document.querySelectorAll('input[data-maskval]').forEach((el) => {
+      const m = masksData.masks.find((x) => x.instance === +el.dataset.inst);
+      if (m && m[el.dataset.maskval] != null && document.activeElement !== el) el.value = m[el.dataset.maskval];
+    });
+  }
+  // a slider for a mask's opacity or soft edge (blend_set); the sliders for one mask stay together
+  function maskSlider(m, val, label) {
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = 0; sl.max = 100; sl.step = 1; sl.value = m[val] == null ? 0 : m[val];
+    sl.dataset.maskval = val; sl.dataset.inst = m.instance; sl.setAttribute('aria-label', `${m.name} ${label}`);
+    sl.oninput = () => { m[val] = +sl.value; maskSliders(); maskValues(m.instance, {[val]: +sl.value}); };
+    return sl;
+  }
+  function maskValues(inst, v) {
+    maskVals = {...(maskVals && maskVals.instance === inst ? maskVals : {}), instance: inst, ...v};
+    if (!maskRunning) maskFlush();
+  }
+  async function maskFlush() {
+    maskRunning = true;
+    while (maskVals) {
+      const b = maskVals; maskVals = null;
+      const r = await api('mask/set', b);
+      if (!r.ok) status('not applied: ' + (await r.json()).detail);
+      else { setDirty(true); const d = await r.json(); if (!maskVals) { masksData = d; maskList(); } }
+      if (!maskVals) await preview();
+    }
+    maskRunning = false;
+  }
+  async function maskRename() {
+    const m = maskCur(), name = $('#mask-name').value.trim();
+    if (!m || !name || name === m.name) { if (m) $('#mask-name').value = m.name; return; }
+    const r = await api('mask/set', {instance: m.instance, name});
+    if (!r.ok) { maskMsg('not renamed: ' + (await r.json()).detail); return; }
+    setDirty(true); masksApply(await r.json()); masksKey = null; maskMsg(`renamed to '${name}'`);
+    const s = await (await api('open', {})).json(); show(s);
+  }
+  $('#mask-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); maskRename(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); $('#mask-name').blur(); const m = maskCur(); if (m) $('#mask-name').value = m.name; }
+  });
+  $('#mask-sub').onclick = () => { maskSub = !maskSub; maskFields(); maskMsg(maskSub ? 'the next shape is subtracted' : maskHelp()); };
+  $('#mask-new').onclick = () => maskSelect(null);
+  $('#mask-done').onclick = () => setMasks(false);
+  function maskSelect(inst) {
+    maskSel = inst; maskSub = false;
+    maskList(); maskFields(); maskMsg(maskHelp());
+    if (masks) preview();
+  }
+  function masksApply(d) {
+    masksData = d;
+    if (maskSel !== null && !maskCur()) maskSel = null;
+    maskList(); maskFields(); masksPlace();
+  }
+  // the masks in the edit, read again whenever its history changed (as areaSync)
+  async function masksSync() {
+    if (!CAN_MASKS || !state || masksSyncing) return;
+    const key = () => state.history.history_end + ':' + state.history.items.length;
+    if (key() === masksKey) return;
+    masksSyncing = true;
+    const k = key();
+    try {
+      const r = await api('masks');
+      if (r.ok) {
+        const d = await r.json(), changed = JSON.stringify(d) !== JSON.stringify(masksData);
+        masksKey = k;
+        masksApply(d);
+        if (changed && view === 'pipeline') renderPipeline(state);
+      }
+    } catch (e) { /* the next change tries again */ }
+    masksSyncing = false;
+    if (state && masksKey !== key()) masksSync();
+  }
+  // "mask: none / names" and invert, at the end of a module's panel
+  function maskRow(op, inst) {
+    const row = document.createElement('div');
+    row.className = 'field mask-row'; row.dataset.op = op; row.dataset.inst = inst || 0;
+    maskRowFill(row);
+    return row;
+  }
+  function maskRowFill(row) {
+    const op = row.dataset.op, inst = +row.dataset.inst, t = masksData.targets.find((x) => x.operation === op && x.instance === inst);
+    row.textContent = '';
+    row.hidden = !t || !masksData.masks.length;
+    if (row.hidden) return;
+    const lab = document.createElement('span'), sel = document.createElement('select'), inv = document.createElement('input'), il = document.createElement('label');
+    lab.textContent = 'mask'; lab.title = 'work only where a named mask is (its raster mask)';
+    sel.setAttribute('aria-label', 'mask for ' + t.label);
+    sel.add(new Option('none', ''));
+    for (const m of masksData.masks) {
+      const o = new Option(m.pos > t.pos ? `${m.name} (after this module)` : m.name, m.instance);
+      o.disabled = m.pos > t.pos; sel.add(o);
+    }
+    sel.value = t.mask === null ? '' : t.mask;
+    if (masksData.masks.every((m) => m.pos > t.pos)) {
+      sel.disabled = true; sel.title = "modules before exposure in the pipe can't use a mask drawn here";
+    }
+    inv.type = 'checkbox'; inv.checked = t.inverted; inv.setAttribute('aria-label', 'invert the mask');
+    il.className = 'mask-inv'; il.append(inv, ' invert');
+    const send = async () => {
+      const r = await api('mask/use', {operation: op, instance: inst, mask: sel.value === '' ? null : +sel.value, inverted: inv.checked});
+      if (!r.ok) { status('not applied: ' + (await r.json()).detail); maskRowFill(row); return; }
+      setDirty(true); masksKey = null; show(await r.json()); preview();
+    };
+    sel.onchange = send; inv.onchange = () => { if (sel.value !== '') send(); };
+    row.append(lab, sel, il);
+  }
+  function maskRemove(inst) {
+    const m = masksData.masks.find((x) => x.instance === inst);
+    if (!m) return;
+    return (async () => {
+      if (maskBusy) return;
+      if (m.users.length && !await ask(`${m.name} is used by ${maskUsers(m)}. Remove it anyway?`, {ok: 'remove', danger: true})) return;
+      maskBusy = true;
+      const r = await api('mask/remove', {instance: inst});
+      maskBusy = false;
+      if (!r.ok) { status('not removed: ' + (await r.json()).detail); return; }
+      setDirty(true);
+      if (maskSel === inst) maskSel = null;
+      masksKey = null; show(await r.json());
+      maskMsg(`removed '${m.name}'`);
+      await preview();
+    })();
+  }
+  // the panel's masks section: each mask with its users, sliders, select and remove
+  function masksSection() {
+    if (!masksData.masks.length && !masks) return null;
+    const d = document.createElement('details');
+    d.className = 'sec'; d.dataset.sec = 'masks';
+    const sum = document.createElement('summary'), line = document.createElement('span');
+    line.className = 'sum'; line.textContent = masksData.masks.length ? masksData.masks.map((m) => m.name).join(' · ') : 'none yet';
+    sum.append('masks ', line);
+    const body = document.createElement('div');
+    body.className = 'sec-body';
+    if (!masksData.masks.length) { const n = document.createElement('p'); n.className = 'status'; n.textContent = 'draw a shape on the photo'; body.append(n); }
+    for (const m of masksData.masks) {
+      const box = document.createElement('section'), head = document.createElement('div'), name = document.createElement('strong');
+      box.className = 'area-box'; head.className = 'area-head'; name.textContent = m.name;
+      const pick = document.createElement('button'), rm = document.createElement('button');
+      pick.className = 'link'; pick.textContent = 'show'; pick.title = 'select this mask in the masks tool and show it on the photo';
+      pick.onclick = () => { setMasks(true); maskSelect(m.instance); };
+      rm.className = 'link'; rm.textContent = '✕'; rm.title = 'remove this mask'; rm.setAttribute('aria-label', 'remove ' + m.name);
+      rm.onclick = () => maskRemove(m.instance);
+      head.append(name, pick, rm);
+      const used = document.createElement('p');
+      used.className = 'pnote dim'; used.textContent = m.users.length ? 'used by: ' + maskUsers(m) : 'not used by any module';
+      box.append(head, used);
+      for (const [val, label] of [['opacity', 'opacity'], ['blur_radius', 'soft edge']]) {
+        const row = document.createElement('div'), lab = document.createElement('span');
+        row.className = 'field'; lab.textContent = label;
+        row.append(lab, maskSlider(m, val, label)); box.append(row);
+      }
+      body.append(box);
+    }
+    d.append(sum, body);
+    keepOpen(d);
+    return d;
+  }
+  // put the masks section after areas (or black & white), or take it away; refill the mask rows
+  function masksPlace() {
+    const old = document.querySelector('details[data-sec="masks"]'), fresh = masksSection();
+    if (old && fresh) { fresh.open = old.open; old.replaceWith(fresh); }
+    else if (old) old.remove();
+    else if (fresh) { const a = document.querySelector('details[data-sec="areas"]') || document.querySelector('details[data-sec="bw"]'); if (a) a.after(fresh); }
+    document.querySelectorAll('.mask-row').forEach(maskRowFill);
+    maskSliders();
+  }
+  // the overlay: the draft shape while dragging
+  function maskShow() {
+    if (!masks) return;
+    ov.set(maskDraw && maskDraw.shape ? maskDraw.shape : []);
+  }
+  // photo fractions -> units of the shorter side
+  function maskShort(dx, dy) { const a = photoAspect(), m = Math.min(1, 1 / a); return [dx / m, dy / a / m]; }
+  function maskStride(pts, n = 60) {
+    if (pts.length <= n) return pts;
+    const k = Math.ceil(pts.length / n), out = pts.filter((_, i) => i % k === 0);
+    if (out[out.length - 1] !== pts[pts.length - 1]) out.push(pts[pts.length - 1]);
+    return out;
+  }
+  function maskDraft(d, b) {
+    const a = d.pts[0], k = maskKind, cls = 'marker draft';
+    if (k === 'circle') {
+      const [rx, ry] = maskShort(b[0] - a[0], b[1] - a[1]), asp = photoAspect();
+      return [{id: 'draw', kind: 'circle', x: a[0], y: a[1], r: Math.hypot(rx, ry) * Math.min(1, 1 / asp), cls}];
+    }
+    if (k === 'ellipse') {
+      const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
+      return [{id: 'draw', kind: 'polygon', cls, points: Array.from({length: 32}, (_, i) => [cx + rx * Math.cos(i * Math.PI / 16), cy + ry * Math.sin(i * Math.PI / 16)])}];
+    }
+    if (k === 'gradient') {
+      return [{id: 'draw', kind: 'polygon', cls, points: [a, b]}, {id: 'draw0', kind: 'circle', x: a[0], y: a[1], r: 0.006, cls: 'mark-handle'}];
+    }
+    const pts = maskStride(d.pts);
+    return [{id: 'draw', kind: 'polygon', cls, points: k === 'brush' ? [...pts, ...pts.slice(0, -1).reverse()] : pts}];
+  }
+  // the body for POST mask from a finished drag, or null (too small)
+  function maskBody(d) {
+    const a = d.pts[0], b = d.pts[d.pts.length - 1], r5 = (p) => p.map((v) => +v.toFixed(5));
+    const feather = +$('#mask-feather').value;
+    if (maskKind === 'circle') {
+      const [rx, ry] = maskShort(b[0] - a[0], b[1] - a[1]);
+      return {shape: 'circle', x: +a[0].toFixed(5), y: +a[1].toFixed(5), radius: Math.max(0.003, Math.hypot(rx, ry)), feather};
+    }
+    if (maskKind === 'ellipse') {
+      const [rx, ry] = maskShort(Math.abs(b[0] - a[0]) / 2, Math.abs(b[1] - a[1]) / 2);
+      return {shape: 'ellipse', x: +((a[0] + b[0]) / 2).toFixed(5), y: +((a[1] + b[1]) / 2).toFixed(5), radius: Math.max(0.003, rx), radius_y: Math.max(0.003, ry), rotation: 0, feather};
+    }
+    if (maskKind === 'gradient') {
+      const [vx, vy] = maskShort(b[0] - a[0], b[1] - a[1]), len = Math.hypot(vx, vy);
+      return {shape: 'gradient', x: +((a[0] + b[0]) / 2).toFixed(5), y: +((a[1] + b[1]) / 2).toFixed(5),
+              rotation: Math.atan2(vy, vx) * 180 / Math.PI + GRAD_TURN, compression: Math.min(1, Math.max(0.05, len))};
+    }
+    const pts = maskStride(d.pts).map(r5);
+    if (maskKind === 'brush') return pts.length >= 2 ? {shape: 'brush', points: pts, width: +$('#mask-brush').value} : null;
+    return pts.length >= 3 ? {shape: 'path', points: pts, feather} : null;
+  }
+  // add a shape (or an AI mask) to the selected mask, or make a new one; select the result
+  async function maskAdd(path, body) {
+    if (maskBusy) return;
+    maskBusy = true;
+    maskMsg(path === 'mask/ai' ? 'finding it…' : 'drawing…');
+    let r, s;
+    try {
+      r = await api(path, {...(maskSel !== null ? {instance: maskSel, combine: maskSub ? 'difference' : 'union'} : {}), ...body});
+      s = await r.json();
+    } catch (e) { r = null; }
+    maskBusy = false;
+    if (!r || !r.ok) { maskMsg('not added: ' + (s && s.detail || 'no answer')); return; }
+    const was = maskSub;
+    maskSel = s.instance; maskSub = false;
+    setDirty(true);
+    masksApply(s);
+    const m = maskCur();
+    if (m) maskMsg(`${was ? 'subtracted from' : 'added to'} '${m.name}' · ${m.shapes} shape${m.shapes === 1 ? '' : 's'}`);
+    await refreshEdit();
+  }
+  $('.view').addEventListener('pointerdown', (e) => {
+    if (!masks || maskBusy || e.button !== 0 || maskDraw) return;
+    e.preventDefault();
+    const v = $('.view');
+    v.setPointerCapture(e.pointerId);
+    const d = maskDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]], alt: e.altKey, shape: null, far: false};
+    const move = (ev) => {
+      if (ev.pointerId !== d.id || maskDraw !== d) return;
+      const last = d.px[d.px.length - 1], first = d.px[0];
+      if (Math.hypot(ev.clientX - first[0], ev.clientY - first[1]) >= 8) d.far = true;
+      if (maskKind === 'path' || maskKind === 'brush') {
+        if (Math.hypot(ev.clientX - last[0], ev.clientY - last[1]) < 4) return;
+        d.px.push([ev.clientX, ev.clientY]); d.pts.push(erasePoint(ev));
+      } else { d.px[1] = [ev.clientX, ev.clientY]; d.pts[1] = erasePoint(ev); }
+      if (d.far && maskKind !== 'sky' && maskKind !== 'subject') { d.shape = maskDraft(d, d.pts[d.pts.length - 1]); maskShow(); }
+    };
+    v.addEventListener('pointermove', move);
+    const finish = (ev, ok) => {
+      if (ev.pointerId !== d.id) return;
+      v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
+      maskDraw = null;
+      ov.set([]);
+      if (!masks || !ok) return;
+      if (maskKind === 'sky' || maskKind === 'subject') {
+        if (d.far) return;
+        maskAdd('mask/ai', {label: maskKind, include: [d.pts[0].map((x) => +x.toFixed(5))], combine: d.alt ? 'difference' : (maskSel !== null && maskSub ? 'difference' : 'union')});
+        return;
+      }
+      const body = d.far && maskBody(d);
+      if (!body) { maskMsg('too small: ' + maskHelp()); return; }
+      maskAdd('mask', body);
+    };
+    const up = (ev) => finish(ev, true), cancel = (ev) => finish(ev, false);
+    v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
+  });
+  function setMasks(on) {
+    if (on === masks || (on && !CAN_MASKS)) return;
+    if (on) {
+      if (cropping) setCropping(false);
+      if (picking) setPicking(null);
+      if (cmp) closeCompare();
+      if (dust) setDust(false);
+      if (erase) setErase(false);
+      if (area) setArea(false);
+      if (mark) setMark(false);
+    }
+    const shownMask = masks && maskSel !== null;
+    masks = on;
+    $('#toolbar-masks').hidden = !on;
+    $('#tool-masks').setAttribute('aria-pressed', on);
+    $('#tool-masks').classList.toggle('on', on);
+    $('.view').classList.toggle('masking', on);
+    ov.interactive(false);
+    ov.show(on);
+    if (on) { maskSel = null; maskSub = false; maskList(); maskFields(); maskMsg(maskHelp()); }
+    else { maskDraw = null; ov.set([]); areaDraw(); }
+    masksPlace();
+    if (shownMask && !on) preview();
+  }
+  $('#tool-masks').onclick = () => setMasks(!masks);
 
   // ── areas: the sky or the subject on its own. A click on the photo asks
   // darktable's AI object mask for that area (POST area); the engine gives
@@ -2053,7 +2444,7 @@
   };
   // outlines on the photo: all while the tool is on, else the shown ones and the hovered row's
   function areaDraw() {
-    if (dust || erase || mark || cropping || cmp) return;
+    if (dust || erase || mark || masks || cropping || cmp) return;
     const items = [];
     for (const a of areas)
       if (area || a.show || areaHover === a.exposure)
@@ -2179,7 +2570,7 @@
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (erase) setErase(false);
-      if (mark) setMark(false);
+      if (mark) setMark(false); if (masks) setMasks(false);
     }
     area = on;
     $('#toolbar-area').hidden = !on;
@@ -2329,6 +2720,7 @@
     if (on && erase) setErase(false);
     if (on && area) setArea(false);
     if (on && mark) setMark(false);
+    if (on && masks) setMasks(false);
     if (on && zoom) markZoom(0);
     cropping = on && !!geo;
     $('#toolbar-crop').hidden = !on;
@@ -2620,7 +3012,7 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (area) setArea(false); if (mark) setMark(false); openCompare(0); };
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (area) setArea(false); if (mark) setMark(false); if (masks) setMasks(false); openCompare(0); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one
@@ -2834,6 +3226,7 @@
     if (erase && e.key === 'Escape') { e.preventDefault(); if (!eraseClear()) setErase(false); return; }
     if (erase && erasePending && e.key === 'Enter') { e.preventDefault(); eraseFillPending(); return; }
     if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
+    if (masks && e.key === 'Escape') { e.preventDefault(); if (maskDraw) { maskDraw = null; ov.set([]); } else if (maskSel !== null) maskSelect(null); else setMasks(false); return; }
     if (mark && e.key === 'Escape') { e.preventDefault(); if (markDraft || markSel) markClear(); else setMark(false); return; }
     if (mark && markSel && !markDraft && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); markDelete(); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }
@@ -2845,6 +3238,7 @@
     if (k === 'e' && CAN_FILL && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setErase(!erase); return; }
     if (k === 'a' && CAN_MASK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setArea(!area); return; }
     if (k === 'm' && CAN_MARK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setMark(!mark); return; }
+    if (k === 'k' && CAN_MASKS && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setMasks(!masks); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];

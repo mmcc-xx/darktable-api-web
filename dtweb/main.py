@@ -409,12 +409,13 @@ async def photo_page(request: Request, image_id: int):
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
            "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
-           "can_fill": False, "can_mask": False, "can_mark": False}
+           "can_fill": False, "can_mask": False, "can_mark": False, "can_masks": False}
     if lib.get("state") == "owned":
         try:
             ctx["can_fill"] = await engine.supports("ai_fill")
             ctx["can_mask"] = await engine.supports("mask_ai")
             ctx["can_mark"] = await engine.supports("marker_set")
+            ctx["can_masks"] = await engine.supports("mask_add")
             info = await engine.call("image_info", imgid=image_id)
             ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
@@ -429,13 +430,14 @@ PLUMBING = {"rawprepare", "temperature", "highlights", "demosaic", "demosaicscal
             "gamma", "finalscale", "overexposed", "rawoverexposed", "flip", "crop", "clipping", "ashift"}
 
 
-def _others(mods: list[dict], mono: dict | None) -> list[dict]:
+def _others(mods: list[dict], mono: dict | None, holders: list[int] | None = None) -> list[dict]:
     """Modules in the edit's history that no panel shows (often added by an
     AI or a preset): label, instance, on/off."""
     shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0), ("rgblevels", 0)}
     if mono:
         shown.add(("channelmixerrgb", mono["instance"]))
     shown |= _area_names(mods)
+    shown |= {("exposure", i) for i in (holders or [])}
     return [{"operation": m["operation"], "instance": m["instance"], "label": m["label"], "enabled": m["enabled"]}
             for m in mods if m.get("in_history") and m["operation"] not in PLUMBING
             and (m["operation"], m["instance"]) not in shown]
@@ -525,8 +527,9 @@ async def _state(image_id: int) -> dict:
         # a darktable built before crop & rotate: the rest still works
         geometry = {"missing": str(exc)}
     mono = await _mono(image_id)
+    holders = [m["instance"] for m, _, _ in await _mask_holders(image_id, mods)]
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
-            "geometry": geometry, "mono": mono, "others": _others(mods, mono),
+            "geometry": geometry, "mono": mono, "others": _others(mods, mono, holders),
             "capture": await _capture(image_id),
             "wb": await _wb(image_id), "levels": await _levels(image_id),
             "pipeline": await _pipeline(image_id, mods)}
@@ -1022,6 +1025,300 @@ async def photo_area_remove(image_id: int, body: AreaRemoveBody):
         await engine.edit(image_id, "module_remove", operation="exposure", instance=body.exposure)
         await engine.edit(image_id, "module_remove", operation="colorbalancergb", instance=body.colorbalancergb)
         return {"history": await engine.edit(image_id, "history_list")}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+# ── named masks: an exposure instance at 0 EV named after the mask, with a drawn
+# mask. It changes nothing; modules after it use it as a raster mask (blend_set
+# raster_source). Shapes arrive in photo fractions and go to raw space.
+
+async def _photo_to_raw(image_id: int, points: list[list[float]]) -> tuple[list[list[float]], int, int]:
+    r = await engine.edit(image_id, "coords", points=points, **{"from": "image", "to": "raw"})
+    return r["points"], r["raw_width"], r["raw_height"]
+
+
+async def _shape_on_raw(image_id: int, b: "MaskBody") -> dict:
+    """The body's shape (photo fractions, sizes as fractions of the shorter
+    side) as the engine's shape dict in raw space."""
+    shape = b.shape
+    if shape in ("path", "brush"):
+        brush = shape == "brush"
+        if len(b.points) < (2 if brush else 3) or any(len(p) != 2 for p in b.points):
+            raise HTTPException(400, "path: 3 or more points; brush: 2 or more")
+        pts = [[min(max(p[0], 0.0), 1.0), min(max(p[1], 0.0), 1.0)] for p in b.points]
+        raw, rw, rh = await _photo_to_raw(image_id, pts)
+        # a size as a fraction of the raw's shorter side, measured at the first point
+        g = await engine.edit(image_id, "geometry_get")
+        W, H = g["width"], g["height"]
+        size_p = b.width if brush else b.feather
+        probe, _, _ = await _photo_to_raw(image_id, [pts[0], [pts[0][0] + size_p * min(W, H) / W, pts[0][1]]])
+        size = math.hypot((probe[1][0] - probe[0][0]) * rw, (probe[1][1] - probe[0][1]) * rh) / min(rw, rh)
+        sh: dict = {"type": shape, "points": raw}
+        if brush:
+            sh.update(width=size, hardness=b.hardness, density=1.0)
+        else:
+            sh["border"] = size
+        return sh
+    g = await engine.edit(image_id, "geometry_get")
+    W, H = g["width"], g["height"]
+    short = min(W, H)
+    a = math.radians(b.rotation)
+    dx = [math.cos(a) * short / W, math.sin(a) * short / H]
+    r_y = b.radius_y or b.radius
+    # the center and points along each radius, so sizes follow the photo's rotation, crop and lens correction
+    probes = [[b.x, b.y], [b.x + b.radius * dx[0], b.y + b.radius * dx[1]],
+              [b.x - r_y * dx[1] * H / W, b.y + r_y * dx[0] * W / H],
+              [b.x + b.feather * dx[0], b.y + b.feather * dx[1]]]
+    raw, rw, rh = await _photo_to_raw(image_id, probes)
+    rshort = min(rw, rh)
+    dist = lambda p, q: math.hypot((p[0] - q[0]) * rw, (p[1] - q[1]) * rh) / rshort
+    rot = math.degrees(math.atan2((raw[1][1] - raw[0][1]) * rh, (raw[1][0] - raw[0][0]) * rw))
+    if shape == "circle":
+        return {"type": "circle", "x": raw[0][0], "y": raw[0][1], "r": dist(raw[0], raw[1]), "border": dist(raw[0], raw[3])}
+    if shape == "ellipse":
+        return {"type": "ellipse", "x": raw[0][0], "y": raw[0][1], "ra": dist(raw[0], raw[1]),
+                "rb": dist(raw[0], raw[2]), "rotation": rot, "border": dist(raw[0], raw[3])}
+    return {"type": "gradient", "x": raw[0][0], "y": raw[0][1], "rotation": rot,
+            "compression": max(0.0, min(b.compression, 1.0))}
+
+
+class MaskBody(BaseModel):
+    name: str | None = None
+    instance: int | None = None
+    shape: str
+    x: float | None = None
+    y: float | None = None
+    radius: float = 0.1
+    radius_y: float | None = None
+    rotation: float = 0.0
+    feather: float = 0.03
+    compression: float = 0.5
+    points: list[list[float]] = []
+    width: float = 0.02
+    hardness: float = 0.5
+    combine: str = "union"
+
+
+async def _mask_holders(image_id: int, mods: list[dict]) -> list[dict]:
+    """The named masks among the module list's instances (see above)."""
+    paired = {(m.get("name") or "").strip().lower() for m in mods      # an area's exposure + color balance pair
+              if m["operation"] == "colorbalancergb" and m["instance"] > 0 and m.get("in_history")}
+    out = []
+    for m in mods:
+        if (m["operation"] != "exposure" or m["instance"] <= 0 or not m.get("in_history")
+                or not (m.get("name") or "").strip() or m["name"].strip().lower() in paired):
+            continue
+        try:
+            g = await engine.edit(image_id, "module_get", operation="exposure", instance=m["instance"])
+            ev = next(x["value"] for x in g["fields"] if x["name"] == "exposure")
+            if abs(ev) >= 1e-6:
+                continue
+            bl = await engine.edit(image_id, "blend_get", operation="exposure", instance=m["instance"])
+            if "drawn" not in str(bl.get("masks", "")):
+                continue
+            shapes = (await engine.edit(image_id, "mask_list", operation="exposure", instance=m["instance"])).get("shapes", [])
+        except (EngineError, StopIteration):
+            continue
+        out.append((m, bl, len(shapes)))
+    return out
+
+
+async def _masks(image_id: int) -> dict:
+    """The photo's named masks (with the modules using them) and the modules that could."""
+    mods = (await engine.edit(image_id, "module_list"))["modules"]
+    holders = await _mask_holders(image_id, mods)
+    hold = {m["instance"] for m, _, _ in holders}
+    pos = {(m["operation"], m["instance"]): i for i, m in enumerate(mods)}
+    masks = {m["instance"]: {"name": m["name"], "instance": m["instance"], "pos": pos[("exposure", m["instance"])],
+                             "enabled": m["enabled"], "opacity": bl.get("opacity"), "blur_radius": bl.get("blur_radius"),
+                             "shapes": n, "users": []} for m, bl, n in holders}
+    targets = []
+    for m in mods:
+        op, inst = m["operation"], m["instance"]
+        if not m.get("in_history") or op in PLUMBING or (op == "exposure" and inst in hold):
+            continue
+        try:
+            bl = await engine.edit(image_id, "blend_get", operation=op, instance=inst)
+        except EngineError:
+            continue
+        src = bl.get("raster_source") if bl.get("masks") == "raster" or bl.get("raster_source") else None
+        src_inst = src.get("instance") if isinstance(src, dict) and src.get("operation") == "exposure" else None
+        used = src_inst if src_inst in masks else None
+        inv = bool(bl.get("raster_inverted"))
+        if used is not None:
+            masks[used]["users"].append({"operation": op, "instance": inst, "label": m["label"], "inverted": inv})
+        targets.append({"operation": op, "instance": inst, "label": m["label"], "pos": pos[(op, inst)],
+                        "mask": used, "inverted": inv})
+    return {"masks": sorted(masks.values(), key=lambda x: x["pos"]), "targets": targets}
+
+
+@app.get("/api/photo/{image_id}/masks")
+async def photo_masks(image_id: int):
+    try:
+        return await _masks(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+def _free_mask_name(mods: list[dict], want: str | None, stem: str = "mask") -> str:
+    taken = {(m.get("name") or "").strip().lower() for m in mods if m["operation"] == "exposure"}
+    if want is not None and want.strip():
+        if want.strip().lower() in taken:
+            raise HTTPException(400, f"there is already an exposure instance named {want.strip()}")
+        return want.strip()
+    n, name = 1, stem
+    if stem == "mask":
+        name = "mask 1"
+    while name.lower() in taken:
+        n += 1
+        name = f"{stem} {n}"
+    return name
+
+
+async def _mask_holder(image_id: int, name: str | None, instance: int | None, stem: str = "mask") -> tuple[int, bool]:
+    """The holder to draw on: the given instance, or a new exposure instance (named, at 0 EV)."""
+    if instance is not None:
+        return instance, False
+    mods = (await engine.edit(image_id, "module_list"))["modules"]
+    name = _free_mask_name(mods, name, stem)
+    ex = (await engine.edit(image_id, "module_add", operation="exposure", instance=0))["instance"]
+    try:
+        await engine.edit(image_id, "module_rename", operation="exposure", instance=ex, name=name)
+        g = await engine.edit(image_id, "module_get", operation="exposure", instance=ex)
+        if abs(next(x["value"] for x in g["fields"] if x["name"] == "exposure")) > 1e-9:
+            await engine.edit(image_id, "module_set", operation="exposure", instance=ex, values={"exposure": 0.0})
+    except EngineError:
+        await _drop_instance(image_id, ex)
+        raise
+    return ex, True
+
+
+async def _drop_instance(image_id: int, ex: int) -> None:
+    try:
+        await engine.edit(image_id, "module_remove", operation="exposure", instance=ex)
+    except EngineError:
+        pass
+
+
+@app.post("/api/photo/{image_id}/mask")
+async def photo_mask(image_id: int, body: MaskBody):
+    """Add a shape to a named mask (a new one without instance)."""
+    if body.shape not in ("circle", "ellipse", "gradient", "path", "brush"):
+        raise HTTPException(400, "shape: circle, ellipse, gradient, path or brush")
+    if body.shape in ("circle", "ellipse", "gradient") and (body.x is None or body.y is None):
+        raise HTTPException(400, "x and y: the shape's center")
+    if body.combine not in ("union", "difference"):
+        raise HTTPException(400, "combine: union or difference")
+    try:
+        sh = await _shape_on_raw(image_id, body)
+        ex, new = await _mask_holder(image_id, body.name, body.instance)
+        try:
+            await engine.edit(image_id, "mask_add", operation="exposure", instance=ex, shape=sh,
+                              combine="union" if new else body.combine, inverted=False)
+        except EngineError:
+            if new:                            # leave no half-made mask behind
+                await _drop_instance(image_id, ex)
+            raise
+        return {"instance": ex, **await _masks(image_id)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+class MaskAiBody(BaseModel):
+    name: str | None = None
+    instance: int | None = None
+    include: list[list[float]]
+    exclude: list[list[float]] = []
+    label: str = "subject"
+    combine: str = "union"
+
+
+@app.post("/api/photo/{image_id}/mask/ai")
+async def photo_mask_ai(image_id: int, body: MaskAiBody):
+    """A sky / subject mask from clicked points, on a new named mask or added to one."""
+    if body.label not in AREA_LABELS:
+        raise HTTPException(400, f"label: one of {', '.join(AREA_LABELS)}")
+    if not body.include:
+        raise HTTPException(400, "include: at least one point on the area")
+    if not await engine.supports("mask_ai"):
+        raise HTTPException(501, "this engine has no AI masks (mask_ai)")
+    points = ([{"x": p[0], "y": p[1], "include": True} for p in body.include]
+              + [{"x": p[0], "y": p[1], "include": False} for p in body.exclude])
+    try:
+        ex, new = await _mask_holder(image_id, body.name, body.instance, f"{body.label} mask")
+        try:
+            await engine.edit(image_id, "mask_ai", operation="exposure", instance=ex, points=points,
+                              combine="union" if new else ("difference" if body.combine == "difference" else "union"))
+        except EngineError:
+            if new:
+                await _drop_instance(image_id, ex)
+            raise
+        return {"instance": ex, **await _masks(image_id)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+class MaskSetBody(BaseModel):
+    instance: int
+    name: str | None = None
+    opacity: float | None = None
+    blur_radius: float | None = None
+
+
+@app.post("/api/photo/{image_id}/mask/set")
+async def photo_mask_set(image_id: int, body: MaskSetBody):
+    """Rename a named mask, or set its opacity / soft edge (blur radius)."""
+    try:
+        if body.name is not None:
+            mods = (await engine.edit(image_id, "module_list"))["modules"]
+            cur = next((m.get("name") or "" for m in mods if m["operation"] == "exposure" and m["instance"] == body.instance), "")
+            if body.name.strip().lower() != cur.strip().lower():
+                name = _free_mask_name(mods, body.name)
+                await engine.edit(image_id, "module_rename", operation="exposure", instance=body.instance, name=name)
+            elif body.name.strip() != cur.strip():
+                await engine.edit(image_id, "module_rename", operation="exposure", instance=body.instance, name=body.name.strip())
+        vals = {k: v for k, v in (("opacity", body.opacity), ("blur_radius", body.blur_radius)) if v is not None}
+        if vals:
+            await engine.edit(image_id, "blend_set", operation="exposure", instance=body.instance, values=vals)
+        return await _masks(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class MaskUseBody(BaseModel):
+    operation: str
+    instance: int = 0
+    mask: int | None = None
+    inverted: bool = False
+
+
+@app.post("/api/photo/{image_id}/mask/use")
+async def photo_mask_use(image_id: int, body: MaskUseBody):
+    """Let a module work through a named mask (its raster mask), or stop."""
+    vals = {"raster_source": {"operation": "exposure", "instance": body.mask} if body.mask is not None else None,
+            "raster_inverted": body.inverted}
+    try:
+        await engine.edit(image_id, "blend_set", operation=body.operation, instance=body.instance, values=vals)
+        return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class MaskRemoveBody(BaseModel):
+    instance: int
+
+
+@app.post("/api/photo/{image_id}/mask/remove")
+async def photo_mask_remove(image_id: int, body: MaskRemoveBody):
+    """Remove a named mask; the modules using it go back to their own."""
+    try:
+        for u in (await _masks(image_id))["targets"]:
+            if u["mask"] == body.instance:
+                await engine.edit(image_id, "blend_set", operation=u["operation"], instance=u["instance"],
+                                  values={"raster_source": None})
+        await engine.edit(image_id, "module_remove", operation="exposure", instance=body.instance)
+        return await _state(image_id)
     except EngineError as exc:
         raise _bad(exc)
 
@@ -1599,13 +1896,15 @@ async def export_download(token: str, name: str):
 
 @app.get("/api/photo/{image_id}/preview.jpg")
 async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: bool = False,
-                        zoom: float = 0, cx: float = 0.5, cy: float = 0.5):
+                        zoom: float = 0, cx: float = 0.5, cy: float = 0.5, mask: int = 0):
     """The edit fitted inside w x h, or with zoom (1 = 100%, up to 2) the
     w x h region around cx, cy (fractions) at that scale; X-Region has the
     part of the photo it shows (fractions, smaller at the photo's edges)."""
     cap = 3200 if zoom > 0 else 2560       # a zoomed view fills a HiDPI window
     w, h = max(64, min(w, cap)), max(64, min(h, cap))
     region = {"zoom": min(zoom, 2.0), "center_x": cx, "center_y": cy} if zoom > 0 else None
+    if mask > 0 and await engine.supports("render.show_mask"):      # that named mask, as darktable's "display mask"
+        region = {**(region or {}), "show_mask": {"operation": "exposure", "instance": mask}}
     try:
         r = await engine.render(image_id, w, h, uncropped and not region, region)
     except EngineError as exc:

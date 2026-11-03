@@ -428,6 +428,10 @@ async def photo_page(request: Request, image_id: int):
 # the crop tool covers: left out of the "other modules" list
 PLUMBING = {"rawprepare", "temperature", "highlights", "demosaic", "demosaicscale", "colorin", "colorout",
             "gamma", "finalscale", "overexposed", "rawoverexposed", "flip", "crop", "clipping", "ashift"}
+# darktable's hidden modules (#161): its window never shows them and the
+# engine refuses switching them; module_list's `hidden`, this set for an
+# older engine
+HIDDEN = {"gamma", "demosaicscale", "finalscale", "overexposed", "rawoverexposed", "rotatepixels", "mask_manager"}
 
 
 def _others(mods: list[dict], mono: dict | None, holders: list[int] | None = None) -> list[dict]:
@@ -440,7 +444,7 @@ def _others(mods: list[dict], mono: dict | None, holders: list[int] | None = Non
     shown |= {("exposure", i) for i in (holders or [])}
     return [{"operation": m["operation"], "instance": m["instance"], "label": m["label"], "enabled": m["enabled"]}
             for m in mods if m.get("in_history") and m["operation"] not in PLUMBING
-            and (m["operation"], m["instance"]) not in shown]
+            and not m.get("hidden", m["operation"] in HIDDEN) and (m["operation"], m["instance"]) not in shown]
 
 
 async def _pipeline(image_id: int, mods: list[dict]) -> list[dict]:
@@ -449,6 +453,8 @@ async def _pipeline(image_id: int, mods: list[dict]) -> list[dict]:
     out = []
     for m in mods:
         op, inst = m["operation"], m["instance"]
+        if m.get("hidden", op in HIDDEN):
+            continue
         plumbing = op in PLUMBING
         masks = "off"
         if m.get("in_history") and not plumbing:

@@ -27,6 +27,9 @@
   .bl-item .body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .bl-item .notes { margin: .2rem 0 0 1rem; color: var(--dim); font-size: .82rem; }
   .bl-item .btns { display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }
+  .bl-cut { border-top: 2px dashed var(--accent); margin: .3rem 0; text-align: right; font-size: .72rem; color: var(--accent); line-height: 1; }
+  .bl-cut span { position: relative; top: -.55rem; background: var(--bg); padding: 0 .4rem; }
+  .bl-item[data-likely="not reached"] { opacity: .75; }
   .badge { display: inline-block; min-width: 4.4rem; text-align: center; font-size: .72rem; padding: .05rem .4rem; border-radius: 9px; border: 1px solid var(--line); color: var(--dim); }
   .badge.open { color: #5bbf6a; border-color: #5bbf6a; } .badge.partial { color: var(--accent); border-color: var(--accent); }
   .est { color: var(--dim); font-size: .78rem; white-space: nowrap; }
@@ -52,10 +55,12 @@
 <div id="bl" data-tab="{{ tab }}" data-qhash="{{ qhash }}"{% if themes %} data-themes='{{ themes|tojson }}'{% endif %}>
 {% if tab == 'queue' %}
   <div class="bl-bar"><span>{{ file }} in {{ dir }}; open items {{ qtotal or "0.0" }} pts (unsized count {{ no_est }}, a partial its <code>left</code> or half its est + 0.3; before bias)</span></div>
+  {% if cap %}<div class="bl-bar bl-cap"><span><b>{{ cap.pts }} pts</b> left for {{ "tonight's" if cap.today else "the " ~ cap.when[:10] }} run (cap {{ cap.cap }}%, week {{ cap.week|round(1) }}%; {{ cap.src }}): likely done {{ cap.done }} of {{ cap.open }} open items{% if not cap.all_done %}, down to the line{% endif %} (est × bias {{ cap.bias }}, the first partial first)</span></div>{% endif %}
   {% for it in items %}
     {% if loop.first or items[loop.index0 - 1].section != it.section %}<h4 class="bl-h">{{ it.section }}</h4>
       <div class="bl-head"><span class="badge" style="visibility:hidden">status</span><span class="size">est</span><span class="size">total</span><span class="grow">item</span></div>{% endif %}
-    <div class="bl-item" data-label="{{ it.label }}">
+    {% if it.cut %}<div class="bl-cut"><span>likely done above · {{ cap.pts }} pts left</span></div>{% endif %}
+    <div class="bl-item" data-label="{{ it.label }}"{% if it.likely %} data-likely="{{ it.likely }}" title="tonight: likely {{ it.likely }}"{% endif %}>
       <span class="badge {{ it.status }}">{{ it.status }}</span>
       <span class="size"{% if it.status == 'partial' and it.pts %} title="counts {{ it.pts }} (partial)"{% endif %}>{% if it.est %}{{ it.est }}{% elif it.pts %}<i title="unsized: counts {{ no_est }}">{{ it.pts }}?</i>{% else %}–{% endif %}{% if it.left %}<br>left {{ it.left }}{% endif %}</span>
       <span class="size">{% if it.total %}<b>{{ it.total }}</b>{% endif %}</span>

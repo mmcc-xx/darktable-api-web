@@ -383,6 +383,57 @@ def newest_night() -> Path | None:
     return files[-1] if files else None
 
 
+RUN_START = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) run starting \(session \d+%, week (\d+)%, cap (\d+)%")
+FC_HEAD = re.compile(r"cap (\d+)%, week ([\d.]+)% now, budget (-?[\d.]+) weekly points")
+
+
+def rates_bias() -> float:
+    """RATES.md's bias, as queue_forecast.py reads it."""
+    m = re.search(r"Bias \(actual ÷ est\) ([\d.]+)", read_text("forecast/RATES.md"))
+    return float(m.group(1)) if m else 1.0
+
+
+def night_capacity() -> dict | None:
+    """Weekly points left for the night's run: from the newest night note's last
+    "run starting" line (cap - 1 - week, as daily-run.sh stops), the week taken
+    from runs.tsv when a run ended after it; else forecast/tonight.md's budget.
+    {"pts", "cap", "week", "when", "src"}, or None."""
+    d, out = backlog_dir(), None
+    note = newest_night()
+    if note:
+        starts = [m for m in map(RUN_START.match, note.read_text(encoding="utf-8").splitlines()) if m]
+        if starts:
+            when, week, cap = starts[-1].group(1), float(starts[-1].group(2)), int(starts[-1].group(3))
+            src = f"{note.name}, run started {when[11:16]}"
+            with contextlib.suppress(OSError, IndexError, ValueError):
+                rows = (d / "forecast/runs.tsv").read_text(encoding="utf-8").splitlines()
+                last = rows[-1].split("\t")
+                if last[0] >= when and last[3] != "forecast":    # start, end, min, why, s0, w0, s1, w1
+                    week, when, src = float(last[7]), last[1], f"runs.tsv, run ended {last[1][11:16]}"
+            out = {"pts": cap - 1 - week, "cap": cap, "week": week, "when": when, "src": src}
+    fc = d / "forecast/tonight.md"
+    if fc.exists():
+        m = FC_HEAD.search(fc.read_text(encoding="utf-8"))
+        when = datetime.datetime.fromtimestamp(fc.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        if m and (out is None or when > out["when"]):
+            out = {"pts": float(m.group(3)), "cap": int(m.group(1)), "week": float(m.group(2)), "when": when,
+                   "src": f"forecast/tonight.md, {when[11:16]}"}
+    if out:
+        out["today"] = out["when"][:10] == datetime.date.today().isoformat()
+    return out
+
+
+def mark_likely(opens: list[dict], budget: float, bias: float) -> None:
+    """queue_forecast.py's walk: the first partial runs first, then the rest in
+    order, each biased; sets it["likely"] to done / partial / not reached."""
+    partial = [it for it in opens if it["status"] == "partial"][:1]
+    total = 0.0
+    for it in partial + [it for it in opens if it not in partial]:
+        pts = it["pts_n"] * bias
+        it["likely"] = "not reached" if total >= budget else "partial" if total + pts > budget else "done"
+        total += pts
+
+
 @router.get("/backlog", response_class=HTMLResponse)
 async def backlog_page(request: Request, f: str = "queue"):
     from .main import _library_state, templates          # main imports this module: look it up late
@@ -390,7 +441,7 @@ async def backlog_page(request: Request, f: str = "queue"):
     d = backlog_dir()
     ctx: dict = {"tab": tab, "tabs": TABS, "dir": str(d), "locked": (d / "launchd/.daily-run.lock").exists(),
                  "error": None, "tables": [], "items": [], "texts": [], "qhash": "", "file": FILES.get(tab, ""),
-                 "qtotal": "", "no_est": pts_str(NO_EST), "themes": []}
+                 "qtotal": "", "no_est": pts_str(NO_EST), "themes": [], "cap": None}
     try:
         idx = link_index()
         if tab == "queue":
@@ -408,9 +459,20 @@ async def backlog_page(request: Request, f: str = "queue"):
                 base = float(it["est"]) if it["est"] not in ("", "draft") else NO_EST
                 pts = (float(it["left"]) if it["left"] else base * 0.5 + 0.3) if it["status"] == "partial" else base
                 total += pts
-                it["pts"], it["total"] = pts_str(pts), pts_str(total)
+                it["pts_n"], it["pts"], it["total"] = pts, pts_str(pts), pts_str(total)
             ctx["qtotal"] = pts_str(total)
             ctx["items"] = items
+            with contextlib.suppress(OSError, ValueError):
+                cap = night_capacity()
+                if cap and opens:
+                    b = rates_bias()
+                    mark_likely(opens, cap["pts"], b)
+                    cut = next((it for it in opens if it["likely"] != "done"), None)
+                    if cut:
+                        cut["cut"] = True
+                    ctx["cap"] = {**cap, "pts": pts_str(cap["pts"]), "bias": b,
+                                  "done": sum(it["likely"] == "done" for it in opens), "open": len(opens),
+                                  "all_done": cut is None}
         elif tab in ("features", "bugs", "done", "ideas"):
             lines = read_lines(FILES[tab])
             queued = queued_ids(read_lines("QUEUE.md")) if tab != "ideas" else set()

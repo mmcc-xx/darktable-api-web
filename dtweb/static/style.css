@@ -573,3 +573,18 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .mask-row[hidden] { display: none; }
 .mask-row select { min-width: 0; max-width: 100%; }
 .mask-inv { white-space: nowrap; }
+
+/* W57: Immich, the send picker on the photo page and the /immich page */
+.immich { margin-top: .6rem; border-top: 1px solid var(--line); padding-top: .5rem; }
+.immich input[type=search], .immich input[type=text] { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .25rem .4rem; margin: .2rem 0; }
+.im-list { max-height: 40vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; padding: .2rem .4rem; }
+.immich .im-list label { display: flex; align-items: center; gap: .3rem; padding: .15rem 0; overflow-wrap: anywhere; }
+.immich .im-list label .dim { margin-left: auto; }
+.im-page h3 { color: var(--dim); font-size: .95rem; margin: 1rem 0 .4rem; }
+.im-page .bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--dim); font-size: .85rem; margin-bottom: .6rem; }
+.im-page .open-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: 1.2rem; }
+.im-page .open-form input { flex: 1 1 14rem; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .3rem .4rem; }
+.im-page .tile figcaption { gap: .2rem; }
+.im-page .tile .err { color: #d9826b; overflow-wrap: anywhere; }
+.im-page .badge { display: inline-block; font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--accent); color: var(--accent); border-radius: 9px; }
+@media (pointer: coarse) { .immich button, .im-page button { min-height: 40px; } .immich .im-list label { min-height: 36px; } }

@@ -185,6 +185,19 @@
             <button id="ex-go">export</button>
           </p>
           <p id="ex-result" class="status"></p>
+          {% if can_immich %}
+          <div class="immich">
+            <p class="buttons"><strong>Immich</strong> <button id="im-open" title="upload the saved edit as a JPEG to your Immich server">send to Immich…</button></p>
+            <div id="im-pick" hidden>
+              <input id="im-filter" type="search" placeholder="filter albums" autocomplete="off">
+              <div id="im-list" class="im-list"></div>
+              <p id="im-note" class="status" hidden>goes into the original's albums too, stacked over it</p>
+              <input id="im-new" type="text" placeholder="new album" autocomplete="off">
+              <p class="buttons"><button id="im-go">send</button> <button id="im-cancel" class="secondary">cancel</button></p>
+            </div>
+            <p id="im-result" class="status"></p>
+          </div>
+          {% endif %}
         </div>
       </details>
     </div>
@@ -204,6 +217,7 @@
           <button id="more" class="secondary" aria-haspopup="true" aria-expanded="false" aria-label="more: export, duplicate, start over">⋯</button>
           <span id="more-menu" class="menu-list" hidden>
             <button id="more-export" class="link">export…</button>
+            {% if can_immich %}<button id="more-immich" class="link">send to Immich…</button>{% endif %}
             <button id="dup" class="link" title="a virtual copy with this edit, as darktable's duplicate (ctrl+D)">duplicate</button>
             <button id="dup-virgin" class="link" title="a virtual copy without an edit">duplicate unedited</button>
             <button id="more-discard" class="link" title="reopen the photo as saved">discard changes</button>
@@ -2850,6 +2864,81 @@
     a.href = s.download; a.textContent = 'download'; a.setAttribute('download', '');
     box.append(a);
   };
+
+  // Immich (#56): send the saved edit to the user's Immich server, as the
+  // MCP's immich_send does; the albums are chosen here
+  if ($('#im-open')) {
+    let imAlbums = [];
+    const imSel = new Set();             // checked album ids (some may be filtered out of the list)
+    const imShow = () => {
+      const q = $('#im-filter').value.trim().toLowerCase(), box = $('#im-list');
+      box.textContent = '';
+      for (const a of imAlbums) {
+        if (q && !a.name.toLowerCase().includes(q)) continue;
+        const l = document.createElement('label'), i = document.createElement('input');
+        i.type = 'checkbox'; i.value = a.id; i.checked = imSel.has(a.id);
+        i.onchange = () => { if (i.checked) imSel.add(a.id); else imSel.delete(a.id); };
+        l.append(i, ` ${a.name} `);
+        const n = document.createElement('span'); n.className = 'dim'; n.textContent = a.count ?? '';
+        l.append(n); box.append(l);
+      }
+    };
+    $('#im-filter').oninput = imShow;
+    const imClose = () => { $('#im-pick').hidden = true; $('#im-open').disabled = false; };
+    $('#im-cancel').onclick = imClose;
+    $('#im-open').onclick = async () => {
+      $('#im-open').disabled = true;
+      $('#im-result').textContent = 'loading albums…';
+      let r, s;
+      try { r = await api('immich/albums'); s = await r.json(); } catch (e) { r = {ok: false}; s = {detail: String(e)}; }
+      $('#im-open').disabled = false;
+      if (!r.ok) { $('#im-result').textContent = 'Immich failed: ' + s.detail; return; }
+      $('#im-result').textContent = '';
+      const sentTo = new Set(s.sent_to || []);
+      imAlbums = (s.albums || []).sort((a, b) => a.name.localeCompare(b.name));
+      imSel.clear();
+      for (const a of imAlbums) if (sentTo.has(a.name)) imSel.add(a.id);
+      $('#im-note').hidden = !(s.link && s.link.source);
+      $('#im-filter').value = ''; $('#im-new').value = '';
+      $('#im-list').textContent = '';
+      imShow();
+      $('#im-pick').hidden = false;
+      $('#im-pick').scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    };
+    $('#im-go').onclick = async () => {
+      if (busy) { status('wait for the last change to finish'); return; }
+      if (dirty && !await ask('Sending uses the saved edit. Save your changes and send?', {ok: 'save and send'})) return;
+      const body = {save: dirty, albums: [...imSel]};
+      const nw = $('#im-new').value.trim();
+      if (nw) body.new_album = nw;
+      $('#im-go').disabled = true;
+      $('#im-result').textContent = 'sending…';
+      let r, s;
+      try { r = await api('immich/send', body); s = await r.json(); } catch (e) { r = {ok: false}; s = {detail: String(e)}; }
+      $('#im-go').disabled = false;
+      if (!r.ok) { $('#im-result').textContent = 'send failed: ' + s.detail; return; }
+      if (s.saved) setDirty(false);
+      imClose();
+      const box = $('#im-result');
+      box.textContent = '';
+      if (s.unchanged) { box.textContent = 'already sent: nothing changed'; return; }
+      const parts = ['sent to Immich'];
+      if (s.albums && s.albums.length) parts.push('albums: ' + s.albums.join(', '));
+      if (s.stacked_over) parts.push('stacked over the original');
+      if (s.trashed_previous) parts.push("previous upload in Immich's trash");
+      box.append(parts.join(' · ') + ' · ');
+      const a = document.createElement('a');
+      a.href = s.link; a.textContent = 'open in Immich'; a.target = '_blank'; a.rel = 'noopener';
+      box.append(a);
+    };
+    const imMenu = $('#more-immich');
+    if (imMenu) imMenu.onclick = () => {
+      menu(false);
+      $('#export').open = true;
+      $('#export').scrollIntoView({block: 'nearest', behavior: 'smooth'});
+      $('#im-open').click();
+    };
+  }
 
   // ── before/after: the edit against an earlier step (0 = the original),
   // asked for here (⇆) or by an AI (compare_before_after). Same shape: a

@@ -25,6 +25,11 @@ ops: find {rebuild_map}, heal {spots: [ids]},
      pano_make {ids, fixes, projection, crop, in_order}: stitch with Hugin;
      progress lines go to stderr as "PROGRESS <message>". The folder is
      DTWEB_PANORAMA_DIR, else beside the first frame.
+     Immich (#56, the MCP's tools; image_id is ignored unless noted):
+     immich_inbox {import_new}: the inbox album's photos, imported when asked.
+     immich_import {asset}: one asset (id or URL) imported, not opened.
+     immich_albums {}: the albums (image_id: that photo's links and sent_to).
+     immich_send {albums, new_album, save}: send image_id's saved edit.
 """
 
 import asyncio
@@ -144,6 +149,35 @@ async def pano_make(server, n: int, req: dict) -> dict:
         return {"error": str(exc)}
 
 
+async def immich_inbox(server, n: int, req: dict) -> dict:
+    return _parse(await server.immich_inbox(import_new=bool(req.get("import_new"))))
+
+
+async def immich_import(server, n: int, req: dict) -> dict:
+    from darktable_api_mcp import immich
+    await server._require("set_tags.private", "import")
+    try:
+        aid = immich.asset_id(req["asset"])
+    except immich.ImmichError as exc:
+        return {"error": str(exc)}
+    async with server._immich() as im:
+        got = await server._immich_call(server._immich_import(im, aid))
+    out = {**got, "asset": aid}
+    if got.get("jpeg_source"):
+        out["note"] = server._JPEG_NOTE
+    return out
+
+
+async def immich_albums(server, n: int, req: dict) -> dict:
+    return _parse(await server.immich_albums(image_id=n or None))
+
+
+async def immich_send(server, n: int, req: dict) -> dict:
+    return _parse(await server.immich_send(image_id=n, albums=req.get("albums") or [],
+                                           new_album=req.get("new_album") or None,
+                                           save_first=bool(req.get("save"))))
+
+
 def clip(req: dict) -> dict:
     from darktable_api_mcp import clipping
     r = clipping.measure(req["path"], req.get("iso"), int(req.get("mask_size") or 0) or None)
@@ -169,7 +203,9 @@ async def main(req: dict) -> dict:
     from darktable_api_mcp import server
     n = int(req["image_id"])
     op = {"find": find, "heal": heal, "heal_at": heal_at, "fill_models": fill_models,
-          "fill": fill, "pano_check": pano_check, "pano_make": pano_make}.get(req.get("op"))
+          "fill": fill, "pano_check": pano_check, "pano_make": pano_make,
+          "immich_inbox": immich_inbox, "immich_import": immich_import,
+          "immich_albums": immich_albums, "immich_send": immich_send}.get(req.get("op"))
     if not op:
         raise RuntimeError(f"unknown op {req.get('op')!r}")
     return await op(server, n, req)

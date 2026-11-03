@@ -75,6 +75,27 @@ def _connect() -> dict:
 
 templates.env.globals["connect"] = _connect()
 
+
+def _immich_conf() -> dict:
+    """The Immich server the MCP talks to (#56): IMMICH_URL, IMMICH_INBOX from
+    the environment, else KEY=value lines in the MCP's immich.conf. Read on
+    each call (cheap). web: the server's address without its /api."""
+    kv: dict[str, str] = {}
+    conf = Path(os.environ.get("DTWEB_IMMICH_CONF")
+                or Path.home() / ".config/darktable-api-mcp/immich.conf")
+    if conf.exists():
+        for line in conf.read_text().splitlines():
+            k, sep, v = line.strip().removeprefix("export ").partition("=")
+            if sep and not k.startswith("#"):
+                kv[k.strip()] = v.strip().strip("'\"")
+    get = lambda name, default="": os.environ.get(name) or kv.get(name) or default
+    url = get("IMMICH_URL").rstrip("/")
+    web = url.removesuffix("/api")
+    return {"configured": bool(url), "inbox": get("IMMICH_INBOX", "Edit in darktable"), "web": web}
+
+
+templates.env.globals["immich_conf"] = _immich_conf
+
 PAGE = 60
 THUMB_SIZE = 400
 THUMBS = CONFIG.parent / "web-thumbs"       # thumbnails by image, size and edit state
@@ -409,7 +430,8 @@ async def photo_page(request: Request, image_id: int):
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
            "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
-           "can_fill": False, "can_mask": False, "can_mark": False, "can_masks": False}
+           "can_fill": False, "can_mask": False, "can_mark": False, "can_masks": False,
+           "can_immich": _immich_conf()["configured"]}
     if lib.get("state") == "owned":
         try:
             ctx["can_fill"] = await engine.supports("ai_fill")
@@ -1579,17 +1601,18 @@ def _worker_cmd(op: str, image_id: int, params: dict) -> tuple[list[str], dict]:
     return [py, "-I", str(HERE / "mcp_worker.py"), json.dumps({"op": op, "image_id": image_id, **params})], env
 
 
-async def _mcp_worker(op: str, image_id: int, lock: asyncio.Lock | None = None, **params) -> dict:
+async def _mcp_worker(op: str, image_id: int, lock: asyncio.Lock | None = None,
+                      timeout: float = DUST_TIMEOUT_S, **params) -> dict:
     cmd, env = _worker_cmd(op, image_id, params)
     async with lock or _mcp_lock:
         proc = await asyncio.create_subprocess_exec(
             *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), DUST_TIMEOUT_S)
+            out, err = await asyncio.wait_for(proc.communicate(), timeout)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            raise HTTPException(502, f"the worker took more than {DUST_TIMEOUT_S} s")
+            raise HTTPException(502, f"the worker took more than {timeout:g} s")
     lines = out.decode(errors="replace").strip().splitlines()
     try:
         r = json.loads(lines[-1])
@@ -2525,6 +2548,150 @@ async def library_action(action: str):
     # the other tabs: the engine doesn't echo this connection's own change
     engine.emit({"type": "library_released" if action == "release" else "library_acquired"})
     return r
+
+
+# ── Immich (#56, W57): the MCP's tools through the worker. The inbox album is
+# checked every DTWEB_IMMICH_POLL_S seconds (its new photos imported); photos
+# sent back are the ones tagged immich|export|<asset> (private tags)
+_immich_lock = asyncio.Lock()            # the worker: a download doesn't hold up dust or fill
+_immich_check_lock = asyncio.Lock()
+IMMICH_TIMEOUT_S = 900
+IMMICH: dict = {"checked": None, "running": False, "error": None, "inbox": {}}
+
+
+def _immich_need() -> dict:
+    c = _immich_conf()
+    if not c["configured"]:
+        raise HTTPException(404, "Immich isn't set up: set IMMICH_URL (and IMMICH_API_KEY) for the web app, "
+                                 "or put IMMICH_URL= in ~/.config/darktable-api-mcp/immich.conf")
+    return c
+
+
+async def _immich_worker(op: str, image_id: int = 0, **params) -> dict:
+    return await _mcp_worker(op, image_id, _immich_lock, IMMICH_TIMEOUT_S, **params)
+
+
+async def _immich_check() -> None:
+    """Look at the inbox album now, importing its new photos. Never raises."""
+    if _immich_check_lock.locked():
+        async with _immich_check_lock:   # one is running: wait, then its result is fresh
+            return
+    async with _immich_check_lock:
+        IMMICH["running"] = True
+        try:
+            IMMICH["inbox"] = await _immich_worker("immich_inbox", import_new=True)
+            IMMICH["error"] = None
+        except HTTPException as exc:
+            IMMICH["error"] = str(exc.detail)
+        except Exception as exc:         # the page shows it
+            IMMICH["error"] = str(exc) or type(exc).__name__
+        finally:
+            IMMICH["checked"] = time.time()
+            IMMICH["running"] = False
+
+
+async def _immich_poll() -> None:
+    try:
+        every = float(os.environ.get("DTWEB_IMMICH_POLL_S", "300"))
+    except ValueError:
+        every = 300
+    if every <= 0:
+        return
+    await asyncio.sleep(30)
+    while True:
+        try:
+            if _immich_conf()["configured"]:
+                await _immich_check()
+        except Exception as exc:
+            print(f"immich poll: {exc}", flush=True)
+        await asyncio.sleep(every)
+
+
+async def _immich_state() -> dict:
+    c = _immich_conf()
+    if not c["configured"]:
+        return {"configured": False}
+    inbox = IMMICH["inbox"] or {}
+    waiting = []
+    for p in inbox.get("photos") or []:
+        item = {k: p.get(k) for k in ("asset", "file", "taken", "jpeg_source", "image_id", "error")}
+        if p.get("image_id") is not None:
+            try:
+                item["version"] = _version((await engine.call("image_info", imgid=p["image_id"]))["image"])
+            except EngineError:
+                pass
+        waiting.append(item)
+    sent = []
+    try:
+        listed = (await engine.call("images_list", tag="immich|export", rating="all", limit=200))["images"]
+        for img in listed:
+            tags = (await engine.call("image_metadata", imgid=img["id"]))["tags"]
+            parts = [t.split("|") for t in tags]
+            exp = [x[2] for x in parts if len(x) == 3 and x[:2] == ["immich", "export"]]
+            src = [x[2] for x in parts if len(x) == 3 and x[:2] == ["immich", "source"]]
+            if exp:
+                sent.append({"image_id": img["id"], "file": img["filename"], "asset": exp[-1],
+                             "source": src[-1] if src else None, "version": _version(img)})
+    except EngineError as exc:
+        IMMICH["error"] = IMMICH["error"] or str(exc)
+    return {**c, "checked": IMMICH["checked"], "running": IMMICH["running"], "error": IMMICH["error"],
+            "inbox_missing": inbox.get("note"), "waiting": waiting, "sent": sent}
+
+
+@app.get("/immich", response_class=HTMLResponse)
+async def immich_page(request: Request):
+    return templates.TemplateResponse(request, "immich.html", {"lib": await _library_state()})
+
+
+@app.get("/api/immich")
+async def immich_status():
+    _immich_need()
+    return await _immich_state()
+
+
+@app.post("/api/immich/check")
+async def immich_check_now():
+    _immich_need()
+    await _immich_check()
+    return await _immich_state()
+
+
+class ImmichOpenBody(BaseModel):
+    asset: str
+
+
+@app.post("/api/immich/open")
+async def immich_open(body: ImmichOpenBody):
+    """Import an Immich photo (id or URL) to edit; the page then opens it."""
+    _immich_need()
+    return await _immich_worker("immich_import", asset=body.asset)
+
+
+@app.get("/api/photo/{image_id}/immich/albums")
+async def immich_albums(image_id: int):
+    _immich_need()
+    return await _immich_worker("immich_albums", image_id)
+
+
+class ImmichSendBody(BaseModel):
+    albums: list[str] = []
+    new_album: str | None = None
+    save: bool = False                   # save the open edit first, as export does
+
+
+@app.post("/api/photo/{image_id}/immich/send")
+async def immich_send(image_id: int, body: ImmichSendBody):
+    """Send the saved edit to Immich (the MCP's immich_send)."""
+    c = _immich_need()
+    r = await _immich_worker("immich_send", image_id, albums=body.albums,
+                             new_album=(body.new_album or "").strip() or None, save=body.save)
+    asyncio.create_task(_immich_check())  # the inbox changed
+    return {**r, "saved": body.save, "link": f"{c['web']}/photos/{r['asset']}"}
+
+
+@app.on_event("startup")
+async def _startup():
+    app.state.immich_poll = asyncio.create_task(_immich_poll())
 
 
 @app.on_event("shutdown")

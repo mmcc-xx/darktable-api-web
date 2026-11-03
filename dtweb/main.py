@@ -459,7 +459,7 @@ HIDDEN = {"gamma", "demosaicscale", "finalscale", "overexposed", "rawoverexposed
 def _others(mods: list[dict], mono: dict | None, holders: list[int] | None = None) -> list[dict]:
     """Modules in the edit's history that no panel shows (often added by an
     AI or a preset): label, instance, on/off."""
-    shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0), ("rgblevels", 0)}
+    shown = {(op, 0) for op, _, _ in PANELS} | {("channelmixerrgb", 0), ("rgblevels", 0), ("denoiseprofile", 0)}
     if mono:
         shown.add(("channelmixerrgb", mono["instance"]))
     shown |= _area_names(mods)
@@ -527,6 +527,28 @@ async def _capture(image_id: int) -> dict | None:
             "fields": fields}
 
 
+NOISE_FIELDS = [("mode", "mode"), ("strength", "strength"), ("shadows", "preserve shadows"),
+                ("bias", "bias correction")]
+
+
+async def _noise(image_id: int) -> dict | None:
+    """The noise section: denoise (profiled)'s first instance with its main
+    controls, whether the photo is a raw, and whether the engine has AI denoise."""
+    try:
+        g = await engine.edit(image_id, "module_get", operation="denoiseprofile", instance=0)
+    except EngineError:
+        return None
+    by_name = {f["name"]: f for f in _generic_fields(g)[0]}
+    fields = [{**by_name[n], "label": label} for n, label in NOISE_FIELDS if n in by_name]
+    for f in fields:
+        if f["name"] == "strength":        # 0.001-1000 in the params: darktable's slider stops at 4
+            f["hi"] = min(f["hi"], 4.0)
+    info = await engine.call("image_info", imgid=image_id)
+    return {"operation": "denoiseprofile", "instance": 0, "title": "denoise (profiled)",
+            "enabled": g["enabled"], "fields": fields, "raw": bool((info.get("exif") or {}).get("raw")),
+            "ai": await engine.supports("ai_denoise")}
+
+
 async def _state(image_id: int) -> dict:
     mods = (await engine.edit(image_id, "module_list"))["modules"]
     listed = {m["operation"] for m in mods}
@@ -558,7 +580,7 @@ async def _state(image_id: int) -> dict:
     holders = [m["instance"] for m, _, _ in await _mask_holders(image_id, mods)]
     return {"modules": modules, "history": await engine.edit(image_id, "history_list"),
             "geometry": geometry, "mono": mono, "others": _others(mods, mono, holders),
-            "capture": await _capture(image_id),
+            "capture": await _capture(image_id), "noise": await _noise(image_id),
             "wb": await _wb(image_id), "levels": await _levels(image_id),
             "pipeline": await _pipeline(image_id, mods)}
 
@@ -1537,18 +1559,9 @@ async def photo_move(image_id: int, body: MoveBody):
         raise _bad(exc)
 
 
-@app.get("/api/photo/{image_id}/module")
-async def photo_module(image_id: int, operation: str, instance: int = 0):
-    """Any module's fields for the pipeline view's generic panel."""
-    try:
-        g = await engine.edit(image_id, "module_get", operation=operation, instance=instance)
-        try:
-            b = await engine.edit(image_id, "blend_get", operation=operation, instance=instance)
-            blend = {"masks": b.get("masks"), "blend_mode": b.get("blend_mode"), "opacity": b.get("opacity")}
-        except EngineError:
-            blend = None
-    except EngineError as exc:
-        raise _bad(exc)
+def _generic_fields(g: dict) -> tuple[list[dict], list[str]]:
+    """A module_get reply as the page's generic fields (bool, enum, num) and the
+    labels of those it can't show (arrays, odd ranges)."""
     fields, notes = [], []
     # a description shared by several fields (colorcalibration's six "normalize channels"): their names instead
     descs = [x.get("description") for x in g["fields"]]
@@ -1573,6 +1586,22 @@ async def photo_module(image_id: int, operation: str, instance: int = 0):
                                "digits": 0 if whole else (2 if hi - lo > 1.5 else 3), "step": 1 if whole else None})
             else:
                 notes.append(label)
+    return fields, notes
+
+
+@app.get("/api/photo/{image_id}/module")
+async def photo_module(image_id: int, operation: str, instance: int = 0):
+    """Any module's fields for the pipeline view's generic panel."""
+    try:
+        g = await engine.edit(image_id, "module_get", operation=operation, instance=instance)
+        try:
+            b = await engine.edit(image_id, "blend_get", operation=operation, instance=instance)
+            blend = {"masks": b.get("masks"), "blend_mode": b.get("blend_mode"), "opacity": b.get("opacity")}
+        except EngineError:
+            blend = None
+    except EngineError as exc:
+        raise _bad(exc)
+    fields, notes = _generic_fields(g)
     return {"operation": operation, "instance": instance, "enabled": g["enabled"], "fields": fields,
             "notes": notes, "blend": blend}
 
@@ -1691,6 +1720,25 @@ async def dust_find(image_id: int, body: DustFindBody):
 @app.post("/api/photo/{image_id}/dust/heal")
 async def dust_heal(image_id: int, body: DustHealBody):
     return await _mcp_worker("heal", image_id, spots=body.spots)
+
+
+_denoise_lock = asyncio.Lock()
+
+
+class AiDenoiseBody(BaseModel):
+    strength: float | None = None
+
+
+@app.post("/api/photo/{image_id}/ai_denoise")
+async def photo_ai_denoise(image_id: int, body: AiDenoiseBody):
+    """darktable's AI raw denoise: a new DNG in the photo's group (new_imgid)."""
+    return await _mcp_worker("denoise", image_id, _denoise_lock, 660, strength=body.strength)
+
+
+@app.post("/api/photo/{image_id}/noise_spot")
+async def photo_noise_spot(image_id: int):
+    """Where noise shows: a dark, detailed spot of the photo, {x, y} fractions."""
+    return await _mcp_worker("noise_spot", image_id)
 
 
 @app.post("/api/photo/{image_id}/dust/heal_at")

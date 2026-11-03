@@ -12,6 +12,10 @@ ops: find {rebuild_map}, heal {spots: [ids]},
      heal_at {x, y, radius}: a heal circle where the user clicked (x, y
      fractions of the photo as shown, radius a fraction of its shorter side)
      with a source this worker picks from a 100% render around it.
+     denoise {strength}: the MCP's ai_denoise on image_id (a raw), waiting for
+     the job: a new DNG in its group; returns the job's reply (new_imgid).
+     noise_spot {}: where noise shows: the darkest-but-textured tile of a
+     small render of the open edit, {x, y} fractions of the photo as shown.
      fill_models {}: the fill models (local and online, whether the online
      ones have a key); image_id is ignored.
      fill {shape: "circle"|"path", x, y, radius | points, model, prompt,
@@ -96,6 +100,37 @@ async def heal_at(server, n: int, req: dict) -> dict:
     res = await server.retouch_spots([{"x": x, "y": y, "radius": radius, "tool": "heal",
                                        "source_x": round(sx, 5), "source_y": round(sy, 5)}])
     return {**res, "source": [round(sx, 5), round(sy, 5)]}
+
+
+async def denoise(server, n: int, req: dict) -> dict:
+    r = _parse(await server.ai_denoise(image_id=n, strength=req.get("strength"), wait=True, timeout_s=600))
+    if not r.get("new_imgid"):
+        raise RuntimeError(r.get("error") or r.get("note") or f"AI denoise didn't finish: {json.dumps(r)[:300]}")
+    return r
+
+
+async def noise_spot(server, n: int, req: dict) -> dict:
+    import cv2
+    import numpy as np
+    await server.engine.open(n)
+    r = await server.engine.render(n, 600, 600, False, None, lane="noise")
+    if r is None:
+        raise RuntimeError("the render was overtaken by another request")
+    data, info = r
+    R = info.get("region") or {"left": 0, "right": 1, "top": 0, "bottom": 1}
+    gray = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255.0
+    lap = cv2.Laplacian(gray, cv2.CV_32F)
+    h, w = gray.shape
+    tiles = []
+    for j in range(8):
+        for i in range(8):
+            ys, xs = slice(j * h // 8, (j + 1) * h // 8), slice(i * w // 8, (i + 1) * w // 8)
+            tiles.append((float(gray[ys, xs].mean()), float(lap[ys, xs].std()), i, j))
+    cand = [t for t in tiles if 0.06 <= t[0] <= 0.4]
+    m, _, i, j = max(cand, key=lambda t: t[1] * (0.4 - t[0])) if cand else min(tiles)
+    fx, fy = (i + 0.5) / 8, (j + 0.5) / 8
+    return {"x": round(R["left"] + fx * (R["right"] - R["left"]), 4),
+            "y": round(R["top"] + fy * (R["bottom"] - R["top"]), 4)}
 
 
 async def fill_models(server, n: int, req: dict) -> list:
@@ -203,7 +238,7 @@ async def main(req: dict) -> dict:
     from darktable_api_mcp import server
     n = int(req["image_id"])
     op = {"find": find, "heal": heal, "heal_at": heal_at, "fill_models": fill_models,
-          "fill": fill, "pano_check": pano_check, "pano_make": pano_make,
+          "fill": fill, "denoise": denoise, "noise_spot": noise_spot, "pano_check": pano_check, "pano_make": pano_make,
           "immich_inbox": immich_inbox, "immich_import": immich_import,
           "immich_albums": immich_albums, "immich_send": immich_send}.get(req.get("op"))
     if not op:

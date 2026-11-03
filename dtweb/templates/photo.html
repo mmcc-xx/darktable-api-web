@@ -643,6 +643,7 @@
       });
       box.appendChild(d);
     }
+    if (s.noise) box.appendChild(noiseSection(s.noise));
     box.appendChild(monoSection(s.mono));
     const as = areaSection();
     if (as) box.appendChild(as);
@@ -665,7 +666,7 @@
   const ROLE = (op, inst) => op === 'exposure' && masksData.masks.some((m) => m.instance === inst) ? 'mask' : ROLE0(op, inst);
   const ROLE0 = (op, inst) => ({exposure: 'basic', agx: 'tone mapper', sigmoid: 'tone mapper', filmicrgb: 'tone mapper',
     toneequal: 'tone', colorbalancergb: 'color'}[op] || (op === 'channelmixerrgb' ? (state.mono && inst === state.mono.instance ? 'black & white' : inst === 0 ? 'white balance' : '')
-    : op === 'rgblevels' && inst === 0 ? 'levels' : ''));
+    : op === 'rgblevels' && inst === 0 ? 'levels' : op === 'denoiseprofile' && inst === 0 ? 'noise' : ''));
   const noop = () => {};
   function markLast() {
     const it = hist && hist.items[hist.history_end - 1];
@@ -1177,6 +1178,65 @@
   const LOOK_NAMES = {luminance: 'luminance', red: 'red filter', orange: 'orange filter', yellow: 'yellow filter',
                       green: 'green filter', blue: 'blue filter', acros: 'Fuji Acros 100', delta100: 'Ilford Delta 100',
                       delta400: 'Ilford Delta 400–3200', fp4: 'Ilford FP4+', hp5: 'Ilford HP5+'};
+  function noiseSection(m) {
+    const d = document.createElement('details');
+    d.className = 'sec'; d.dataset.sec = 'noise';
+    const sum = document.createElement('summary');
+    const line = document.createElement('span');
+    line.className = 'sum';
+    const resum = () => { line.textContent = summary([m]); };
+    resum();
+    sum.append('noise ', line);
+    const body = document.createElement('div');
+    body.className = 'sec-body';
+    body.appendChild(tagged(modulePanel(m, resum), 'denoiseprofile', 0));
+    const row = document.createElement('div');
+    row.className = 'field';
+    const look = document.createElement('button');
+    look.textContent = 'judge at 100%';
+    look.title = 'zoom to 100% on a dark, detailed area, where noise shows';
+    look.onclick = async () => {
+      look.disabled = true;
+      try {
+        const r = await api('noise_spot', {});
+        if (r.ok) await setZoom(1, await r.json());
+        else status('no spot found: ' + (await r.json()).detail);
+      } finally { look.disabled = false; }
+    };
+    row.appendChild(look);
+    body.appendChild(row);
+    if (m.raw && m.ai) {
+      const ai = document.createElement('div');
+      ai.className = 'field';
+      const lab = document.createElement('span');
+      lab.textContent = 'AI denoise';
+      const btn = document.createElement('button');
+      btn.textContent = 'make a denoised copy';
+      btn.title = "darktable's AI raw denoise writes a new DNG in this photo's group; edit that one (seconds to minutes)";
+      const out = document.createElement('p');
+      out.className = 'status'; out.id = 'ai-denoise-out';
+      btn.onclick = async () => {
+        btn.disabled = true; out.textContent = '';
+        status('AI denoise running…');
+        try {
+          const r = await api('ai_denoise', {strength: null});
+          const j = await r.json();
+          if (!r.ok || !j.new_imgid) { status('not denoised: ' + (j.detail || j.error || 'no new photo')); return; }
+          status(`AI denoise done: photo ${j.new_imgid}, in this photo's group`);
+          const a = document.createElement('a');
+          a.href = '/photo/' + j.new_imgid; a.textContent = `open the denoised copy (photo ${j.new_imgid})`;
+          out.appendChild(a);
+        } catch (e) {
+          status('not denoised: ' + e);
+        } finally { btn.disabled = false; }
+      };
+      ai.append(lab, ' ', btn);
+      body.append(ai, out);
+    }
+    d.append(sum, body);
+    keepOpen(d);
+    return d;
+  }
   function monoSection(m) {
     const d = document.createElement('details');
     d.className = 'sec'; d.dataset.sec = 'bw';

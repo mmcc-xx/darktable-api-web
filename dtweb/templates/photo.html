@@ -3358,7 +3358,7 @@
       if (ev.imgid !== ID || !['edit', 'saved', 'reset', 'reopened', 'closed'].includes(ev.type)) return;
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(async () => {
-        const r = await api('open', {});
+        const r = await api('open?refresh=true', {});
         if (!r.ok) return;
         const s = await r.json();
         setDirty(!!s.unsaved);
@@ -3386,6 +3386,25 @@
     if (note) { status('after taking the library back: ' + note); sessionStorage.removeItem('draft-note'); }
   }
   open();
+
+  // the tab in front is "this photo" for Claude (W34): focus and
+  // visibility go to the server, which opens this photo again in the engine
+  const TAB = Math.random().toString(36).slice(2);
+  let tabState = null;
+  function tabReport(st) {
+    if (st === tabState) return;
+    tabState = st;
+    const body = JSON.stringify({tab: TAB, state: st});
+    if (st === 'closed') navigator.sendBeacon(`/api/photo/${ID}/focus`, new Blob([body], {type: 'application/json'}));
+    else fetch(`/api/photo/${ID}/focus`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body}).catch(() => {});
+  }
+  const tabNow = () => tabReport(document.visibilityState !== 'visible' ? 'hidden' : document.hasFocus() ? 'focus' : 'shown');
+  addEventListener('focus', tabNow);
+  addEventListener('blur', () => { if (tabState === 'focus') tabState = 'shown'; });
+  document.addEventListener('visibilitychange', tabNow);
+  addEventListener('pagehide', () => tabReport('closed'));
+  addEventListener('pageshow', (e) => { if (e.persisted) { tabState = null; tabNow(); } });
+  tabNow();
 })();
 </script>
 {% endif %}

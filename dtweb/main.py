@@ -858,19 +858,62 @@ def _bad(exc: EngineError, code: int = 400) -> HTTPException:
 
 
 @app.post("/api/photo/{image_id}/open")
-async def photo_open(image_id: int, fresh: bool = False):
+async def photo_open(image_id: int, fresh: bool = False, refresh: bool = False):
     """Open the photo for editing. If the engine has it open already (another
     client editing it, or a draft restored after taking the library back),
     this joins that edit, unsaved changes included, unless fresh: then the
-    photo is reloaded as saved, for every client."""
+    photo is reloaded as saved, for every client. refresh: a tab reloading
+    after another client's change, which leaves "this photo" (W34) on the
+    tab in front."""
     try:
         r = await engine.open(image_id, fresh)
+        if refresh and _focus["imgid"] and _focus["imgid"] != image_id:
+            try:
+                await engine.open(_focus["imgid"])
+            except EngineError:
+                pass
         s = await _state(image_id)
         s["unsaved"] = bool(r.get("unsaved"))
         s["joined"] = bool(r.get("joined"))
         return s
     except EngineError as exc:
         raise _bad(exc, 502)
+
+
+# "this photo" for Claude (W34, for MCP #121): the engine takes the web
+# client's current photo (the last it opened) as the web app's photo, so the
+# photo tab in front opens its photo again on focus. Tabs that go hidden or
+# close don't change it; _tabs counts the photo tabs open.
+_focus: dict = {"imgid": None, "at": None}
+_tabs: dict[str, dict] = {}
+
+
+class FocusBody(BaseModel):
+    tab: str
+    state: str = "focus"          # focus (visible and focused), hidden, closed
+
+
+@app.post("/api/photo/{image_id}/focus")
+async def photo_focus(image_id: int, body: FocusBody):
+    if body.state == "closed":
+        _tabs.pop(body.tab, None)
+    else:
+        t = _tabs.setdefault(body.tab, {"imgid": image_id, "focused_at": None})
+        t["imgid"] = image_id
+        if body.state == "focus":
+            t["focused_at"] = time.time()
+            _focus.update(imgid=image_id, at=t["focused_at"])
+            try:
+                await engine.open(image_id)
+            except EngineError as exc:
+                raise _bad(exc, 502)
+    return await tabs()
+
+
+@app.get("/api/tabs")
+async def tabs():
+    """The photo tab last in front and the photo tabs open."""
+    return {"focused": _focus, "tabs": sorted(_tabs.values(), key=lambda t: -(t["focused_at"] or 0))}
 
 
 class SetBody(BaseModel):

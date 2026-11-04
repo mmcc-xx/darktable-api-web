@@ -2,8 +2,15 @@
 {% block title %}library · darktable-api{% endblock %}
 {% block top %}
 <form class="filters" method="get" action="/">
-  <select name="roll" onchange="this.form.submit()">
+  {# W61: Immich's inbox and sent photos as pseudo-rolls (tag filters); a real roll clears them #}
+  <select name="roll" onchange="var f = this.form, t = f.elements.tag, v = this.value;
+      if (v.indexOf('tag:') === 0) { t.value = v.slice(4); this.value = ''; } else if (/^immich\|(inbox|export)$/.test(t.value)) t.value = '';
+      f.submit()">
     <option value="">all film rolls</option>
+    {% if immich_conf().configured %}
+    <option value="tag:immich|inbox"{% if filters.roll is none and filters.tag == 'immich|inbox' %} selected{% endif %}>Immich inbox</option>
+    <option value="tag:immich|export"{% if filters.roll is none and filters.tag == 'immich|export' %} selected{% endif %}>sent to Immich</option>
+    {% endif %}
     {% for r in rolls %}<option value="{{ r.id }}"{% if filters.roll == r.id %} selected{% endif %}>{{ '/'.join(r.folder.rsplit('/', 2)[-2:]) if r.folder.endswith('/darktable_fills') else r.folder.rsplit('/', 1)[-1] }} ({{ r.count }})</option>{% endfor %}
   </select>
   <select name="rating" onchange="this.form.submit()">
@@ -16,7 +23,7 @@
   {% if tag_filter %}<span class="tag-filter{% if filters.tag %} on{% endif %}">
     <input type="search" name="tag" list="tag-list" value="{{ filters.tag or '' }}" placeholder="tag" aria-label="only photos with this tag"
            title="only photos with this tag or one under it (places: also places|paris)" onchange="this.form.submit()" onfocus="dtMeta.suggestions()">
-  </span>{% endif %}
+  </span>{% else %}<input type="hidden" name="tag" value="{{ filters.tag or '' }}">{% endif %}
 </form>
 <button id="import-btn" title="add photos to the library: a folder on this computer, or files from this browser">import…</button>
 {% endblock %}
@@ -72,6 +79,22 @@
       <button type="button" id="ex-close" class="secondary">close</button>
       <p id="ex-result" class="status"></p>
     </form>
+    {% if filters.tag == 'immich|inbox' and immich_conf().configured %}
+    <div class="im-bar" id="im-bar">
+      <div class="im-line">
+        <span>inbox: album <b id="im-inbox">{{ immich_conf().inbox }}</b> in Immich · checked <span id="im-when">…</span></span>
+        <button type="button" id="im-check">check now</button>
+        <span id="im-busy" hidden>checking…</span>
+      </div>
+      <p id="im-err" class="status"></p>
+      <form id="im-open-form" class="im-open">
+        <label for="im-asset">open from Immich:</label>
+        <input id="im-asset" placeholder="asset id or URL" autocomplete="off" spellcheck="false">
+        <button>open</button>
+        <span id="im-open-msg" class="status"></span>
+      </form>
+    </div>
+    {% endif %}
     <div class="grid" id="grid" data-query="{{ query }}">
       {% include "_tiles.html" %}
     </div>
@@ -1563,4 +1586,75 @@
   })();
 })();
 </script>
+{% if filters.tag == 'immich|inbox' and immich_conf().configured %}
+<script>
+// W61: the Immich inbox bar (see /api/immich): check now, what failed to import,
+// open from Immich, the JPEG badge; the page reloads when the inbox's photos change
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const grid = $('#grid');
+  const JPEG = 'exposure, white balance and highlights are baked in: less latitude than a raw';
+  const shown = [...grid.querySelectorAll('.tile')].map((t) => +t.dataset.id).sort((a, b) => a - b).join();
+  let st = null;
+  const ago = (t) => {
+    if (!t) return 'not yet';
+    const s = Math.max(0, Date.now() / 1000 - t);
+    return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago';
+  };
+  function badges() {
+    const jpegs = new Set(((st && st.waiting) || []).filter((p) => p.jpeg_source).map((p) => String(p.image_id)));
+    for (const t of grid.querySelectorAll('.tile')) {
+      const name = t.dataset.name || '';
+      if (t.querySelector('.badge') || !(jpegs.has(t.dataset.id) || /\.(jpe?g|heic|heif)\b/i.test(name))) continue;
+      const b = document.createElement('span');
+      b.className = 'badge'; b.textContent = 'JPEG'; b.title = JPEG;
+      const cap = t.querySelector('.cap');
+      if (cap) cap.append(b);
+    }
+  }
+  new MutationObserver(badges).observe(grid, {childList: true, subtree: true});
+  function draw(s) {
+    st = s;
+    $('#im-inbox').textContent = s.inbox;
+    $('#im-when').textContent = ago(s.checked);
+    $('#im-busy').hidden = !s.running;
+    const lost = s.waiting.filter((p) => p.image_id == null);
+    $('#im-err').textContent = [s.error ? 'check failed: ' + s.error : (s.inbox_missing || ''),
+      lost.length ? `${lost.length} not imported: ` + lost.map((p) => `${p.file || p.asset}${p.error ? ' (' + p.error + ')' : ''}`).join(', ') : ''].filter(Boolean).join(' · ');
+    badges();
+    const now = s.waiting.filter((p) => p.image_id != null).map((p) => p.image_id).sort((a, b) => a - b).join();
+    // not before the first check or while checking, and once per set (a rejected photo the grid hides would loop)
+    if (s.checked != null && !s.running && now !== shown && sessionStorage.getItem('im-reload') !== now) {
+      sessionStorage.setItem('im-reload', now);
+      location.reload();
+    }
+  }
+  async function load(check) {
+    $('#im-check').disabled = true;
+    if (check) $('#im-busy').hidden = false;
+    try {
+      const r = await fetch('/api/immich' + (check ? '/check' : ''), check ? {method: 'POST'} : {});
+      const s = await r.json();
+      if (!r.ok) { $('#im-err').textContent = s.detail; return; }
+      draw(s);
+      if (s.running) setTimeout(() => load(false), 2000);
+    } finally { $('#im-check').disabled = false; }
+  }
+  $('#im-check').onclick = () => load(true);
+  $('#im-open-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const asset = $('#im-asset').value.trim();
+    if (!asset) return;
+    $('#im-open-msg').textContent = 'importing…';
+    const r = await fetch('/api/immich/open', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({asset})});
+    const s = await r.json();
+    if (!r.ok) { $('#im-open-msg').textContent = 'failed: ' + s.detail; return; }
+    location.href = '/photo/' + s.image_id;
+  };
+  badges();
+  load(false).then(() => { if (st && st.checked == null && !st.running) load(true); });
+  setInterval(() => load(false), 15000);
+})();
+</script>
+{% endif %}
 {% endblock %}

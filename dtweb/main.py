@@ -27,7 +27,7 @@ import urllib.parse
 import zipfile
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -301,7 +301,19 @@ async def photo_details(image_id: int):
     m = meta.get("metadata") or {}
     return {"image": info["image"], "version": _version(info["image"]), "shot": _shot(info.get("exif")),
             "title": m.get("title", ""), "description": m.get("description", ""),
-            "tags": _user_tags(meta.get("tags"))}
+            "tags": _user_tags(meta.get("tags")), "immich": _immich_links(meta.get("tags"))}
+
+
+def _immich_links(tags: list) -> dict | None:
+    """W61: the Immich assets a photo came from (immich|source|<asset>) and was
+    sent to (the last immich|export|<asset>), with the web address to link them."""
+    c = _immich_conf()
+    if not c["configured"]:
+        return None
+    parts = [(t if isinstance(t, str) else t.get("name", "")).split("|") for t in tags or []]
+    exp = [x[2] for x in parts if len(x) == 3 and x[:2] == ["immich", "export"]]
+    src = [x[2] for x in parts if len(x) == 3 and x[:2] == ["immich", "source"]]
+    return {"web": c["web"], "export": exp[-1] if exp else None, "source": src[-1] if src else None}
 
 
 def _user_tags(tags: list) -> list[str]:
@@ -2729,9 +2741,10 @@ async def _immich_state() -> dict:
             "inbox_missing": inbox.get("note"), "waiting": waiting, "sent": sent}
 
 
-@app.get("/immich", response_class=HTMLResponse)
-async def immich_page(request: Request):
-    return templates.TemplateResponse(request, "immich.html", {"lib": await _library_state()})
+@app.get("/immich")
+async def immich_page():
+    """W61: the inbox is a library filter now."""
+    return RedirectResponse("/?tag=immich%7Cinbox")
 
 
 @app.get("/api/immich")

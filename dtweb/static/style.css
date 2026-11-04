@@ -580,11 +580,12 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .im-list { max-height: 40vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; padding: .2rem .4rem; }
 .immich .im-list label { display: flex; align-items: center; gap: .3rem; padding: .15rem 0; overflow-wrap: anywhere; }
 .immich .im-list label .dim { margin-left: auto; }
-.im-page h3 { color: var(--dim); font-size: .95rem; margin: 1rem 0 .4rem; }
-.im-page .bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--dim); font-size: .85rem; margin-bottom: .6rem; }
-.im-page .open-form { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: 1.2rem; }
-.im-page .open-form input { flex: 1 1 14rem; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .3rem .4rem; }
-.im-page .tile figcaption { gap: .2rem; }
-.im-page .tile .err { color: #d9826b; overflow-wrap: anywhere; }
-.im-page .badge { display: inline-block; font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--accent); color: var(--accent); border-radius: 9px; }
-@media (pointer: coarse) { .immich button, .im-page button { min-height: 40px; } .immich .im-list label { min-height: 36px; } }
+.im-bar { margin: 0 0 .6rem; color: var(--dim); font-size: .85rem; }
+.im-bar .im-line { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; }
+.im-bar .status { overflow-wrap: anywhere; }
+.im-bar .status:empty { display: none; }
+.im-open { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-top: .4rem; }
+.im-open input { flex: 1 1 14rem; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .3rem .4rem; }
+.tile .badge { display: inline-block; font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--accent); color: var(--accent); border-radius: 9px; }
+@media (pointer: coarse) { .immich button, .im-bar button { min-height: 40px; } .immich .im-list label { min-height: 36px; } }
+.im-links { display: flex; gap: .8rem; margin: .4rem 0 0; font-size: .85rem; }

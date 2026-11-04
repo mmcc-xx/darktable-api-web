@@ -34,7 +34,9 @@ async function version(port) {
 export async function startChrome({port = 9333, userDataDir = `${homedir()}/.cache/cdp-chrome`} = {}) {
   if (await version(port)) return {port, stop: async () => {}};
   const proc = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${port}`,
-    `--user-data-dir=${userDataDir}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
+    `--user-data-dir=${userDataDir}`, '--no-first-run', '--no-default-browser-check',
+    '--disable-features=BackForwardCache',   // a form submit would keep the old page's event streams open: six connections are all there are
+    'about:blank'],
     {stdio: 'ignore'});
   let exited = false;
   proc.on('exit', () => { exited = true; });

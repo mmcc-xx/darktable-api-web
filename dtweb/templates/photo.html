@@ -551,6 +551,18 @@
     };
     dtMeta.editor($('#meta'), ID, d, {onSaved: sum});
     sum();
+    // W61: where the photo came from in Immich and where its edit went
+    if (d.immich && (d.immich.export || d.immich.source)) {
+      const p = document.createElement('p');
+      p.className = 'im-links';
+      for (const [asset, text] of [[d.immich.export, 'in Immich ↗'], [d.immich.source, 'from Immich ↗']]) {
+        if (!asset) continue;
+        const a = document.createElement('a');
+        a.href = `${d.immich.web}/photos/${asset}`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = text;
+        p.append(a);
+      }
+      $('#meta').append(p);
+    }
   }
   loadMeta();
 

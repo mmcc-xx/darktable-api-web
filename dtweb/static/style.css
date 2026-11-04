@@ -162,7 +162,12 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .pname { text-align: left; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 .prole { font-size: .75rem; }
 .pname { overflow-wrap: break-word; }
-.pmask { font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); white-space: nowrap; }
+.pmask { font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); white-space: nowrap; background: none; min-height: 0; cursor: pointer; }
+.pmask.on, .hist-mask.on { color: #000; background: #e8d23a; border-color: #e8d23a; }
+.pmask:disabled { cursor: default; opacity: .6; }
+.hist-mask { margin-left: .4rem; padding: 0 .3rem; border-radius: 999px; }
+.maskshow { position: absolute; top: .4rem; left: .4rem; z-index: 3; background: rgba(0, 0, 0, .6); border-color: #e8d23a; color: #e8d23a; }
+.maskshow[hidden] { display: none; }
 .plast { color: var(--accent); font-size: .7rem; }
 .plast[hidden] { display: none; }
 .pchev { font-size: .8rem; }

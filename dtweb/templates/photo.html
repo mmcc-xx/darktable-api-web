@@ -113,6 +113,7 @@
     </div>
     <div class="view">
       <button id="alts-open" class="secondary" hidden>alternatives</button>
+      <button id="maskshow" class="secondary maskshow" hidden title="hide the mask (the preview shows it in yellow, as darktable's display mask)"></button>
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
       <canvas id="clipov" class="clipov" hidden></canvas>
       <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
@@ -244,6 +245,10 @@
   const $ = (s) => document.querySelector(s);
   const status = (t) => { $('#status').textContent = t; };
   let state = null, pending = null, busy = false, url = null, dirty = false;
+  // one instance's mask over the preview in yellow (darktable's "display mask"),
+  // {op, inst}: kept across re-renders, other clients' changes included, until
+  // it is turned off or the instance has no mask any more
+  let maskOver = null;
   // dirty: unsaved changes in the shared edit; the save button shows it
   // (accent and enabled when there is something to save)
   function setDirty(v) {
@@ -270,6 +275,7 @@
       q = `w=${w}&h=${w}${cropping ? '&uncropped=true' : ''}`;
     }
     if (masks && maskSel !== null) q += `&mask=${maskSel}`;
+    else if (maskOver) q += `&mask_op=${encodeURIComponent(maskOver.op)}&mask_instance=${maskOver.inst}`;
     const sent = {...center};
     const t = performance.now();
     const r = await fetch(`/api/photo/${ID}/preview.jpg?${q}`);
@@ -277,6 +283,9 @@
     if (!r.ok) { status('preview failed: ' + (await r.text())); return; }
     const blob = await r.blob();
     const reg = r.headers.get('X-Region');
+    if (r.headers.get('X-Mask') && maskOver && !(masks && maskSel !== null)) {
+      note = `mask not shown (${r.headers.get('X-Mask')}),`; maskOver = null; maskOverUi();
+    }
     // the size it is shown at: zoomed, its own pixels; else fitted (the stylesheet)
     if (z && reg) {
       const bmp = await createImageBitmap(blob);
@@ -491,6 +500,8 @@
       b.textContent = `${it.num + 1} ${stepName(it)}${it.enabled === false ? ' (off)' : ''}`;
       b.onclick = () => goTo(it.num + 1);
       li.appendChild(b);
+      const mb = it.num >= 0 && maskOverButton(it.operation, it.instance || 0, 'hist-mask link');
+      if (mb) li.appendChild(mb);
       ol.appendChild(li);
     });
     ol.lastChild && ol.querySelector('.current') && ol.querySelector('.current').scrollIntoView({block: 'nearest'});
@@ -662,6 +673,7 @@
     const ms = masksSection();
     if (ms) box.appendChild(ms);
     if (s.others && s.others.length) box.appendChild(othersSection(s.others));
+    if (maskOver && !maskable(maskOver.op, maskOver.inst)) maskOver = null;
     renderHistory(s.history);
     if (s.geometry) showGeo(s.geometry);
     drawLevels();
@@ -671,7 +683,39 @@
     if (view === 'pipeline') renderPipeline(s);
     if (!deepDone) { deepDone = true; deepLink(); }
     scrolled.forEach(([el, top]) => { el.scrollTop = top; });
+    maskOverUi();
   }
+
+  // ── show mask: the instance's pipeline entry if its blending has a mask and it is on
+  const maskEntry = (op, inst) => (state && state.pipeline || []).find((e) => e.operation === op && e.instance === inst
+                                                                       && e.masks && e.masks !== 'off');
+  const maskable = (op, inst) => { const e = maskEntry(op, inst); return !!(e && e.enabled); };
+  function setMaskOver(op, inst) {
+    maskOver = op === null || (maskOver && maskOver.op === op && maskOver.inst === inst) ? null : {op, inst};
+    maskOverUi();
+    return preview(maskOver ? 'showing the mask in yellow,' : '');
+  }
+  // a toggle for an instance with a mask: data-maskshow="op:inst"
+  function maskOverButton(op, inst, cls) {
+    const e = maskEntry(op, inst);
+    if (!e) return null;
+    const b = document.createElement('button');
+    b.className = cls; b.dataset.maskshow = key(op, inst);
+    b.textContent = cls === 'pmask' ? e.masks : '◐';
+    b.disabled = !e.enabled;
+    b.title = e.enabled ? `show the ${e.masks} mask of ${e.label} in yellow (again: hide it)` : `${e.label} is off: its mask does nothing`;
+    b.onclick = (ev) => { ev.stopPropagation(); setMaskOver(op, inst); };
+    return b;
+  }
+  function maskOverUi() {
+    const c = $('#maskshow'), k = maskOver && key(maskOver.op, maskOver.inst);
+    if (maskOver) { const e = maskEntry(maskOver.op, maskOver.inst); c.textContent = `mask: ${e ? e.label : k} ✕`; }
+    c.hidden = !maskOver;
+    document.querySelectorAll('[data-maskshow]').forEach((b) => {
+      const on = b.dataset.maskshow === k; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    });
+  }
+  $('#maskshow').onclick = () => setMaskOver(null);
 
   // ── pipeline view: every instance in the edit, output at the top as in
   // darktable; a row opens to the module's controls
@@ -798,10 +842,8 @@
     const role = document.createElement('span');
     role.className = 'prole dim'; role.textContent = ROLE(e.operation, e.instance);
     head.append(dragGrip(e, row), cb, nm, role);
-    if (e.masks && e.masks !== 'off') {
-      const m = document.createElement('span');
-      m.className = 'pmask'; m.textContent = e.masks; head.appendChild(m);
-    }
+    const mb = e.in_history && !e.plumbing && maskOverButton(e.operation, e.instance, 'pmask');
+    if (mb) head.appendChild(mb);
     const last = document.createElement('span');
     last.className = 'plast'; last.textContent = '●'; last.title = 'last changed'; last.hidden = true;
     const chev = document.createElement('span');

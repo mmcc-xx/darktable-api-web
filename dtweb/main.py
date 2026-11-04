@@ -2044,19 +2044,34 @@ async def export_download(token: str, name: str):
 
 @app.get("/api/photo/{image_id}/preview.jpg")
 async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: bool = False,
-                        zoom: float = 0, cx: float = 0.5, cy: float = 0.5, mask: int = 0):
+                        zoom: float = 0, cx: float = 0.5, cy: float = 0.5, mask: int = 0,
+                        mask_op: str = "", mask_instance: int = 0):
     """The edit fitted inside w x h, or with zoom (1 = 100%, up to 2) the
     w x h region around cx, cy (fractions) at that scale; X-Region has the
-    part of the photo it shows (fractions, smaller at the photo's edges)."""
+    part of the photo it shows (fractions, smaller at the photo's edges).
+    mask_op + mask_instance: that instance's mask over it, as darktable's
+    "display mask" (mask=N: the named mask on exposure N); if it can't be
+    shown (no mask, module off) the plain edit, with the reason in X-Mask."""
     cap = 3200 if zoom > 0 else 2560       # a zoomed view fills a HiDPI window
     w, h = max(64, min(w, cap)), max(64, min(h, cap))
     region = {"zoom": min(zoom, 2.0), "center_x": cx, "center_y": cy} if zoom > 0 else None
-    if mask > 0 and await engine.supports("render.show_mask"):      # that named mask, as darktable's "display mask"
-        region = {**(region or {}), "show_mask": {"operation": "exposure", "instance": mask}}
-    try:
-        r = await engine.render(image_id, w, h, uncropped and not region, region)
-    except EngineError as exc:
-        raise _bad(exc, 502)
+    show = {"operation": mask_op, "instance": mask_instance} if mask_op else \
+        {"operation": "exposure", "instance": mask} if mask > 0 else None
+    note = None
+    if show and await engine.supports("render.show_mask"):
+        try:
+            r = await engine.render(image_id, w, h, False, {**(region or {}), "show_mask": show})
+        except EngineError as exc:
+            if exc.param != "show_mask" and "mask" not in str(exc):
+                raise _bad(exc, 502)
+            note = str(exc)
+        else:
+            show = False
+    if show is not False:
+        try:
+            r = await engine.render(image_id, w, h, uncropped and not region, region)
+        except EngineError as exc:
+            raise _bad(exc, 502)
     if r is None:
         return Response(status_code=204)   # overtaken by a newer request
     data, timing = r
@@ -2064,7 +2079,8 @@ async def photo_preview(image_id: int, w: int = 1200, h: int = 1200, uncropped: 
         "Cache-Control": "no-store",
         "X-Render-Ms": str(timing.get("process_ms", "")),
         "X-Total-Ms": str(timing.get("total_ms", "")),
-        **({"X-Region": json.dumps(timing["region"])} if timing.get("region") else {})})
+        **({"X-Region": json.dumps(timing["region"])} if timing.get("region") else {}),
+        **({"X-Mask": note[:300].encode("ascii", "replace").decode()} if note else {})})
 
 
 @app.get("/api/photo/{image_id}/before.jpg")

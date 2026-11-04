@@ -393,11 +393,46 @@ def rates_bias() -> float:
     return float(m.group(1)) if m else 1.0
 
 
+# The weekly usage reset (/usage: Thursday 11pm EDT, 10pm EST; fixed in UTC),
+# every 7 days, and daily-run.sh's PER_DAY.
+WEEK_RESET = datetime.datetime(2026, 11, 6, 3, tzinfo=datetime.timezone.utc)
+PER_DAY = 14
+LOG_USAGE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (?:usage: |daily run: .*now )session \d+%, week (\d+)%")
+
+
+def day_cap(start: datetime.datetime) -> tuple[int, int]:
+    """(day of the week, cap %) for a run starting at start, as daily-run.sh
+    works it out: PER_DAY a day since the weekly reset, 100 from day 7;
+    launchd/.cap-YYYY-MM-DD overrides it."""
+    week = datetime.timedelta(days=7)
+    reset = WEEK_RESET + (start - WEEK_RESET) // week * week
+    day = (start - reset) // datetime.timedelta(days=1) + 1
+    cap = 100 if day >= 7 else PER_DAY * day
+    with contextlib.suppress(OSError, ValueError):
+        cap = int((backlog_dir() / f"launchd/.cap-{start.date().isoformat()}").read_text().strip())
+    return day, cap
+
+
+def log_week() -> tuple[str, float] | None:
+    """The newest week % in the night-run log's tail: (time, %), or None."""
+    log = Path(os.environ.get("DTWEB_NIGHT_LOG") or Path.home() / "Library/Logs/darktable-night-run.log")
+    try:
+        with log.open("rb") as f:
+            f.seek(max(0, f.seek(0, 2) - 262144))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    hits = [m for m in map(LOG_USAGE.match, tail.splitlines()) if m]
+    return (hits[-1].group(1), float(hits[-1].group(2))) if hits else None
+
+
 def night_capacity() -> dict | None:
     """Weekly points left for the night's run: from the newest night note's last
     "run starting" line (cap - 1 - week, as daily-run.sh stops), the week taken
     from runs.tsv when a run ended after it; else forecast/tonight.md's budget.
-    {"pts", "cap", "week", "when", "src"}, or None."""
+    Before today's run or forecast: today's cap (day_cap) with the newest week
+    % known (0 if the week has reset since). {"pts", "cap", "week", "when",
+    "src", "today"}, or None."""
     d, out = backlog_dir(), None
     note = newest_night()
     if note:
@@ -418,9 +453,21 @@ def night_capacity() -> dict | None:
         if m and (out is None or when > out["when"]):
             out = {"pts": float(m.group(3)), "cap": int(m.group(1)), "week": float(m.group(2)), "when": when,
                    "src": f"forecast/tonight.md, {when[11:16]}"}
-    if out:
-        out["today"] = out["when"][:10] == datetime.date.today().isoformat()
-    return out
+    if out is None or out["when"][:10] == datetime.date.today().isoformat():
+        return out and {**out, "today": True}
+    # Last night's figures: today's run will use today's cap.
+    when, week, src = out["when"], out["week"], out["src"]
+    lw = log_week()
+    if lw and lw[0] > when:
+        when, week, src = lw[0], lw[1], "the night-run log"
+    src = f"{src}, {when[:16]}"
+    start = datetime.datetime.combine(datetime.date.today(), datetime.time(18)).astimezone()
+    day, cap = day_cap(start)
+    reset = start - (start - WEEK_RESET) % datetime.timedelta(days=7)
+    if datetime.datetime.fromisoformat(when).astimezone() < reset:
+        week, src = 0.0, "the weekly reset since"
+    return {"pts": cap - 1 - week, "cap": cap, "week": week, "when": when, "today": True,
+            "src": f"day {day} of the week; week % from {src}"}
 
 
 def mark_likely(opens: list[dict], budget: float, bias: float) -> None:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dtweb import backlog as B  # noqa: E402
 
 TODAY = datetime.date.today().isoformat()
+YESTERDAY = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
 QUEUE = """# Queue
 
 ## Queue
@@ -25,11 +26,13 @@ QUEUE = """# Queue
 """
 
 
-def setup(d: Path, note: str | None, runs: str | None, tonight: str | None) -> None:
+def setup(d: Path, note: str | None, runs: str | None, tonight: str | None, day: str = TODAY) -> None:
     (d / "forecast").mkdir(exist_ok=True)
+    for old in d.glob("night-run-*.md"):
+        old.unlink()
     (d / "QUEUE.md").write_text(QUEUE)
     (d / "forecast/RATES.md").write_text("Bias (actual ÷ est) 1.0 (test).\n")
-    for name, text in ((f"night-run-{TODAY}.md", note), ("forecast/runs.tsv", runs), ("forecast/tonight.md", tonight)):
+    for name, text in ((f"night-run-{day}.md", note), ("forecast/runs.tsv", runs), ("forecast/tonight.md", tonight)):
         p = d / name
         if text is None:
             p.unlink(missing_ok=True)
@@ -51,6 +54,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         os.environ["DTWEB_BACKLOG_DIR"] = str(d)
+        log = d / "night.log"
+        os.environ["DTWEB_NIGHT_LOG"] = str(log)
         checks = []
 
         def check(name, fn):
@@ -89,6 +94,49 @@ def main() -> int:
             c = B.night_capacity()
             assert c["pts"] == 2.8 and "tonight.md" in c["src"], c
         check("capacity from tonight's forecast", from_forecast)
+
+        def day_caps():
+            at = datetime.datetime.fromisoformat
+            got = [B.day_cap(at(t)) for t in ("2026-11-04T18:00-05:00", "2026-11-05T18:00-05:00",
+                                              "2026-11-05T22:30-05:00", "2026-11-06T18:00-05:00",
+                                              "2026-10-29T18:00-04:00", "2026-10-30T18:00-04:00")]
+            assert got == [(6, 84), (7, 100), (1, 14), (1, 14), (7, 100), (1, 14)], got
+            (d / "launchd").mkdir(exist_ok=True)
+            (d / "launchd/.cap-2026-11-04").write_text("80\n")
+            assert B.day_cap(at("2026-11-04T18:00-05:00")) == (6, 80)
+            (d / "launchd/.cap-2026-11-04").unlink()
+        check("day caps: 14% a day from the Thursday reset, .cap- override", day_caps)
+
+        def today_from_last_night():
+            log.unlink(missing_ok=True)
+            setup(d, f"{YESTERDAY} 18:00:01 run starting (session 5%, week 60%, cap 70%, 4 items open)\n",
+                  None, None, YESTERDAY)
+            start = datetime.datetime.combine(datetime.date.today(), datetime.time(18)).astimezone()
+            day, cap = B.day_cap(start)
+            c = B.night_capacity()
+            week = 0.0 if datetime.date.today().weekday() == 4 else 60.0    # Friday: reset since last night
+            assert (c["cap"], c["week"], c["pts"], c["today"]) == (cap, week, cap - 1 - week, True), c
+            assert f"day {day}" in c["src"], c
+        check("before today's run: today's cap, last night's week", today_from_last_night)
+
+        def log_newer():
+            setup(d, f"{YESTERDAY} 18:00:01 run starting (session 5%, week 60%, cap 70%, 4 items open)\n",
+                  None, None, YESTERDAY)
+            log.write_text(f"{YESTERDAY} 18:00:09 daily run: day 5 of the week, cap week 70%, session 90% "
+                           f"(kill 97%), until x; now session 7%, week 61%\n{YESTERDAY} 19:00:00 usage: "
+                           "session 50%, week 66%\nunrelated line\n")
+            c = B.night_capacity()
+            assert "night-run log" in c["src"] and c["week"] == (0.0 if datetime.date.today().weekday() == 4 else 66.0), c
+            log.unlink()
+        check("a newer week % in the night-run log wins", log_newer)
+
+        def reset_since():
+            old = (datetime.date.today() - datetime.timedelta(days=8)).isoformat()
+            setup(d, f"{old} 18:00:01 run starting (session 5%, week 90%, cap 98%, 4 items open)\n",
+                  None, None, old)
+            c = B.night_capacity()
+            assert c["week"] == 0.0 and "reset" in c["src"], c
+        check("a week % from before the weekly reset counts as 0", reset_since)
 
         def nothing():
             setup(d, None, None, None)

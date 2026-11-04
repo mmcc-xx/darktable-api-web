@@ -147,6 +147,18 @@
     dlg.showModal();
   }
 
+  // The queue's capacity uses the last week % known; read it now (/usage, a few
+  // seconds) and, if it moved, swap in the tab as it renders with it.
+  const capBar = root.querySelector('.bl-cap');
+  if (root.dataset.tab === 'queue' && capBar) {
+    fetch('/api/backlog/usage').then((r) => r.json()).then(async (j) => {
+      if (j.week == null || j.week === parseFloat(capBar.dataset.week) || document.querySelector('dialog[open]')) return;
+      const doc = new DOMParser().parseFromString(await (await fetch('/backlog?f=queue')).text(), 'text/html');
+      const fresh = doc.getElementById('bl');
+      if (fresh && !document.querySelector('dialog[open]')) { root.innerHTML = fresh.innerHTML; root.dataset.qhash = fresh.dataset.qhash; }
+    }).catch(() => {});
+  }
+
   document.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-act]');
     if (!b) return;

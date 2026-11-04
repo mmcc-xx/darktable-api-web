@@ -22,6 +22,8 @@ import subprocess
 import tempfile
 import textwrap
 import threading
+import time
+import zoneinfo
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -393,20 +395,74 @@ def rates_bias() -> float:
     return float(m.group(1)) if m else 1.0
 
 
-# The weekly usage reset (/usage: Thursday 11pm EDT, 10pm EST; fixed in UTC),
-# every 7 days, and daily-run.sh's PER_DAY.
+# The weekly usage reset when /usage can't be read (Thursday 11pm EDT, 10pm
+# EST; fixed in UTC), every 7 days, and daily-run.sh's PER_DAY.
 WEEK_RESET = datetime.datetime(2026, 11, 6, 3, tzinfo=datetime.timezone.utc)
 PER_DAY = 14
 LOG_USAGE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (?:usage: |daily run: .*now )session \d+%, week (\d+)%")
+USAGE_WEEK = re.compile(r"Current week[^:\n]*: (\d+)% used · resets (.+)")
+RESET_AT = re.compile(r"(?:([A-Z][a-z]{2}) (\d+) at )?(\d+)(?::(\d\d))?([ap]m) \(([^)]+)\)")
+_live: dict = {}                     # the last /usage reading: "at" (epoch), "when", "week", "reset"
+_live_lock = threading.Lock()
 
 
-def day_cap(start: datetime.datetime) -> tuple[int, int]:
+def reset_time(text: str, now: datetime.datetime) -> datetime.datetime | None:
+    """/usage's "Nov 5 at 10pm (America/New_York)" (or "2:10pm (...)") as the
+    next such moment after now, as usage.zsh's reset_time reads it."""
+    m = RESET_AT.search(text)
+    if not m:
+        return None
+    try:
+        n = now.astimezone(zoneinfo.ZoneInfo(m[6]))
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return None
+    t = n.replace(hour=int(m[3]) % 12 + (12 if m[5] == "pm" else 0), minute=int(m[4] or 0), second=0, microsecond=0)
+    if m[1]:
+        t = t.replace(month=datetime.datetime.strptime(m[1], "%b").month, day=int(m[2]))
+        if t < n - datetime.timedelta(days=1):                # a January reset read in December
+            t = t.replace(year=t.year + 1)
+    elif t < n:
+        t += datetime.timedelta(days=1)
+    return t
+
+
+def parse_usage(text: str, now: datetime.datetime) -> dict | None:
+    """The week line of `claude -p /usage`: {"when", "week", "reset"}, or None."""
+    m = USAGE_WEEK.search(text)
+    if not m:
+        return None
+    return {"when": now.strftime("%Y-%m-%d %H:%M:%S"), "week": float(m[1]), "reset": reset_time(m[2], now)}
+
+
+def live_usage(max_age: float = 60) -> dict | None:
+    """The week % now, from `claude -p /usage` (about 3 s; no model call), at
+    most once a max_age seconds; the last reading if it can't be read."""
+    with _live_lock:
+        if _live and time.time() - _live["at"] < max_age:
+            return dict(_live)
+        try:
+            r = subprocess.run(["claude", "-p", "/usage"], capture_output=True, text=True, timeout=30,
+                               cwd=tempfile.gettempdir())
+            u = parse_usage(r.stdout + r.stderr, datetime.datetime.now().astimezone())
+        except (subprocess.SubprocessError, OSError):
+            u = None
+        if u:
+            _live.clear()
+            _live.update(u, at=time.time())
+        return dict(_live) if _live else None
+
+
+def last_reset(t: datetime.datetime, anchor: datetime.datetime | None = None) -> datetime.datetime:
+    """The weekly reset at or before t (anchor: any reset, e.g. /usage's next one)."""
+    week, anchor = datetime.timedelta(days=7), anchor or WEEK_RESET
+    return anchor + (t - anchor) // week * week
+
+
+def day_cap(start: datetime.datetime, anchor: datetime.datetime | None = None) -> tuple[int, int]:
     """(day of the week, cap %) for a run starting at start, as daily-run.sh
     works it out: PER_DAY a day since the weekly reset, 100 from day 7;
     launchd/.cap-YYYY-MM-DD overrides it."""
-    week = datetime.timedelta(days=7)
-    reset = WEEK_RESET + (start - WEEK_RESET) // week * week
-    day = (start - reset) // datetime.timedelta(days=1) + 1
+    day = (start - last_reset(start, anchor)) // datetime.timedelta(days=1) + 1
     cap = 100 if day >= 7 else PER_DAY * day
     with contextlib.suppress(OSError, ValueError):
         cap = int((backlog_dir() / f"launchd/.cap-{start.date().isoformat()}").read_text().strip())
@@ -427,47 +483,60 @@ def log_week() -> tuple[str, float] | None:
 
 
 def night_capacity() -> dict | None:
-    """Weekly points left for the night's run: from the newest night note's last
-    "run starting" line (cap - 1 - week, as daily-run.sh stops), the week taken
-    from runs.tsv when a run ended after it; else forecast/tonight.md's budget.
-    Before today's run or forecast: today's cap (day_cap) with the newest week
-    % known (0 if the week has reset since). {"pts", "cap", "week", "when",
-    "src", "today"}, or None."""
-    d, out = backlog_dir(), None
+    """Weekly points left for tonight's run: cap - 1 - week, as daily-run.sh
+    stops. The cap is today's run's (the night note's last "run starting"
+    line) or forecast's (forecast/tonight.md), else worked out as daily-run.sh
+    does (day_cap). The week % is the newest reading: the run start, runs.tsv
+    (a run that ended since), the forecast, the night-run log, /usage
+    (live_usage, read by the page); 0 if the week has reset since. While the
+    forecast is the newest reading, its budget. {"pts", "cap", "week",
+    "when", "src", "today"}, or None."""
+    d, today = backlog_dir(), datetime.date.today().isoformat()
+    reads: list[tuple[str, float, str]] = []           # (when, week %, from)
+    cap = None                                          # (when, cap %, from) for today's run
+    budget = None
     note = newest_night()
     if note:
         starts = [m for m in map(RUN_START.match, note.read_text(encoding="utf-8").splitlines()) if m]
         if starts:
-            when, week, cap = starts[-1].group(1), float(starts[-1].group(2)), int(starts[-1].group(3))
-            src = f"{note.name}, run started {when[11:16]}"
+            when, week, c = starts[-1].group(1), float(starts[-1].group(2)), int(starts[-1].group(3))
+            reads.append((when, week, f"{note.name}, run started"))
+            if when[:10] == today:
+                cap = (when, c, f"run started {when[11:16]}")
             with contextlib.suppress(OSError, IndexError, ValueError):
                 rows = (d / "forecast/runs.tsv").read_text(encoding="utf-8").splitlines()
                 last = rows[-1].split("\t")
                 if last[0] >= when and last[3] != "forecast":    # start, end, min, why, s0, w0, s1, w1
-                    week, when, src = float(last[7]), last[1], f"runs.tsv, run ended {last[1][11:16]}"
-            out = {"pts": cap - 1 - week, "cap": cap, "week": week, "when": when, "src": src}
+                    reads.append((last[1], float(last[7]), "runs.tsv, run ended"))
     fc = d / "forecast/tonight.md"
     if fc.exists():
         m = FC_HEAD.search(fc.read_text(encoding="utf-8"))
         when = datetime.datetime.fromtimestamp(fc.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-        if m and (out is None or when > out["when"]):
-            out = {"pts": float(m.group(3)), "cap": int(m.group(1)), "week": float(m.group(2)), "when": when,
-                   "src": f"forecast/tonight.md, {when[11:16]}"}
-    if out is None or out["when"][:10] == datetime.date.today().isoformat():
-        return out and {**out, "today": True}
-    # Last night's figures: today's run will use today's cap.
-    when, week, src = out["when"], out["week"], out["src"]
+        if m:
+            reads.append((when, float(m.group(2)), "forecast/tonight.md"))
+            if when[:10] == today and (cap is None or when > cap[0]):
+                cap, budget = (when, int(m.group(1)), "forecast"), (when, float(m.group(3)))
     lw = log_week()
-    if lw and lw[0] > when:
-        when, week, src = lw[0], lw[1], "the night-run log"
-    src = f"{src}, {when[:16]}"
-    start = datetime.datetime.combine(datetime.date.today(), datetime.time(18)).astimezone()
-    day, cap = day_cap(start)
-    reset = start - (start - WEEK_RESET) % datetime.timedelta(days=7)
-    if datetime.datetime.fromisoformat(when).astimezone() < reset:
-        week, src = 0.0, "the weekly reset since"
-    return {"pts": cap - 1 - week, "cap": cap, "week": week, "when": when, "today": True,
-            "src": f"day {day} of the week; week % from {src}"}
+    if lw:
+        reads.append((lw[0], lw[1], "the night-run log"))
+    live = dict(_live)
+    if live:
+        reads.append((live["when"], live["week"], "/usage"))
+    if not reads:
+        return None
+    when, week, src = max(reads)
+    now = datetime.datetime.now().astimezone()
+    anchor = live.get("reset")
+    if cap is None:
+        day, c = day_cap(datetime.datetime.combine(now.date(), datetime.time(18)).astimezone(), anchor)
+        cap = (when, c, f"day {day} of the week")
+    pts = cap[1] - 1 - week
+    if datetime.datetime.fromisoformat(when).astimezone() < last_reset(now, anchor):
+        week, pts, src = 0.0, cap[1] - 1, "the weekly reset since"
+    elif budget and budget[0] == when:
+        pts = budget[1]
+    return {"pts": pts, "cap": cap[1], "week": week, "when": when, "today": True,
+            "src": f"{cap[2]}; week % from {src}, {when[5:16]}"}
 
 
 def mark_likely(opens: list[dict], budget: float, bias: float) -> None:
@@ -519,7 +588,8 @@ async def backlog_page(request: Request, f: str = "queue"):
                         cut["cut"] = True
                     ctx["cap"] = {**cap, "pts": pts_str(cap["pts"]), "bias": b,
                                   "done": sum(it["likely"] == "done" for it in opens), "open": len(opens),
-                                  "all_done": cut is None}
+                                  "all_done": cut is None,
+                                  "spare": pts_str(cap["pts"] - sum(it["pts_n"] * b for it in opens))}
         elif tab in ("features", "bugs", "done", "ideas"):
             lines = read_lines(FILES[tab])
             queued = queued_ids(read_lines("QUEUE.md")) if tab != "ideas" else set()
@@ -907,6 +977,13 @@ def do_unqueue(b: UnqueueBody) -> dict:
         lines[s + 1:s + 1] = [""] + block
     write_lines("QUEUE.md", lines)
     return {"label": b.label, **commit(["QUEUE.md"], f"unqueue {b.label}")}
+
+
+@router.get("/api/backlog/usage")
+def backlog_usage():
+    """The week % now (live_usage), for the queue tab to refresh its capacity."""
+    u = live_usage()
+    return JSONResponse({"week": u["week"], "when": u["when"]} if u else {"week": None})
 
 
 @router.post("/api/backlog/edit")

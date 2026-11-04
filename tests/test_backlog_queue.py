@@ -138,6 +138,36 @@ def main() -> int:
             assert c["week"] == 0.0 and "reset" in c["src"], c
         check("a week % from before the weekly reset counts as 0", reset_since)
 
+        def usage_parse():
+            now = datetime.datetime.fromisoformat("2026-11-04T11:30-05:00")
+            u = B.parse_usage("Current session: 20% used · resets Nov 4 at 2:10pm (America/New_York)\n"
+                              "Current week (all models): 70% used · resets Nov 5 at 10pm (America/New_York)\n", now)
+            assert u["week"] == 70.0 and u["reset"].isoformat() == "2026-11-05T22:00:00-05:00", u
+            r = B.reset_time("resets 2:10pm (America/New_York)", now)
+            assert r.isoformat() == "2026-11-04T14:10:00-05:00", r
+            r = B.reset_time("resets Jan 2 at 10:59pm (America/New_York)",
+                             datetime.datetime.fromisoformat("2026-12-30T12:00-05:00"))
+            assert r.isoformat() == "2027-01-02T22:59:00-05:00", r
+            assert B.parse_usage("Error: not logged in", now) is None
+        check("/usage: week % and reset time", usage_parse)
+
+        def live_reading():
+            setup(d, f"{YESTERDAY} 18:00:01 run starting (session 5%, week 60%, cap 70%, 4 items open)\n",
+                  None, None, YESTERDAY)
+            now = datetime.datetime.now().astimezone()
+            start = datetime.datetime.combine(now.date(), datetime.time(18)).astimezone()
+            B._live.update(when=now.strftime("%Y-%m-%d %H:%M:%S"), week=72.0, at=0,
+                           reset=start + datetime.timedelta(days=2.5))   # 18:00 is 4.5 days in: day 5
+            try:
+                c = B.night_capacity()
+                assert (c["week"], c["cap"], c["pts"]) == (72.0, 70, -3.0), c
+                assert "/usage" in c["src"] and "day 5" in c["src"], c
+                B._live["reset"] = start + datetime.timedelta(hours=12)  # 6.5 days in: day 7
+                assert B.night_capacity()["cap"] == 100
+            finally:
+                B._live.clear()
+        check("a live /usage reading: its week and reset", live_reading)
+
         def nothing():
             setup(d, None, None, None)
             assert B.night_capacity() is None

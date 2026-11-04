@@ -41,7 +41,7 @@ async def main(cmd, photo, *rest):
             ei = js(await call("add_module_instance", operation="exposure"))["instance"]
             await call("set_module", operation="exposure", instance=ei, values={"exposure": 0.9})
             await call("set_blending", operation="exposure", instance=ei,
-                       values={"parametric": {"Cz_in": {"range": [15, 20, 30, 35], "inverted": True}}})
+                       values={"parametric": {"Cz_in": {"range": [15, 20, 30, 35], "inverted": True, "boost": 6.64}}})
             await call("add_mask", operation="colorbalancergb", shape="circle", x=0.4, y=0.5, radius=0.2)
             return {"ok": True, "exposure": ei}
         if cmd == "change":

@@ -73,7 +73,7 @@ button.pid:hover, button.pid:focus-visible { color: var(--accent); border-color:
 .detail-head .detail-name { min-width: 0; }
 .photo-nav .pid { font-size: .8rem; }
 .toast { position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%); z-index: 100; padding: .4rem .9rem; border-radius: 6px;
-         background: #3a2f1c; border: 1px solid #6b5228; color: var(--fg, #eee); font-size: .85rem; opacity: 0; pointer-events: none; transition: opacity .15s; }
+         background: #3a2f1c; border: 1px solid #6b5228; color: var(--text); font-size: .85rem; opacity: 0; pointer-events: none; transition: opacity .15s; }
 .toast.on { opacity: 1; }
 .tile .name { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ctl { display: flex; align-items: center; gap: .1rem; }
@@ -594,3 +594,20 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .tile .badge { display: inline-block; font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--accent); color: var(--accent); border-radius: 9px; }
 @media (pointer: coarse) { .immich button, .im-bar button { min-height: 40px; } .immich .im-list label { min-height: 36px; } }
 .im-links { display: flex; gap: .8rem; margin: .4rem 0 0; font-size: .85rem; }
+/* a named mask's parametric channels (W63): four markers on one track */
+.mask-param { display: inline-flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: center; }
+div.mask-param { display: flex; flex-direction: column; align-items: stretch; margin: .3rem 0; }
+.mp-row { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.mp-lab { min-width: 2.2rem; font-weight: 600; }
+.mp-track { position: relative; display: inline-block; width: 10rem; height: 1.6rem; touch-action: none; cursor: pointer;
+  background: linear-gradient(var(--line), var(--line)) center / 100% 2px no-repeat; }
+.mp-soft, .mp-full { position: absolute; top: calc(50% - 4px); height: 8px; pointer-events: none; }
+.mp-soft { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.mp-full { background: var(--accent); }
+.mp-row.inv .mp-soft, .mp-row.inv .mp-full { opacity: .35; }
+.mp-h { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+  background: var(--text); border: 2px solid var(--bg); box-sizing: border-box; touch-action: none; }
+.mp-h:focus-visible { outline: 2px solid var(--accent); }
+.mp-read { font-variant-numeric: tabular-nums; font-size: .85em; opacity: .8; min-width: 9rem; }
+.mp-boost { width: 4.2rem; }
+@media (pointer: coarse) { .mp-track { width: 12rem; height: 2.2rem; } .mp-h { width: 22px; height: 22px; margin: -11px 0 0 -11px; } }

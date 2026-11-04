@@ -107,6 +107,8 @@
         <input id="mask-name" type="text" maxlength="64" size="14" placeholder="name" aria-label="mask name" title="rename (Enter)">
         <span class="size"><label for="mask-opacity">opacity</label><input type="range" id="mask-opacity" min="0" max="100" step="1" data-maskval="opacity" data-inst="-1"></span>
         <span class="size"><label for="mask-blur">soft edge</label><input type="range" id="mask-blur" min="0" max="100" step="1" data-maskval="blur_radius" data-inst="-1"></span>
+        <span id="mask-param" class="mask-param"></span>
+        <span id="mask-used" class="status"></span>
       </span>
       <span id="mask-status" class="status" role="status"></span>
       <button id="mask-done" class="secondary" title="leave the masks tool (Esc)">done</button>
@@ -2229,7 +2231,7 @@
       const chip = document.createElement('span'), pick = document.createElement('button'), x = document.createElement('button'), on = maskSel === m.instance;
       chip.setAttribute('role', 'listitem'); chip.className = 'mark-chip';
       pick.className = 'secondary mark-pick' + (on ? ' on' : ''); pick.textContent = m.name;
-      pick.title = `${m.name}: ${m.shapes} shape${m.shapes === 1 ? '' : 's'}` + (m.users.length ? ', used by ' + maskUsers(m) : '') + ' (click to select)';
+      pick.title = `${m.name}: ` + [m.shapes ? `${m.shapes} shape${m.shapes === 1 ? '' : 's'}` : '', (m.parametric || []).length ? (m.parametric || []).map((c) => c.channel).join(' + ') + ' range' : ''].filter(Boolean).join(', ') + (m.users.length ? ', used by ' + maskUsers(m) : '') + ' (click to select)';
       pick.setAttribute('aria-pressed', on);
       pick.onclick = () => maskSelect(on ? null : m.instance);
       x.className = 'secondary mark-x'; x.textContent = '×';
@@ -2247,6 +2249,8 @@
     if (!m) return;
     if (document.activeElement !== $('#mask-name')) $('#mask-name').value = m.name;
     $('#mask-opacity').dataset.inst = $('#mask-blur').dataset.inst = m.instance;
+    $('#mask-used').textContent = m.users.length ? 'used by ' + maskUsers(m) : 'not used yet';
+    if (!maskParamDrag) $('#mask-param').replaceChildren(...maskParams(m));
     maskSliders();
   }
   for (const [id, val] of [['#mask-opacity', 'opacity'], ['#mask-blur', 'blur_radius']]) {
@@ -2266,20 +2270,110 @@
     sl.oninput = () => { m[val] = +sl.value; maskSliders(); maskValues(m.instance, {[val]: +sl.value}); };
     return sl;
   }
+  // a parametric channel of a mask (W63): darktable's four markers (where the mask starts,
+  // is full, stops being full, ends) on one track, invert, and boost for the channels that have it
+  let maskParamDrag = false;
+  const mpFmt = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(2));
+  function maskParams(m) {
+    return (m.parametric || []).map((c) => maskParam(m, c));
+  }
+  function maskParam(m, c) {
+    const row = document.createElement('span'), lab = document.createElement('span'), track = document.createElement('span');
+    const soft = document.createElement('span'), full = document.createElement('span'), read = document.createElement('span');
+    const r = c.range.slice(), span = (c.max - c.min) || 1, name = `${c.channel}${c.way === 'out' ? ' out' : ''}`;
+    row.className = 'mp-row'; row.dataset.key = c.key; row.dataset.inst = m.instance;
+    lab.className = 'mp-lab'; lab.textContent = name;
+    lab.title = `${m.name}: the ${c.channel} channel of the module's ${c.way === 'out' ? 'output' : 'input'} (the darkroom's units)`;
+    track.className = 'mp-track'; soft.className = 'mp-soft'; full.className = 'mp-full'; read.className = 'mp-read';
+    track.append(soft, full);
+    const pct = (v) => `${Math.max(0, Math.min(100, (v - c.min) / span * 100))}%`;
+    const hs = [0, 1, 2, 3].map((k) => {
+      const h = document.createElement('span');
+      h.className = 'mp-h'; h.tabIndex = 0; h.setAttribute('role', 'slider');
+      h.setAttribute('aria-label', `${m.name} ${name} ${['start', 'full from', 'full to', 'end'][k]}`);
+      h.setAttribute('aria-valuemin', c.min); h.setAttribute('aria-valuemax', c.max);
+      track.append(h);
+      return h;
+    });
+    const draw = () => {
+      hs.forEach((h, k) => { h.style.left = pct(r[k]); h.setAttribute('aria-valuenow', r[k]); h.setAttribute('aria-valuetext', mpFmt(r[k]) + c.unit); });
+      soft.style.left = pct(r[0]); soft.style.width = `calc(${pct(r[3])} - ${pct(r[0])})`;
+      full.style.left = pct(r[1]); full.style.width = `calc(${pct(r[2])} - ${pct(r[1])})`;
+      row.classList.toggle('inv', !!inv.checked);
+      read.textContent = r.map(mpFmt).join(' · ') + c.unit;
+    };
+    const set = (k, v) => {
+      v = Math.max(k ? r[k - 1] : c.min, Math.min(k < 3 ? r[k + 1] : c.max, v));
+      if (v === r[k]) return;
+      r[k] = Math.round(v * 1e4) / 1e4; c.range = r.slice(); draw();
+      maskValues(m.instance, {parametric: {[c.key]: {range: r.slice()}}});
+    };
+    const at = (e) => c.min + Math.max(0, Math.min(1, (e.clientX - track.getBoundingClientRect().left) / track.getBoundingClientRect().width)) * span;
+    let drag = -1;
+    track.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const v = at(e), hit = hs.indexOf(e.target);
+      // the marker grabbed, or the nearest one (of two on the same spot, the one that can move that way)
+      drag = hit >= 0 ? hit : r.reduce((b, x, k) => (Math.abs(x - v) < Math.abs(r[b] - v) || (x === r[b] && v > x) ? k : b), 0);
+      if (hit >= 0 && drag < 3 && r[drag + 1] === r[drag] && v > r[drag]) drag++;
+      maskParamDrag = true; track.setPointerCapture(e.pointerId); hs[drag].focus({preventScroll: true});
+      if (hit < 0) set(drag, v);
+    });
+    track.addEventListener('pointermove', (e) => { if (drag >= 0) set(drag, at(e)); });
+    const end = () => { if (drag < 0) return; drag = -1; maskParamDrag = false; if (!maskRunning) maskParamsRefresh(); };
+    track.addEventListener('pointerup', end); track.addEventListener('pointercancel', end);
+    hs.forEach((h, k) => h.addEventListener('keydown', (e) => {
+      const d = {ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1}[e.key];
+      if (!d) return;
+      e.preventDefault(); e.stopPropagation();
+      set(k, r[k] + d * span / (e.shiftKey ? 10 : 100));
+    }));
+    const inv = document.createElement('input'), il = document.createElement('label');
+    inv.type = 'checkbox'; inv.checked = c.inverted; inv.setAttribute('aria-label', `${m.name} ${name} invert`);
+    il.className = 'mask-inv'; il.title = 'invert this channel (the mask is where the value is outside the range)'; il.append(inv, ' invert');
+    inv.onchange = () => { c.inverted = inv.checked; draw(); maskValues(m.instance, {parametric: {[c.key]: {inverted: inv.checked}}}); };
+    row.append(lab, track, read, il);
+    if (c.boost !== null && c.boost !== undefined) {
+      const b = document.createElement('input'), bl = document.createElement('label');
+      b.type = 'number'; b.min = 0; b.max = 18; b.step = 0.1; b.value = Math.round(c.boost * 100) / 100; b.className = 'mp-boost';
+      b.setAttribute('aria-label', `${m.name} ${name} boost`);
+      bl.className = 'mp-boostl'; bl.title = 'boost (EV): widens the scale for values past 100 % (the markers keep their place on the track)';
+      bl.append('boost ', b);
+      b.onchange = () => {
+        const v = Math.max(0, Math.min(18, +b.value || 0));
+        b.value = v; c.boost = v;
+        maskValues(m.instance, {parametric: {[c.key]: {boost: v}}});
+      };
+      row.append(bl);
+    }
+    draw();
+    return row;
+  }
+  // after a parametric change: redraw the mask controls from the engine's values (both copies)
+  function maskParamsRefresh() {
+    if (maskParamDrag) return;
+    masksPlace(); maskFields();
+  }
   function maskValues(inst, v) {
-    maskVals = {...(maskVals && maskVals.instance === inst ? maskVals : {}), instance: inst, ...v};
+    const old = maskVals && maskVals.instance === inst ? maskVals : {}, par = {...(old.parametric || {})};
+    for (const [k, x] of Object.entries(v.parametric || {})) par[k] = {...(par[k] || {}), ...x};
+    maskVals = {...old, instance: inst, ...v};
+    if (Object.keys(par).length) maskVals.parametric = par;
     if (!maskRunning) maskFlush();
   }
   async function maskFlush() {
     maskRunning = true;
+    let param = false;
     while (maskVals) {
       const b = maskVals; maskVals = null;
+      param = param || !!b.parametric;
       const r = await api('mask/set', b);
-      if (!r.ok) status('not applied: ' + (await r.json()).detail);
+      if (!r.ok) { status('not applied: ' + (await r.json()).detail); param = true; masksKey = null; }
       else { setDirty(true); const d = await r.json(); if (!maskVals) { masksData = d; maskList(); } }
       if (!maskVals) await preview();
     }
     maskRunning = false;
+    if (param) { if (masksKey === null) await masksSync(); maskParamsRefresh(); }
   }
   async function maskRename() {
     const m = maskCur(), name = $('#mask-name').value.trim();
@@ -2404,6 +2498,10 @@
         row.className = 'field'; lab.textContent = label;
         row.append(lab, maskSlider(m, val, label)); box.append(row);
       }
+      if ((m.parametric || []).length) {
+        const pr = document.createElement('div');
+        pr.className = 'mask-param'; pr.append(...maskParams(m)); box.append(pr);
+      }
       body.append(box);
     }
     d.append(sum, body);
@@ -2412,6 +2510,7 @@
   }
   // put the masks section after areas (or black & white), or take it away; refill the mask rows
   function masksPlace() {
+    if (maskParamDrag) return;
     const old = document.querySelector('details[data-sec="masks"]'), fresh = masksSection();
     if (old && fresh) { fresh.open = old.open; old.replaceWith(fresh); }
     else if (old) old.remove();

@@ -1210,6 +1210,32 @@ class MaskBody(BaseModel):
     combine: str = "union"
 
 
+# a named mask's blending: drawn shapes, parametric ranges, or both (W63)
+MASK_KINDS = ("drawn", "parametric", "drawn & parametric")
+# parametric channels as the engine gives them: the unit, and the boost the engine adds
+# to Jz and Cz (their top is 100 % at 6.64 EV, as the darkroom's sliders)
+_HUE_CH, _AB_CH = {"h", "H", "hz"}, {"a", "b"}
+_BOOST_CH = {"L", "a", "b", "C", "g", "R", "G", "B", "Jz", "Cz"}
+_BOOST_OFFSET = {"Jz": -6.64385619, "Cz": -6.64385619}
+
+
+def _param_channels(bl: dict) -> list[dict]:
+    """The parametric channels in use, each with its range in display units and the slider's ends."""
+    out = []
+    order = {c: i for i, c in enumerate(bl.get("channels") or [])}
+    for key, v in (bl.get("parametric") or {}).items():
+        ch, _, way = key.rpartition("_")
+        boost = v.get("boost") if ch in _BOOST_CH else None
+        if ch in _HUE_CH:
+            lo, hi, unit = 0.0, 360.0, "°"
+        else:
+            top = (128.0 if ch in _AB_CH else 100.0) * 2 ** ((boost or 0.0) + _BOOST_OFFSET.get(ch, 0.0))
+            lo, hi, unit = (-top if ch in _AB_CH else 0.0), top, ("" if ch in _AB_CH else "%")
+        out.append({"key": key, "channel": ch, "way": way, "range": v.get("range"), "inverted": bool(v.get("inverted")),
+                    "boost": boost, "min": lo, "max": hi, "unit": unit})
+    return sorted(out, key=lambda c: (order.get(c["channel"], 99), c["way"] != "in"))
+
+
 async def _mask_holders(image_id: int, mods: list[dict]) -> list[dict]:
     """The named masks among the module list's instances (see above)."""
     paired = {(m.get("name") or "").strip().lower() for m in mods      # an area's exposure + color balance pair
@@ -1225,9 +1251,10 @@ async def _mask_holders(image_id: int, mods: list[dict]) -> list[dict]:
             if abs(ev) >= 1e-6:
                 continue
             bl = await engine.edit(image_id, "blend_get", operation="exposure", instance=m["instance"])
-            if "drawn" not in str(bl.get("masks", "")):
+            if bl.get("masks") not in MASK_KINDS:
                 continue
-            shapes = (await engine.edit(image_id, "mask_list", operation="exposure", instance=m["instance"])).get("shapes", [])
+            shapes = ((await engine.edit(image_id, "mask_list", operation="exposure", instance=m["instance"])).get("shapes", [])
+                      if "drawn" in bl["masks"] else [])
         except (EngineError, StopIteration):
             continue
         out.append((m, bl, _leaf_count(shapes)))
@@ -1242,7 +1269,7 @@ async def _masks(image_id: int) -> dict:
     pos = {(m["operation"], m["instance"]): i for i, m in enumerate(mods)}
     masks = {m["instance"]: {"name": m["name"], "instance": m["instance"], "pos": pos[("exposure", m["instance"])],
                              "enabled": m["enabled"], "opacity": bl.get("opacity"), "blur_radius": bl.get("blur_radius"),
-                             "shapes": n, "users": []} for m, bl, n in holders}
+                             "shapes": n, "kind": bl.get("masks"), "parametric": _param_channels(bl), "users": []} for m, bl, n in holders}
     targets = []
     for m in mods:
         op, inst = m["operation"], m["instance"]
@@ -1383,11 +1410,12 @@ class MaskSetBody(BaseModel):
     name: str | None = None
     opacity: float | None = None
     blur_radius: float | None = None
+    parametric: dict[str, dict] | None = None   # {"Cz_in": {range, inverted, boost}}, as blend_set
 
 
 @app.post("/api/photo/{image_id}/mask/set")
 async def photo_mask_set(image_id: int, body: MaskSetBody):
-    """Rename a named mask, or set its opacity / soft edge (blur radius)."""
+    """Rename a named mask, or set its opacity / soft edge (blur radius) / parametric ranges."""
     try:
         await _require_holder(image_id, body.instance)
         if body.name is not None:
@@ -1399,6 +1427,8 @@ async def photo_mask_set(image_id: int, body: MaskSetBody):
             elif body.name.strip() != cur.strip():
                 await engine.edit(image_id, "module_rename", operation="exposure", instance=body.instance, name=body.name.strip())
         vals = {k: v for k, v in (("opacity", body.opacity), ("blur_radius", body.blur_radius)) if v is not None}
+        if body.parametric:
+            vals["parametric"] = body.parametric
         if vals:
             await engine.edit(image_id, "blend_set", operation="exposure", instance=body.instance, values=vals)
         return await _masks(image_id)

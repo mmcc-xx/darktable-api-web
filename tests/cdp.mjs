@@ -15,8 +15,8 @@
 // Chrome must run outside the Bash sandbox (inside it dies with
 // "Failed to get the path for 1001").
 
-import {spawn} from 'node:child_process';
-import {writeFileSync} from 'node:fs';
+import {execFileSync, spawn} from 'node:child_process';
+import {existsSync, writeFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 
 export const CHROME = process.env.CHROME ||
@@ -29,10 +29,24 @@ async function version(port) {
   catch { return null; }
 }
 
+// Free memory before a new Chrome (#166: a night run's scratch engines,
+// :8030 apps and Chrome filled the Mac's memory): throws when
+// mem-check.sh says low. MEM_CHECK=off skips it, MEM_CHECK=path picks the script.
+const MEM_CHECK = process.env.MEM_CHECK ||
+  `${homedir()}/darktableluamcp/darktable-api/launchd/mem-check.sh`;
+function memCheck() {
+  if (MEM_CHECK === 'off' || !existsSync(MEM_CHECK)) return;
+  try { execFileSync(MEM_CHECK, {encoding: 'utf8'}); }
+  catch (e) {
+    throw new Error(`${(e.stdout || e.message).trim()}: not starting Chrome (wait: mem-check.sh --wait --tries 1)`);
+  }
+}
+
 // Start headless Chrome on port, or use one already listening there (then
 // stop() leaves it running). Returns {port, stop}.
 export async function startChrome({port = 9333, userDataDir = `${homedir()}/.cache/cdp-chrome`} = {}) {
   if (await version(port)) return {port, stop: async () => {}};
+  memCheck();
   const proc = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${port}`,
     `--user-data-dir=${userDataDir}`, '--no-first-run', '--no-default-browser-check',
     '--disable-features=BackForwardCache',   // a form submit would keep the old page's event streams open: six connections are all there are

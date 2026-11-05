@@ -11,6 +11,7 @@ No authentication: keep it on 127.0.0.1 or a trusted network.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import asyncio
 import base64
@@ -498,7 +499,7 @@ async def _pipeline(image_id: int, mods: list[dict]) -> list[dict]:
                 masks = "off"
         out.append({"operation": op, "instance": inst, "name": m.get("name", ""), "label": m["label"],
                     "enabled": m["enabled"], "in_history": bool(m.get("in_history")),
-                    "plumbing": plumbing, "masks": masks})
+                    "plumbing": plumbing, "masks": masks, "one_instance": bool(m.get("one_instance"))})
     return out
 
 
@@ -1648,6 +1649,74 @@ async def photo_move(image_id: int, body: MoveBody):
     try:
         await engine.edit(image_id, "module_move", **body.model_dump(exclude_none=True))
         return await _state(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+async def _all_modules(image_id: int) -> list[dict]:
+    """Every module the pipe has (module_list all), in pipe order; an engine
+    without it: those in the edit."""
+    all_ = await engine.supports("module_list.all")
+    return (await engine.edit(image_id, "module_list", **({"all": True} if all_ else {})))["modules"]
+
+
+@app.get("/api/photo/{image_id}/modules")
+async def photo_modules(image_id: int):
+    """The pipeline view's add module search (W60): one entry per module,
+    output first, without darktable's hidden and deprecated ones."""
+    try:
+        mods = await _all_modules(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+    out = {}
+    for m in reversed(mods):
+        if m.get("hidden", m["operation"] in HIDDEN) or m.get("deprecated"):
+            continue
+        e = out.setdefault(m["operation"], {"operation": m["operation"], "label": m["label"].split(" • ")[0],
+                                            "instances": 0, "in_edit": False,
+                                            "one_instance": bool(m.get("one_instance"))})
+        if m.get("enabled") or m.get("in_history"):
+            e["instances"] += 1
+            e["in_edit"] = True
+    return {"modules": list(out.values())}
+
+
+class InstanceBody(BaseModel):
+    action: Literal["add", "new", "copy", "remove", "rename"]
+    operation: str
+    instance: int = 0
+    name: str | None = None
+
+
+@app.post("/api/photo/{image_id}/instance")
+async def photo_instance(image_id: int, body: InstanceBody):
+    """Module instances from the pipeline view (W60). add: the module into the
+    edit (switched on where it isn't in the history yet, else a new instance
+    after its last one); new / copy: a new instance after this one (copy: its
+    settings, blending and shapes); remove (not a module's only instance);
+    rename ("" gives back darktable's label). Replies the state and the
+    instance made or renamed."""
+    op, inst = body.operation, body.instance
+    try:
+        if body.action == "add":
+            mods = [m for m in await _all_modules(image_id) if m["operation"] == op]
+            if not mods:
+                raise HTTPException(400, f"no module {op}")
+            if len(mods) == 1 and not mods[0].get("in_history"):
+                inst = mods[0]["instance"]
+                await engine.edit(image_id, "module_enable", operation=op, instance=inst, enabled=True)
+            else:
+                inst = (await engine.edit(image_id, "module_add", operation=op, instance=mods[-1]["instance"]))["instance"]
+        elif body.action in ("new", "copy"):
+            inst = (await engine.edit(image_id, "module_add", operation=op, instance=inst,
+                                      copy=body.action == "copy"))["instance"]
+        elif body.action == "remove":
+            await engine.edit(image_id, "module_remove", operation=op, instance=inst)
+        else:
+            if body.name is None:
+                raise HTTPException(400, "rename needs name")
+            await engine.edit(image_id, "module_rename", operation=op, instance=inst, name=body.name.strip())
+        return {**await _state(image_id), "instance": {"operation": op, "instance": inst}}
     except EngineError as exc:
         raise _bad(exc)
 

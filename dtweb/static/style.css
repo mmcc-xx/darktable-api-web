@@ -177,6 +177,12 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .pdrop { position: absolute; left: .6rem; right: .6rem; height: 2px; background: var(--accent); pointer-events: none; }
 .pmove { margin-left: auto; width: 2.4rem; flex: none; font-size: .75rem; padding: 0 .1rem; background: transparent; color: var(--dim);
          border: 1px solid var(--line); border-radius: 3px; }
+.pinst { margin-left: 0; }
+.padd { padding: .2rem .9rem .4rem; }
+.padd input { width: 100%; }
+.padd-list { display: flex; flex-direction: column; align-items: flex-start; gap: .1rem; }
+.padd-list button { text-align: left; padding: .25rem 0; font-size: .85rem; }
+.prename { flex: 1; min-width: 0; font-size: .85rem; }
 .pbody { padding: 0 .9rem .6rem; }
 .pnote { font-size: .75rem; margin: .2rem 0 0; }
 .subsec { border-top: 1px solid var(--line); margin: .7rem 0 .3rem; padding-top: .4rem; font-size: .75rem;
@@ -213,6 +219,7 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   .phead { min-height: 44px; }
   .pgrip { display: none; }
   .pmove { min-height: 32px; }
+  .padd-list button { min-height: 40px; }
   .views button { min-height: 44px; }
   body.darkroom-page { --bar-h: 58px; height: 100vh; height: 100dvh; padding-bottom: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px)); overflow: hidden; }
   body.darkroom-page .top { flex: none; position: static; flex-wrap: nowrap; gap: .5rem; padding: .25rem .5rem; overflow: hidden; white-space: nowrap; }

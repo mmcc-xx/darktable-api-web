@@ -642,7 +642,7 @@
     // rebuilding the panel would scroll it back to the top: keep its place
     const scrolled = [$('#sections'), $('.panel')].map((el) => [el, el.scrollTop]);
     state = s;
-    genCache.clear(); genGen++;
+    genCache.clear(); genGen++; allModules = null;
     $('#pipe-n').textContent = (s.pipeline || []).filter((e) => e.in_history && !e.plumbing).length;
     const box = $('#panels');
     box.innerHTML = '';
@@ -736,6 +736,7 @@
   let pipeLoads = 0;
   function renderPipeline(s) {
     const box = $('#pipeline');
+    const typing = document.activeElement && document.activeElement.matches('#pipeline .padd input');
     // open rows load their controls after this: hold the height until they
     // do, or the panel's scroll position jumps
     box.style.minHeight = box.offsetHeight + 'px';
@@ -752,6 +753,7 @@
     };
     top.append(dc, ' show default modules');
     box.appendChild(top);
+    box.appendChild(addModuleBox(s));
     const rows = [...(s.pipeline || [])].reverse().filter((e) => e.plumbing ? showDefaults : e.in_history);
     if (!rows.length) {
       const p = document.createElement('p');
@@ -760,8 +762,114 @@
     }
     pipeRows = rows;
     for (const e of rows) box.appendChild(pipeRow(e));
+    if (typing) box.querySelector('.padd input').focus();
     markLast();
     if (!pipeLoads) box.style.minHeight = '';
+  }
+  // W60: add a module (search over every module the engine has), and per
+  // instance new instance, duplicate, rename, remove
+  // allModules: every module the engine has (/modules), fetched when first searched, again after a change
+  let addQuery = '', allModules = null;
+  async function instanceAction(body, note) {
+    const r = await api('instance', body);
+    if (!r.ok) { status('not done: ' + (await r.json()).detail); renderPipeline(state); return; }
+    const j = await r.json();
+    setDirty(true);
+    if (body.action !== 'remove') expanded.add(key(j.instance.operation, j.instance.instance));
+    show(j);
+    if (body.action !== 'remove' && body.action !== 'rename') openRow(j.instance.operation, j.instance.instance);
+    preview(note);
+  }
+  function addModuleBox(s) {
+    const wrap = document.createElement('div');
+    wrap.className = 'padd';
+    const q = document.createElement('input');
+    q.type = 'search'; q.placeholder = '+ add module…'; q.value = addQuery;
+    q.setAttribute('aria-label', 'add module');
+    const list = document.createElement('div');
+    list.className = 'padd-list';
+    let fills = 0;
+    const fill = async () => {
+      const n = ++fills;
+      addQuery = q.value;
+      const t = q.value.trim().toLowerCase();
+      if (t && !allModules) {
+        const r = await api('modules');
+        if (r.ok) allModules = (await r.json()).modules;
+        if (n !== fills) return;               // typed on meanwhile: that call fills
+      }
+      list.textContent = '';
+      if (!t || !allModules) return;
+      const hits = allModules.filter((m) => m.label.toLowerCase().includes(t) || m.operation.includes(t));
+      for (const m of hits.slice(0, 12)) {
+        const b = document.createElement('button');
+        b.className = 'link'; b.dataset.op = m.operation;
+        b.textContent = m.label;
+        const d = document.createElement('span');
+        d.className = 'dim';
+        if (m.in_edit) d.textContent = m.one_instance ? ' · in the edit (one instance only)' : ` · in the edit: a new instance (${m.instances + 1})`;
+        b.disabled = m.in_edit && m.one_instance;
+        b.appendChild(d);
+        b.onclick = () => { addQuery = ''; instanceAction({action: 'add', operation: m.operation}, `added ${m.label} ·`); };
+        list.appendChild(b);
+      }
+      if (!hits.length) { const p = document.createElement('p'); p.className = 'dim'; p.textContent = 'no such module'; list.appendChild(p); }
+    };
+    q.oninput = fill;
+    q.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { const b = list.querySelector('button'); if (b) b.click(); }
+      if (ev.key === 'Escape') { q.value = ''; fill(); }
+    };
+    fill();
+    wrap.append(q, list);
+    return wrap;
+  }
+  function instanceMenu(e) {
+    const sel = document.createElement('select');
+    sel.className = 'pmove pinst'; sel.title = 'instances: new, duplicate, rename, remove';
+    sel.setAttribute('aria-label', 'instance actions');
+    sel.add(new Option('⋯', ''));
+    for (const [t, v] of [['new instance', 'new'], ['duplicate', 'copy']]) {
+      const o = new Option(e.one_instance ? t + ' (one instance only)' : t, v);
+      o.disabled = !!e.one_instance;
+      sel.add(o);
+    }
+    sel.add(new Option('rename…', 'rename'));
+    const only = (state.pipeline || []).filter((x) => x.operation === e.operation).length < 2;
+    const rm = new Option(only ? 'remove (its only instance: switch it off)' : 'remove', 'remove');
+    rm.disabled = only;
+    sel.add(rm);
+    sel.onchange = () => {
+      const a = sel.value;
+      sel.value = '';
+      if (a === 'rename') renameRow(e);
+      else if (a === 'remove') instanceAction({action: a, operation: e.operation, instance: e.instance}, `removed ${e.label} ·`);
+      else if (a) instanceAction({action: a, operation: e.operation, instance: e.instance}, a === 'copy' ? 'duplicated ·' : 'new instance ·');
+    };
+    return sel;
+  }
+  function renameRow(e) {
+    const nm = document.querySelector(`#pipeline .prow[data-key="${key(e.operation, e.instance)}"] .pname`);
+    if (!nm) return;
+    const inp = document.createElement('input');
+    inp.className = 'prename'; inp.value = e.name && !/^(_builtin|\d+$)/.test(e.name) ? e.name : '';
+    inp.placeholder = 'name (empty: darktable\'s)'; inp.maxLength = 63;
+    inp.setAttribute('aria-label', 'instance name');
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      if (save) instanceAction({action: 'rename', operation: e.operation, instance: e.instance, name: inp.value}, 'renamed ·');
+      else renderPipeline(state);
+    };
+    inp.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      if (ev.key === 'Escape') finish(false);
+    };
+    // a re-render (another client's change) drops the field: only a real blur saves
+    inp.onblur = () => setTimeout(() => { if (inp.isConnected) finish(true); }, 0);
+    nm.replaceWith(inp);
+    inp.focus(); inp.select();
   }
   // W30: reorder. Rows show output at the top, so above = later in the pipe (module_move `after`).
   let pipeRows = [];
@@ -850,7 +958,7 @@
     last.className = 'plast'; last.textContent = '●'; last.title = 'last changed'; last.hidden = true;
     const chev = document.createElement('span');
     chev.className = 'pchev dim'; chev.textContent = open ? '▾' : '▸';
-    head.append(last, moveMenu(e), chev);
+    head.append(last, moveMenu(e), instanceMenu(e), chev);
     row.appendChild(head);
     if (open) {
       const body = document.createElement('div');

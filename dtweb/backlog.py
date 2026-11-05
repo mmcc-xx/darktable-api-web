@@ -17,6 +17,7 @@ import hashlib
 import html
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -458,15 +459,30 @@ def last_reset(t: datetime.datetime, anchor: datetime.datetime | None = None) ->
     return anchor + (t - anchor) // week * week
 
 
+def cap_file(day: datetime.date) -> Path:
+    return backlog_dir() / f"launchd/.cap-{day.isoformat()}"
+
+
+def cap_override(day: datetime.date) -> int | None:
+    """launchd/.cap-YYYY-MM-DD's number (the day's cap set by hand), or None."""
+    with contextlib.suppress(OSError, ValueError):
+        return int(cap_file(day).read_text().strip())
+    return None
+
+
+def week_day_cap(start: datetime.datetime, anchor: datetime.datetime | None = None) -> tuple[int, int]:
+    """(day of the week, cap %) from the weekly reset alone: PER_DAY a day,
+    100 from day 7."""
+    day = (start - last_reset(start, anchor)) // datetime.timedelta(days=1) + 1
+    return day, 100 if day >= 7 else PER_DAY * day
+
+
 def day_cap(start: datetime.datetime, anchor: datetime.datetime | None = None) -> tuple[int, int]:
     """(day of the week, cap %) for a run starting at start, as daily-run.sh
-    works it out: PER_DAY a day since the weekly reset, 100 from day 7;
-    launchd/.cap-YYYY-MM-DD overrides it."""
-    day = (start - last_reset(start, anchor)) // datetime.timedelta(days=1) + 1
-    cap = 100 if day >= 7 else PER_DAY * day
-    with contextlib.suppress(OSError, ValueError):
-        cap = int((backlog_dir() / f"launchd/.cap-{start.date().isoformat()}").read_text().strip())
-    return day, cap
+    works it out: week_day_cap, unless launchd/.cap-YYYY-MM-DD overrides it."""
+    day, cap = week_day_cap(start, anchor)
+    o = cap_override(start.date())
+    return day, cap if o is None else o
 
 
 def log_week() -> tuple[str, float] | None:
@@ -486,7 +502,8 @@ def night_capacity() -> dict | None:
     """Weekly points left for tonight's run: cap - 1 - week, as daily-run.sh
     stops. The cap is today's run's (the night note's last "run starting"
     line) or forecast's (forecast/tonight.md), else worked out as daily-run.sh
-    does (day_cap). The week % is the newest reading: the run start, runs.tsv
+    does (day_cap); a cap set by hand for today (.cap-<date>) wins while no
+    run holds the lock, as the next run would read it. The week % is the newest reading: the run start, runs.tsv
     (a run that ended since), the forecast, the night-run log, /usage
     (live_usage, read by the page); 0 if the week has reset since. While the
     forecast is the newest reading, its budget. {"pts", "cap", "week",
@@ -527,6 +544,9 @@ def night_capacity() -> dict | None:
     when, week, src = max(reads)
     now = datetime.datetime.now().astimezone()
     anchor = live.get("reset")
+    override = cap_override(now.date())
+    if override is not None and not run_lock()["held"]:     # set by hand for the next run (W66)
+        cap, budget = (when, override, f"set for today ({cap_file(now.date()).name})"), None
     if cap is None:
         day, c = day_cap(datetime.datetime.combine(now.date(), datetime.time(18)).astimezone(), anchor)
         cap = (when, c, f"day {day} of the week")
@@ -557,7 +577,7 @@ async def backlog_page(request: Request, f: str = "queue"):
     d = backlog_dir()
     ctx: dict = {"tab": tab, "tabs": TABS, "dir": str(d), "locked": (d / "launchd/.daily-run.lock").exists(),
                  "error": None, "tables": [], "items": [], "texts": [], "qhash": "", "file": FILES.get(tab, ""),
-                 "qtotal": "", "no_est": pts_str(NO_EST), "themes": [], "cap": None}
+                 "qtotal": "", "no_est": pts_str(NO_EST), "themes": [], "cap": None, "run": None}
     try:
         idx = link_index()
         if tab == "queue":
@@ -569,7 +589,7 @@ async def backlog_page(request: Request, f: str = "queue"):
                 it["html"] = inline(it["text"], idx)
                 it["notes_html"] = [inline(n.strip(), idx) for n in it["notes"]]
                 it["can"] = is_open(it)
-                it["first"], it["last"] = it is opens[0], it is opens[-1]
+                it["first"], it["last"] = bool(opens) and it is opens[0], bool(opens) and it is opens[-1]
             total = 0.0
             for it in opens:                                 # points as queue_forecast.py counts them, before bias
                 base = float(it["est"]) if it["est"] not in ("", "draft") else NO_EST
@@ -578,6 +598,8 @@ async def backlog_page(request: Request, f: str = "queue"):
                 it["pts_n"], it["pts"], it["total"] = pts, pts_str(pts), pts_str(total)
             ctx["qtotal"] = pts_str(total)
             ctx["items"] = items
+            with contextlib.suppress(OSError, ValueError):
+                ctx["run"] = run_status()
             with contextlib.suppress(OSError, ValueError):
                 cap = night_capacity()
                 if cap and opens:
@@ -984,6 +1006,131 @@ def backlog_usage():
     """The week % now (live_usage), for the queue tab to refresh its capacity."""
     u = live_usage()
     return JSONResponse({"week": u["week"], "when": u["when"]} if u else {"week": None})
+
+
+# ── the night run: the day's cap and run now (W66) ──────────────────────────
+
+DAILY_RUN = "com.clark.darktable-daily-run"
+
+
+def kickstart_cmd() -> list[str]:
+    """launchctl kickstart of the daily-run agent (no -k: a running one is
+    left alone); DTWEB_KICKSTART replaces it (tests stub it)."""
+    if os.environ.get("DTWEB_KICKSTART"):
+        return shlex.split(os.environ["DTWEB_KICKSTART"])
+    return ["launchctl", "kickstart", f"gui/{os.getuid()}/{DAILY_RUN}"]
+
+
+def run_lock() -> dict:
+    """The daily run's lock directory: {"held", "pid", "since", "stale"}. A
+    lock whose pid is gone is stale (daily-run.sh removes it when it starts)."""
+    lock = backlog_dir() / "launchd/.daily-run.lock"
+    try:
+        since = datetime.datetime.fromtimestamp(lock.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return {"held": False, "pid": None, "since": None, "stale": False}
+    pid = None
+    with contextlib.suppress(OSError, ValueError):
+        pid = int((lock / "pid").read_text().strip())
+    alive = pid is None                                  # no pid yet: a run just took it
+    if pid is not None:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except PermissionError:
+            alive = True
+        except OSError:
+            alive = False
+    return {"held": alive, "pid": pid, "since": since, "stale": not alive}
+
+
+def run_status() -> dict:
+    """What the queue tab's run bar shows: today's cap (from the weekly reset,
+    or set by hand), the week's use, whether a run holds the lock, the item it
+    takes (the first partial, else the first open one, as daily-run.sh picks),
+    since when, and the night note's last line."""
+    now = datetime.datetime.now().astimezone()
+    anchor = dict(_live).get("reset")
+    day, week_cap = week_day_cap(datetime.datetime.combine(now.date(), datetime.time(18)).astimezone(), anchor)
+    override = cap_override(now.date())
+    opens = [it for it in parse_queue(read_lines("QUEUE.md")) if is_open(it)]
+    nxt = next((it for it in opens if it["status"] == "partial"), opens[0] if opens else None)
+    lock = run_lock()
+    st = {"day": day, "week_cap": week_cap, "override": override,
+          "cap": week_cap if override is None else override, "date": now.date().isoformat(),
+          "week": None, "week_when": None, "open": len(opens), "item": nxt["label"] if nxt else None,
+          **{k: lock[k] for k in ("held", "pid", "stale")}, "since": None, "run_cap": None, "item_since": None,
+          "last": None, "note": None}
+    with contextlib.suppress(OSError, ValueError):
+        c = night_capacity()
+        if c:
+            st["week"], st["week_when"] = c["week"], c["when"]
+    note = newest_night()
+    if note:
+        lines = [l for l in note.read_text(encoding="utf-8").splitlines() if l.strip()]
+        st["note"] = note.name
+        st["last"] = lines[-1][:240] if lines else None
+        starts = [m for m in map(RUN_START.match, lines) if m]
+        if lock["held"] and starts and starts[-1].group(1) >= (lock["since"] or ""):
+            st["item_since"], st["run_cap"] = starts[-1].group(1), int(starts[-1].group(3))
+    if lock["held"]:
+        st["since"] = lock["since"]
+    return st
+
+
+class CapBody(BaseModel):
+    cap: int | None = None                                 # None: back to the cap from the weekly reset
+
+
+@router.get("/api/backlog/run")
+def backlog_run_status():
+    try:
+        return JSONResponse(run_status())
+    except OSError as exc:
+        return JSONResponse({"error": f"can't read the backlog files: {exc}"}, status_code=500)
+
+
+@router.post("/api/backlog/cap")
+def backlog_cap(body: CapBody):
+    """Write (or, with cap null, remove) launchd/.cap-<today>. Not refused while
+    a run is going: daily-run.sh reads it when it starts, so it applies to the
+    runs started after."""
+    if body.cap is not None and not 1 <= body.cap <= 100:
+        return JSONResponse({"error": "the cap is a week % from 1 to 100"}, status_code=400)
+    p = cap_file(datetime.date.today())
+    try:
+        with _thread_lock:
+            if body.cap is None:
+                p.unlink(missing_ok=True)
+            else:
+                tmp = p.with_name(p.name + ".tmp")
+                tmp.write_text(f"{body.cap}\n")
+                tmp.replace(p)
+        return JSONResponse(run_status())
+    except OSError as exc:
+        return JSONResponse({"error": f"can't write {p}: {exc}"}, status_code=500)
+
+
+@router.post("/api/backlog/run")
+def backlog_run_now():
+    """Start the daily run now (launchctl kickstart); refused while a run
+    holds the lock or the queue has no open item."""
+    try:
+        st = run_status()
+    except OSError as exc:
+        return JSONResponse({"error": f"can't read the backlog files: {exc}"}, status_code=500)
+    if st["held"]:
+        return JSONResponse({"error": f"a night run is going (pid {st['pid']})", **st}, status_code=409)
+    if not st["open"]:
+        return JSONResponse({"error": "the queue has no open item", **st}, status_code=409)
+    try:
+        r = subprocess.run(kickstart_cmd(), capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return JSONResponse({"error": f"kickstart failed: {exc}"}, status_code=500)
+    if r.returncode:
+        return JSONResponse({"error": f"kickstart failed ({r.returncode}): {(r.stderr or r.stdout).strip()[:300]}"},
+                            status_code=500)
+    return JSONResponse({"started": True, **st})
 
 
 @router.post("/api/backlog/edit")

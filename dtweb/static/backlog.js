@@ -1,5 +1,5 @@
 // The backlog page: sort a table by its header, expand long items, and the
-// writes (edit, add, queue, move, unqueue; ideas: delete). Every write answers with the new
+// writes (edit, add, queue, move, unqueue; ideas: delete), and the night run's cap and run now. Every write answers with the new
 // commit; the page then reloads the tab (new hashes) and shows it in a toast.
 (function () {
   const root = document.getElementById('bl'), dlg = document.getElementById('bl-dlg'),
@@ -155,15 +155,83 @@
       if (j.week == null || j.week === parseFloat(capBar.dataset.week) || document.querySelector('dialog[open]')) return;
       const doc = new DOMParser().parseFromString(await (await fetch('/backlog?f=queue')).text(), 'text/html');
       const fresh = doc.getElementById('bl');
-      if (fresh && !document.querySelector('dialog[open]')) { root.innerHTML = fresh.innerHTML; root.dataset.qhash = fresh.dataset.qhash; }
+      if (fresh && !document.querySelector('dialog[open]')) { root.innerHTML = fresh.innerHTML; root.dataset.qhash = fresh.dataset.qhash; const rb = document.getElementById('bl-run'); if (rb) renderRun(JSON.parse(rb.dataset.run)); }
     }).catch(() => {});
+  }
+
+  // The night run (W66): today's cap (launchd/.cap-<date>, read by a run when
+  // it starts), run queue now (kickstart), and what a run is doing; polled.
+  // (looked up each time: the usage refresh above swaps the tab's HTML)
+  const runEl = document.getElementById('bl-run');
+  let run = runEl ? JSON.parse(runEl.dataset.run) : null, runTimer = null;
+  function renderRun(st) {
+    run = st;
+    const runBar = document.getElementById('bl-run'), runStatus = document.getElementById('bl-run-status');
+    if (!runBar) return;
+    const capIn = document.getElementById('bl-cap-in'), pct = (x) => `${Math.round(x * 10) / 10}%`;
+    if (document.activeElement !== capIn) capIn.value = st.cap;
+    runBar.querySelector('[data-act="cap-reset"]').hidden = st.override == null;
+    runBar.querySelector('[data-act="cap-reset"]').textContent = `back to ${st.week_cap}%`;
+    document.getElementById('bl-cap-info').textContent =
+      (st.override != null ? `set for ${st.date} (from the weekly reset: ${st.week_cap}%)` : `day ${st.day} of the week`) +
+      (st.week != null ? `; week ${pct(st.week)} used` : '') +
+      (st.held ? `; a change applies to runs started after this one${st.run_cap != null ? ` (it runs with ${st.run_cap}%)` : ''}` : '');
+    const go = runBar.querySelector('[data-act="run-now"]');
+    go.disabled = st.held || !st.open;
+    go.title = st.held ? 'a night run is going' : !st.open ? 'the queue has no open item' : `start the night run now (${st.item} first)`;
+    let s = st.held ? `<b>running</b>${st.item ? ' ' + esc(st.item) : ''}${st.item_since ? ' since ' + esc(st.item_since.slice(11, 16)) : ''}` +
+                      ` (night run since ${esc((st.since || '').slice(5, 16))}, pid ${esc(st.pid ?? '?')})`
+          : st.open ? `no run going; next: ${esc(st.item)} (${st.open} open)` : 'no run going; the queue is empty';
+    if (st.stale) s += `; stale lock (pid ${esc(st.pid)} gone, the next run removes it)`;
+    if (!st.held && st.open && st.week != null && st.week >= st.cap - 1) s += `; <span class="warn">the week is at the cap: a run would stop at once</span>`;
+    if (st.last) s += `<br>${esc(st.note)}: ${esc(st.last)}`;
+    runStatus.innerHTML = s;
+  }
+  function pollRun(ms) {
+    clearTimeout(runTimer);
+    runTimer = setTimeout(async () => {
+      try { const r = await fetch('/api/backlog/run'); if (r.ok) renderRun(await r.json()); } catch (e) {}
+      pollRun(30000);
+    }, ms);
+  }
+  async function postRun(path, body) {
+    let r, j = {};
+    try { r = await fetch('/api/backlog/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); j = await r.json(); }
+    catch (err) { await tell('The server did not answer: ' + err.message); return null; }
+    if (!r.ok) { if (j.held !== undefined) renderRun(j); await tell(j.error || `error ${r.status}`); return null; }
+    return j;
+  }
+  async function saveCap(cap) {
+    const j = await postRun('cap', {cap});
+    if (!j) return;
+    try { sessionStorage.setItem('bl-toast', (cap == null ? `cap for ${j.date}: back to ${j.cap}%` : `cap for ${j.date}: ${j.cap}%`) +
+      (j.held ? ' (applies to the runs started after this one)' : '')); } catch (e) {}
+    location.reload();                                     // the capacity line and the cut follow the cap
+  }
+  if (runEl) {
+    renderRun(run);
+    pollRun(30000);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'bl-cap-in') document.querySelector('[data-act="cap-save"]').click(); });
   }
 
   document.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act, tr = b.closest('tr'), item = b.closest('.bl-item');
-    if (act === 'edit') editDialog(tr);
+    if (act === 'cap-save') {
+      const v = document.getElementById('bl-cap-in').value.trim(), n = Number(v);
+      if (!/^\d+$/.test(v) || n < 1 || n > 100) { await tell('The cap is a week % from 1 to 100.'); return; }
+      saveCap(n);
+    }
+    else if (act === 'cap-reset') saveCap(null);
+    else if (act === 'run-now') {
+      if (!(await ask(`Start the night run now? It works the queue from ${run.item} (${run.open} open) up to today's cap of ${run.cap}%` +
+                      (run.week != null ? ` (week at ${Math.round(run.week * 10) / 10}%)` : '') + '.', {ok: 'run now'}))) return;
+      b.disabled = true;
+      const j = await postRun('run', {});
+      if (j) { showToast('night run started'); pollRun(5000); } else b.disabled = run.held || !run.open;
+    }
+    else if (act === 'edit') editDialog(tr);
     else if (act === 'add') b.dataset.kind === 'idea' ? addIdeaDialog() : addDialog(b.dataset.kind);
     else if (act === 'delete') {
       if (await ask(`Delete ${tr.dataset.id} and its description?`, {ok: 'delete'}))

@@ -1141,7 +1141,9 @@ async def photo_area_remove(image_id: int, body: AreaRemoveBody):
 
 # ── named masks: an exposure instance at 0 EV named after the mask, with a drawn
 # mask. It changes nothing; modules after it use it as a raster mask (blend_set
-# raster_source). Shapes arrive in photo fractions and go to raw space.
+# raster_source), modules before it (denoise, lens, retouch...) share its group
+# of drawn shapes on their own mask (mask_attach, W65), their parametric ranges
+# their own. Shapes arrive in photo fractions and go to raw space.
 
 async def _photo_to_raw(image_id: int, points: list[list[float]]) -> tuple[list[list[float]], int, int]:
     r = await engine.edit(image_id, "coords", points=points, **{"from": "image", "to": "raw"})
@@ -1269,7 +1271,9 @@ async def _masks(image_id: int) -> dict:
     pos = {(m["operation"], m["instance"]): i for i, m in enumerate(mods)}
     masks = {m["instance"]: {"name": m["name"], "instance": m["instance"], "pos": pos[("exposure", m["instance"])],
                              "enabled": m["enabled"], "opacity": bl.get("opacity"), "blur_radius": bl.get("blur_radius"),
-                             "shapes": n, "kind": bl.get("masks"), "parametric": _param_channels(bl), "users": []} for m, bl, n in holders}
+                             "shapes": n, "kind": bl.get("masks"), "parametric": _param_channels(bl), "users": [],
+                             "group": bl.get("mask_id")} for m, bl, n in holders}
+    groups = {v["group"]: k for k, v in masks.items() if v["group"] is not None}
     targets = []
     for m in mods:
         op, inst = m["operation"], m["instance"]
@@ -1282,12 +1286,22 @@ async def _masks(image_id: int) -> dict:
         src = bl.get("raster_source") if bl.get("masks") == "raster" or bl.get("raster_source") else None
         src_inst = src.get("instance") if isinstance(src, dict) and src.get("operation") == "exposure" else None
         used = src_inst if src_inst in masks else None
-        inv = bool(bl.get("raster_inverted"))
+        inv, shared = bool(bl.get("raster_inverted")), False
+        if used is None and groups and bl.get("mask_id") is not None and "drawn" in (bl.get("masks") or ""):
+            try:
+                own = (await engine.edit(image_id, "mask_list", operation=op, instance=inst)).get("shapes", [])
+            except EngineError:
+                own = []
+            hit = next((x for x in own if x.get("formid") in groups), None)
+            if hit:
+                used, inv, shared = groups[hit["formid"]], bool(hit.get("inverted")), True
         if used is not None:
-            masks[used]["users"].append({"operation": op, "instance": inst, "label": m["label"], "inverted": inv})
+            masks[used]["users"].append({"operation": op, "instance": inst, "label": m["label"], "inverted": inv,
+                                         "shared": shared})
         targets.append({"operation": op, "instance": inst, "label": m["label"], "pos": pos[(op, inst)],
-                        "mask": used, "inverted": inv})
-    return {"masks": sorted(masks.values(), key=lambda x: x["pos"]), "targets": targets}
+                        "mask": used, "inverted": inv, "shared": shared})
+    return {"masks": sorted(masks.values(), key=lambda x: x["pos"]), "targets": targets,
+            "attach": await engine.supports("mask_attach")}
 
 
 @app.get("/api/photo/{image_id}/masks")
@@ -1445,11 +1459,42 @@ class MaskUseBody(BaseModel):
 
 @app.post("/api/photo/{image_id}/mask/use")
 async def photo_mask_use(image_id: int, body: MaskUseBody):
-    """Let a module work through a named mask (its raster mask), or stop."""
-    vals = {"raster_source": {"operation": "exposure", "instance": body.mask} if body.mask is not None else None,
-            "raster_inverted": body.inverted}
+    """Let a module work through a named mask, or stop: its raster mask for a
+    module after the mask, its shared shapes for one before it (W65)."""
+    op, inst = body.operation, body.instance
     try:
-        await engine.edit(image_id, "blend_set", operation=body.operation, instance=body.instance, values=vals)
+        st = await _masks(image_id)
+        t = next((x for x in st["targets"] if x["operation"] == op and x["instance"] == inst), None)
+        hold = {m["instance"]: m for m in st["masks"]}
+        h = hold.get(body.mask) if body.mask is not None else None
+        if body.mask is not None and h is None:
+            raise HTTPException(400, f"exposure {body.mask} isn't a named mask")
+        if t is None:
+            if h is None:                      # nothing to stop
+                return await _state(image_id)
+            raise HTTPException(400, f"{op} {inst} can't use a named mask")
+        share = h is not None and h["pos"] > t["pos"]
+        if share:
+            if not st["attach"]:
+                raise HTTPException(400, f"{h['name']} comes after {t['label']} in the pipe; "
+                                         "this darktable-api build can't share its shapes (mask_attach)")
+            if h["group"] is None:
+                raise HTTPException(400, f"{h['name']} comes after {t['label']} in the pipe and has no drawn shapes "
+                                         "to share (only parametric ranges)")
+        if t["shared"] and t["mask"] == body.mask and t["inverted"] == body.inverted:
+            return await _state(image_id)
+        if t["shared"]:                        # take the other mask's shapes off (they stay with their mask)
+            await engine.edit(image_id, "mask_remove", operation=op, instance=inst, formid=hold[t["mask"]]["group"])
+        if share:
+            if t["mask"] is not None and not t["shared"]:
+                await engine.edit(image_id, "blend_set", operation=op, instance=inst,
+                                  values={"raster_source": None, "raster_inverted": False})
+            await engine.edit(image_id, "mask_attach", operation=op, instance=inst, formid=h["group"],
+                              combine="union", inverted=body.inverted)
+        elif h is not None or not t["shared"]:
+            await engine.edit(image_id, "blend_set", operation=op, instance=inst,
+                              values={"raster_source": {"operation": "exposure", "instance": body.mask} if h else None,
+                                      "raster_inverted": body.inverted})
         return await _state(image_id)
     except EngineError as exc:
         raise _bad(exc)
@@ -1464,8 +1509,14 @@ async def photo_mask_remove(image_id: int, body: MaskRemoveBody):
     """Remove a named mask; the modules using it go back to their own."""
     try:
         await _require_holder(image_id, body.instance)
-        for u in (await _masks(image_id))["targets"]:
-            if u["mask"] == body.instance:
+        st = await _masks(image_id)
+        group = next(m["group"] for m in st["masks"] if m["instance"] == body.instance)
+        for u in st["targets"]:
+            if u["mask"] != body.instance:
+                continue
+            if u["shared"]:
+                await engine.edit(image_id, "mask_remove", operation=u["operation"], instance=u["instance"], formid=group)
+            else:
                 await engine.edit(image_id, "blend_set", operation=u["operation"], instance=u["instance"],
                                   values={"raster_source": None})
         await engine.edit(image_id, "module_remove", operation="exposure", instance=body.instance)

@@ -2195,8 +2195,8 @@
   // ── masks: named masks, each an exposure instance at 0 EV named after the mask,
   // with a drawn mask (the server's GET masks: {masks: [{name, instance, pos,
   // opacity, blur_radius, shapes, users}], targets: [{operation, instance, pos,
-  // mask, inverted}]}). Any module after it in the pipe works through it (its
-  // raster mask). With the tool on, a drag draws a shape on the selected mask or
+  // mask, inverted, shared}], attach}). Any module after it in the pipe works through it (its
+  // raster mask); one before it shares its drawn shapes (shared, W65). With the tool on, a drag draws a shape on the selected mask or
   // on a new one; the preview shows the selected mask. Sky / subject: a click.
   let masks = false, masksData = {masks: [], targets: []}, masksKey = null, masksSyncing = false;
   let maskKind = 'circle', maskSel = null, maskSub = false, maskBusy = false, maskDraw = null, maskVals = null, maskRunning = false;
@@ -2222,7 +2222,7 @@
   $('#mask-feather').oninput = () => { try { localStorage.setItem('dr:maskfeather', $('#mask-feather').value); } catch (e) {} };
   $('#mask-brush').oninput = () => { try { localStorage.setItem('dr:maskbrush', $('#mask-brush').value); } catch (e) {} };
   maskKinds();
-  const maskUsers = (m) => m.users.map((u) => u.label).join(', ');
+  const maskUsers = (m) => m.users.map((u) => u.label + (u.shared ? ' (its shapes)' : '')).join(', ');
   function maskList() {
     const box = $('#mask-list');
     box.hidden = !masksData.masks.length;
@@ -2432,15 +2432,19 @@
     row.hidden = !t || !masksData.masks.length;
     if (row.hidden) return;
     const lab = document.createElement('span'), sel = document.createElement('select'), inv = document.createElement('input'), il = document.createElement('label');
-    lab.textContent = 'mask'; lab.title = 'work only where a named mask is (its raster mask)';
+    lab.textContent = 'mask';
+    lab.title = 'work only where a named mask is: its raster mask, or for a module before the mask in the pipe its drawn shapes, shared (edit them once, both follow; parametric ranges stay this module\'s own)';
     sel.setAttribute('aria-label', 'mask for ' + t.label);
     sel.add(new Option('none', ''));
+    // a mask after this module: its drawn shapes, shared, if the engine can and it has some
+    const canShare = (m) => masksData.attach && m.group !== null;
     for (const m of masksData.masks) {
-      const o = new Option(m.pos > t.pos ? `${m.name} (after this module)` : m.name, m.instance);
-      o.disabled = m.pos > t.pos; sel.add(o);
+      const after = m.pos > t.pos;
+      const o = new Option(!after ? m.name : canShare(m) ? `${m.name} (shapes, shared)` : `${m.name} (after this module)`, m.instance);
+      o.disabled = after && !canShare(m); sel.add(o);
     }
     sel.value = t.mask === null ? '' : t.mask;
-    if (masksData.masks.every((m) => m.pos > t.pos)) {
+    if (masksData.masks.every((m) => m.pos > t.pos && !canShare(m))) {
       sel.disabled = true; sel.title = "modules before exposure in the pipe can't use a mask drawn here";
     }
     inv.type = 'checkbox'; inv.checked = t.inverted; inv.setAttribute('aria-label', 'invert the mask');

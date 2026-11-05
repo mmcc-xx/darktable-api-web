@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -152,6 +153,43 @@ def main() -> int:
             finally:
                 os.environ["DTWEB_KICKSTART"] = v
         check("kickstart: no -k, the daily-run agent", default_cmd)
+
+        status_file = d / "launchd/.run-status.json"
+
+        def write_status(state, age=10, **kw):
+            status_file.write_text(json.dumps({"state": state, "why": "w", "item": "#2", "time": int(time.time()) - age, **kw}))
+
+        def dash_none():
+            reset()
+            status_file.unlink(missing_ok=True)
+            assert B.run_status()["dash"] is None
+            status_file.write_text("{ not json")
+            assert B.run_status()["dash"] is None
+            status_file.write_text('{"state": "running"}')
+            assert B.run_status()["dash"] is None
+        check("dashboard: no file, bad JSON or no time gives none", dash_none)
+
+        def dash_running():
+            reset()
+            lock.mkdir()
+            (lock / "pid").write_text(f"{os.getpid()}\n")
+            write_status("running", session=12, week=60)
+            dash = B.run_status()["dash"]
+            assert dash["state"] == "running" and dash["session"] == 12 and 10 <= dash["age"] < 15 and not dash["late"], dash
+            write_status("waiting", age=400)
+            dash = B.run_status()["dash"]
+            assert dash["state"] == "waiting" and dash["late"], dash
+        check("dashboard: a going run, and late after five minutes", dash_running)
+
+        def dash_stopped():
+            reset()
+            write_status("running")
+            dash = B.run_status()["dash"]
+            assert dash["state"] == "stopped" and dash["last_state"] == "running" and not dash["late"], dash
+            write_status("cap", age=40000)
+            dash = B.run_status()["dash"]
+            assert dash["state"] == "cap" and dash["age"] >= 40000 and not dash["late"], dash
+        check("dashboard: going without the lock is stopped; a finished run stays", dash_stopped)
 
         for name, fn in checks:
             n += 1

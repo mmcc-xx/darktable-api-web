@@ -40,6 +40,10 @@
   .bl-run input { width: 4.2rem; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: .15rem .3rem; }
   .bl-run button { font-size: .78rem; padding: .1rem .6rem; } .bl-run button:disabled { opacity: .4; cursor: default; }
   #bl-run-status { overflow-wrap: anywhere; } #bl-run-status .warn { color: var(--accent); }
+  .bl-dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: .4rem .9rem; margin: 0 0 .7rem; padding: .5rem .7rem; font-size: .82rem; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
+  .bl-dash:empty { display: none; } .bl-dash .main { grid-column: 1 / -1; overflow-wrap: anywhere; }
+  .bl-dash b { font-weight: 600; } .bl-dash .state { color: var(--dim); } .bl-dash .state.going { color: #5bbf6a; } .bl-dash .state.warn, .bl-dash .warn { color: var(--accent); }
+  .bl-dash small { display: block; color: var(--dim); font-size: .72rem; }
   .bl-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .6rem .8rem; }
   .bl-h { margin: 1rem 0 .3rem; color: var(--dim); font-size: .95rem; }
   dialog.bl-dlg { width: min(40rem, calc(100vw - 1.5rem)); }
@@ -66,7 +70,8 @@
     <span id="bl-cap-info"></span>
     <button data-act="run-now" class="primary">run queue now</button>
   </div>
-  <div class="bl-bar" id="bl-run-status"></div>{% endif %}
+  <div class="bl-bar" id="bl-run-status"></div>
+  <div class="bl-dash" id="bl-dash"></div>{% endif %}
   {% for it in items %}
     {% if loop.first or items[loop.index0 - 1].section != it.section %}<h4 class="bl-h">{{ it.section }}</h4>
       <div class="bl-head"><span class="badge" style="visibility:hidden">status</span><span class="size">est</span><span class="size">total</span><span class="grow">item</span></div>{% endif %}

@@ -15,6 +15,7 @@ import datetime
 import fcntl
 import hashlib
 import html
+import json
 import os
 import re
 import shlex
@@ -1044,6 +1045,27 @@ def run_lock() -> dict:
     return {"held": alive, "pid": pid, "since": since, "stale": not alive}
 
 
+STATUS_LIVE = {"starting", "running", "waiting", "finishing"}    # a run is going in these
+STATUS_LATE = 300                                                # the scripts write every minute
+
+
+def run_dashboard(held: bool) -> dict | None:
+    """launchd/.run-status.json, which the run scripts write at each usage read
+    and while waiting (W73), with its age in seconds. A going state whose run
+    no longer holds the lock became "stopped" (killed, or a restart); one not
+    rewritten for five minutes is flagged late."""
+    try:
+        d = json.loads((backlog_dir() / "launchd/.run-status.json").read_text(encoding="utf-8"))
+        age = max(0, int(time.time() - d["time"]))
+        state = d["state"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    live = state in STATUS_LIVE
+    if live and not held:
+        d.update(state="stopped", last_state=state)
+    return {**d, "age": age, "late": live and held and age > STATUS_LATE}
+
+
 def run_status() -> dict:
     """What the queue tab's run bar shows: today's cap (from the weekly reset,
     or set by hand), the week's use, whether a run holds the lock, the item it
@@ -1060,7 +1082,7 @@ def run_status() -> dict:
           "cap": week_cap if override is None else override, "date": now.date().isoformat(),
           "week": None, "week_when": None, "open": len(opens), "item": nxt["label"] if nxt else None,
           **{k: lock[k] for k in ("held", "pid", "stale")}, "since": None, "run_cap": None, "item_since": None,
-          "last": None, "note": None}
+          "last": None, "note": None, "dash": run_dashboard(lock["held"])}
     with contextlib.suppress(OSError, ValueError):
         c = night_capacity()
         if c:

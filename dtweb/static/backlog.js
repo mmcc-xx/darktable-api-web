@@ -186,6 +186,28 @@
     if (!st.held && st.open && st.week != null && st.week >= st.cap - 1) s += `; <span class="warn">the week is at the cap: a run would stop at once</span>`;
     if (st.last) s += `<br>${esc(st.note)}: ${esc(st.last)}`;
     runStatus.innerHTML = s;
+    renderDash(st.dash);
+  }
+  // What the run scripts last wrote (W73, launchd/.run-status.json): running or
+  // why not, the caps, session and week used, the item, and how old that is.
+  const DASH_STATES = {starting: 'Starting', running: 'Running', waiting: 'Waiting', finishing: 'Finishing up',
+                       cap: 'Not running: week cap reached', empty: 'Not running: queue empty', ended: 'Not running: run ended',
+                       stopped: 'Not running: the run stopped without finishing'};
+  const clock = (t) => new Date(t * 1000).toLocaleString([], {weekday: 'short', hour: '2-digit', minute: '2-digit'});
+  const ago = (s) => s < 60 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 129600 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} d`;
+  function renderDash(d) {
+    const el = document.getElementById('bl-dash');
+    if (!el) return;
+    if (!d) { el.textContent = ''; return; }
+    const cls = ['starting', 'running', 'finishing'].includes(d.state) ? 'going' : ['waiting', 'cap', 'stopped'].includes(d.state) ? 'warn' : '';
+    const why = d.state === 'stopped' ? `its last status was ${esc(d.last_state)}${d.why ? ' (' + esc(d.why) + ')' : ''}; no process holds the lock` : esc(d.why || '');
+    const cell = (label, value, sub) => `<div><small>${label}</small><b>${value}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+    const of = (v, c) => (v == null ? '?' : `${v}%`) + (c != null ? ` of ${c}%` : '');
+    el.innerHTML = `<div class="main"><b class="state ${cls}">${esc(DASH_STATES[d.state] || d.state)}</b>${why ? ' ' + why : ''}</div>` +
+      cell('item', d.item ? esc(d.item) : '–') +
+      cell('week used', of(d.week, d.week_cap), d.week_reset ? 'resets ' + esc(clock(d.week_reset)) : '') +
+      cell('session used', of(d.session, d.session_cap), d.session_reset ? 'resets ' + esc(clock(d.session_reset)) : '') +
+      cell('updated', `${ago(d.age)} ago`, d.late ? '<span class="warn">late: the scripts write every minute</span>' : '');
   }
   function pollRun(ms) {
     clearTimeout(runTimer);

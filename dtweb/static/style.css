@@ -618,3 +618,11 @@ div.mask-param { display: flex; flex-direction: column; align-items: stretch; ma
 .mp-read { font-variant-numeric: tabular-nums; font-size: .85em; opacity: .8; min-width: 9rem; }
 .mp-boost { width: 4.2rem; }
 @media (pointer: coarse) { .mp-track { width: 12rem; height: 2.2rem; } .mp-h { width: 22px; height: 22px; margin: -11px 0 0 -11px; } }
+/* curves (W67) */
+.curve { margin: .3rem 0 .5rem; }
+.curve-tabs { display: flex; gap: .7rem; align-items: baseline; font-size: .8rem; margin-bottom: .2rem; }
+.curve-tabs button.on { color: var(--accent); text-decoration: underline; }
+.curve-graph { display: block; width: 100%; max-width: 340px; aspect-ratio: 1; background: #141516; border-radius: 3px; touch-action: none; cursor: crosshair; }
+.curve-graph:focus { outline: 1px solid var(--line); }
+.curve-bar { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; font-size: .8rem; margin-top: .25rem; }
+.curve-read { margin-left: auto; font-variant-numeric: tabular-nums; }

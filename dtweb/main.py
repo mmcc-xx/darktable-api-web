@@ -1764,8 +1764,39 @@ async def photo_module(image_id: int, operation: str, instance: int = 0):
     except EngineError as exc:
         raise _bad(exc)
     fields, notes = _generic_fields(g)
-    return {"operation": operation, "instance": instance, "enabled": g["enabled"], "fields": fields,
-            "notes": notes, "blend": blend}
+    out = {"operation": operation, "instance": instance, "enabled": g["enabled"], "fields": fields,
+           "notes": notes, "blend": blend}
+    if operation in CURVE_OPS:
+        try:
+            out["curves"] = (await engine.edit(image_id, "curve_get", operation=operation, instance=instance))["curves"]
+        except EngineError:
+            pass
+    return out
+
+
+# ── curves (W67): the pipeline view's graph for these modules, over
+# curve_get / curve_set (one channel's points and spline type)
+CURVE_OPS = ("tonecurve", "rgbcurve", "colorzones", "basecurve")
+
+
+class CurveBody(BaseModel):
+    operation: str
+    instance: int = 0
+    channel: str
+    points: list[list[float]]
+    type: str | None = None
+
+
+@app.post("/api/photo/{image_id}/curve")
+async def photo_curve(image_id: int, body: CurveBody):
+    if body.operation not in CURVE_OPS:
+        raise HTTPException(400, f"{body.operation} has no curves")
+    try:
+        r = await engine.edit(image_id, "curve_set", **body.model_dump(exclude_none=True))
+        g = await engine.edit(image_id, "module_get", operation=body.operation, instance=body.instance)
+        return {**r, "enabled": g["enabled"], "history": await engine.edit(image_id, "history_list")}
+    except EngineError as exc:
+        raise _bad(exc)
 
 
 class EndBody(BaseModel):

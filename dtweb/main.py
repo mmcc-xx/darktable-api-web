@@ -443,7 +443,7 @@ async def photo_page(request: Request, image_id: int):
     lib = await _library_state()
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
            "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
-           "can_fill": False, "can_mask": False, "can_mark": False, "can_masks": False,
+           "can_fill": False, "can_mask": False, "can_mark": False, "can_masks": False, "can_retouch": False,
            "can_immich": _immich_conf()["configured"]}
     if lib.get("state") == "owned":
         try:
@@ -451,6 +451,7 @@ async def photo_page(request: Request, image_id: int):
             ctx["can_mask"] = await engine.supports("mask_ai")
             ctx["can_mark"] = await engine.supports("marker_set")
             ctx["can_masks"] = await engine.supports("mask_add")
+            ctx["can_retouch"] = await engine.supports("retouch_scales")
             info = await engine.call("image_info", imgid=image_id)
             ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
@@ -1937,6 +1938,255 @@ async def photo_noise_spot(image_id: int):
 @app.post("/api/photo/{image_id}/dust/heal_at")
 async def dust_heal_at(image_id: int, body: DustHealAtBody):
     return await _mcp_worker("heal_at", image_id, x=body.x, y=body.y, radius=body.radius)
+
+
+# ── retouch (W69): the retouch module's spots, as its shape buttons draw and
+# edit them. The engine works in raw space and the page in photo fractions:
+# each spot comes with its outline, so it follows the crop, rotation and lens
+# correction. A moved spot takes its source along, as in the darkroom.
+
+RT_OPTIONS = ("blur_type", "blur_radius", "fill_mode", "fill_color", "fill_brightness")
+RT_CLONING = ("clone", "heal")
+RT_SHAPES = ("circle", "ellipse", "path", "brush")
+RT_SEGMENT_POINTS = 5
+RT_OUTLINE_POINTS = 160
+
+
+def _rt_short(v):
+    """An engine enum as the name the page shows: DT_IOP_RETOUCH_BLUR_GAUSSIAN -> gaussian."""
+    return v.rsplit("_", 1)[-1].lower() if isinstance(v, str) else v
+
+
+def _rt_stroke(s: dict) -> list[tuple[float, float, float]]:
+    """A path's or brush's curve: x, y and the brush's half width at points along it."""
+    pts, out = s["points"], []
+    closed = s["type"] == "path"
+    for i, a in enumerate(pts if closed else pts[:-1]):
+        b = pts[(i + 1) % len(pts)]
+        p = [a["corner"], a["ctrl2"], b["ctrl1"], b["corner"]]
+        for k in range(RT_SEGMENT_POINTS):
+            t, u = k / RT_SEGMENT_POINTS, 1 - k / RT_SEGMENT_POINTS
+            w = (u ** 3, 3 * u * u * t, 3 * u * t * t, t ** 3)
+            out.append((sum(w[j] * p[j][0] for j in range(4)), sum(w[j] * p[j][1] for j in range(4)),
+                        u * a["border"][0] + t * b["border"][0]))
+    if not closed:
+        out.append((*pts[-1]["corner"], pts[-1]["border"][0]))
+    return out
+
+
+def _rt_outline(s: dict, rw: int, rh: int) -> list[list[float]]:
+    """A spot's outline in raw space. Sizes are relative to the raw's shorter side."""
+    short = min(rw, rh)
+    kx, ky = short / rw, short / rh
+    if s["type"] in ("circle", "ellipse"):
+        ra, rb = (s["r"], s["r"]) if s["type"] == "circle" else (s["ra"], s["rb"])
+        a = math.radians(s.get("rotation", 0.0))
+        return [[s["x"] + kx * (ra * math.cos(t) * math.cos(a) - rb * math.sin(t) * math.sin(a)),
+                 s["y"] + ky * (ra * math.cos(t) * math.sin(a) + rb * math.sin(t) * math.cos(a))]
+                for t in (2 * math.pi * i / 48 for i in range(48))]
+    curve = _rt_stroke(s)
+    if s["type"] == "path":
+        pts = [[x, y] for x, y, _ in curve]
+    else:
+        # the stroke's two sides, by its normal in pixels
+        left, right = [], []
+        for i, (x, y, w) in enumerate(curve):
+            a, b = curve[max(i - 1, 0)], curve[min(i + 1, len(curve) - 1)]
+            tx, ty = (b[0] - a[0]) / kx, (b[1] - a[1]) / ky
+            n = math.hypot(tx, ty) or 1.0
+            left.append([x - ty / n * w * kx, y + tx / n * w * ky])
+            right.append([x + ty / n * w * kx, y - tx / n * w * ky])
+        pts = left + right[::-1]
+    k = math.ceil(len(pts) / RT_OUTLINE_POINTS)
+    return pts[::k]
+
+
+def _rt_anchor(s: dict) -> list[float]:
+    """The point of a spot its source belongs to: the center, or a path's or brush's first point."""
+    return s["points"][0]["corner"] if "points" in s else [s["x"], s["y"]]
+
+
+async def _retouch(image_id: int) -> dict:
+    """The module's spots on the photo, its scales, and whether it is on."""
+    r = await engine.edit(image_id, "retouch_list")
+    listed = [s for s in r["spots"] if s.get("type") in RT_SHAPES]
+    spots = []
+    if listed:
+        _, rw, rh = await _photo_to_raw(image_id, [[0.5, 0.5]])
+        outlines = [_rt_outline(s, rw, rh) for s in listed]
+        flat = [p for s, o in zip(listed, outlines) for p in (o + [_rt_anchor(s), [s["sx"], s["sy"]]])]
+        on = iter((await engine.edit(image_id, "coords", points=flat, **{"from": "raw", "to": "image"}))["points"])
+        take = lambda n: [[round(v, 5) for v in next(on)] for _ in range(n)]
+        for s, o in zip(listed, outlines):
+            outline = take(len(o))
+            (anchor, source) = take(2)
+            tool = _rt_short(s.get("algorithm"))
+            spots.append({"formid": s["formid"], "type": s["type"], "active": s.get("active", True), "tool": tool,
+                          "scale": s.get("scale", 0), "outline": outline, "anchor": anchor,
+                          "source": source if tool in RT_CLONING else None,
+                          **{k: _rt_short(s[k]) for k in RT_OPTIONS if k in s}})
+    return {"spots": spots, "enabled": r["enabled"], "num_scales": r["num_scales"],
+            "merge_from_scale": r["merge_from_scale"], "curr_scale": r["curr_scale"]}
+
+
+class RetouchBody(MaskBody):
+    tool: str = "heal"
+    source: list[float] | None = None
+    scale: int | None = None
+    blur_type: str | None = None
+    blur_radius: float | None = None
+    fill_mode: str | None = None
+    fill_color: list[float] | None = None
+    fill_brightness: float | None = None
+
+
+class RetouchSetBody(BaseModel):
+    formid: int
+    dx: float = 0.0                # photo fractions
+    dy: float = 0.0
+    size: float = 1.0              # times its size
+    source: list[float] | None = None
+    tool: str | None = None
+    scale: int | None = None
+    blur_type: str | None = None
+    blur_radius: float | None = None
+    fill_mode: str | None = None
+    fill_color: list[float] | None = None
+    fill_brightness: float | None = None
+
+
+class RetouchRemoveBody(BaseModel):
+    formids: list[int]
+
+
+class RetouchScalesBody(BaseModel):
+    num_scales: int | None = None
+    merge_from_scale: int | None = None
+    curr_scale: int | None = None
+
+
+def _rt_options(b: RetouchBody | RetouchSetBody) -> dict:
+    spec = {k: getattr(b, k) for k in (*RT_OPTIONS, "scale") if getattr(b, k) is not None}
+    if b.tool:
+        spec["algorithm"] = b.tool
+    return spec
+
+
+async def _rt_source(image_id: int, source: list[float]) -> dict:
+    if len(source) != 2:
+        raise HTTPException(400, "source: [x, y] on the photo")
+    [[sx, sy]], _, _ = await _photo_to_raw(image_id, [source])
+    return {"sx": min(max(sx, 0.0), 1.0), "sy": min(max(sy, 0.0), 1.0)}
+
+
+def _rt_moved(s: dict, mx: float, my: float, size: float) -> tuple[dict, float, float]:
+    """A listed spot's geometry moved (raw fractions) and resized as retouch_set
+    takes it, with the move as made: it stops at the raw's edges."""
+    if "points" in s:
+        c = [p["corner"] for p in s["points"]]
+        cx, cy = sum(p[0] for p in c) / len(c), sum(p[1] for p in c) / len(c)
+        at = lambda p: [cx + (p[0] - cx) * size + mx, cy + (p[1] - cy) * size + my]
+        ends = [at(p) for p in c]
+    else:
+        cx, cy = s["x"], s["y"]
+        ends = [[cx + mx, cy + my]]
+    mx -= min(0.0, min(p[0] for p in ends)) + max(0.0, max(p[0] for p in ends) - 1.0)
+    my -= min(0.0, min(p[1] for p in ends)) + max(0.0, max(p[1] for p in ends) - 1.0)
+    if s["type"] == "circle":
+        return {"x": cx + mx, "y": cy + my, "r": min(max(s["r"] * size, 0.0005), 0.49)}, mx, my
+    if s["type"] == "ellipse":
+        return {"shape": {"type": "ellipse", "x": cx + mx, "y": cy + my, "ra": min(s["ra"] * size, 0.49),
+                          "rb": min(s["rb"] * size, 0.49), "rotation": s["rotation"], "border": s["border"]}}, mx, my
+    at = lambda p: [cx + (p[0] - cx) * size + mx, cy + (p[1] - cy) * size + my]
+    pts = []
+    for p in s["points"]:
+        q = {**p, "corner": at(p["corner"]), "ctrl1": at(p["ctrl1"]), "ctrl2": at(p["ctrl2"])}
+        if s["type"] == "brush":
+            q["border"] = [v * size for v in p["border"]]
+        pts.append(q)
+    return {"shape": {"type": s["type"], "points": pts}}, mx, my
+
+
+@app.get("/api/photo/{image_id}/retouch")
+async def photo_retouch(image_id: int):
+    try:
+        return await _retouch(image_id)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+@app.post("/api/photo/{image_id}/retouch")
+async def photo_retouch_add(image_id: int, body: RetouchBody):
+    """A new spot: a shape as the masks tool draws it (MaskBody), the tool and
+    its options. What isn't given (feather, hardness) is the user's spot setting."""
+    if body.shape not in RT_SHAPES:
+        raise HTTPException(400, "shape: " + ", ".join(RT_SHAPES))
+    if body.shape in ("circle", "ellipse") and (body.x is None or body.y is None):
+        raise HTTPException(400, "x and y: the shape's center")
+    if body.tool in RT_CLONING and not body.source:
+        raise HTTPException(400, "clone and heal need a source")
+    try:
+        sh = await _shape_on_raw(image_id, body)
+        for arg, key in (("feather", "border"), ("width", "width"), ("hardness", "hardness")):
+            if arg not in body.model_fields_set:
+                sh.pop(key, None)
+        if "hardness" not in body.model_fields_set:
+            sh.pop("density", None)
+        spec = {**_rt_options(body), "shape": sh}
+        if body.source and body.tool in RT_CLONING:
+            spec.update(await _rt_source(image_id, body.source))
+        r = await engine.edit(image_id, "retouch_add", spots=[spec])
+        return {"added": r.get("formids", [None])[0], **await _retouch(image_id)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+@app.post("/api/photo/{image_id}/retouch/set")
+async def photo_retouch_set(image_id: int, body: RetouchSetBody):
+    """Move, resize or change one spot; a move takes its source along unless source is given."""
+    try:
+        spec = _rt_options(body)
+        if body.source:
+            spec.update(await _rt_source(image_id, body.source))
+        if body.dx or body.dy or body.size != 1.0:
+            s = next((x for x in (await engine.edit(image_id, "retouch_list"))["spots"] if x["formid"] == body.formid), None)
+            if s is None or s.get("type") not in RT_SHAPES:
+                raise HTTPException(404, f"no spot {body.formid}")
+            ax, ay = _rt_anchor(s)
+            at = (await engine.edit(image_id, "coords", points=[[ax, ay]], **{"from": "raw", "to": "image"}))["points"][0]
+            raw, _, _ = await _photo_to_raw(image_id, [at, [at[0] + body.dx, at[1] + body.dy]])
+            geo, mx, my = _rt_moved(s, raw[1][0] - raw[0][0], raw[1][1] - raw[0][1], body.size)
+            spec.update(geo)
+            if _rt_short(s.get("algorithm")) in RT_CLONING and not body.source:
+                spec.update(sx=min(max(s["sx"] + mx, 0.0), 1.0), sy=min(max(s["sy"] + my, 0.0), 1.0))
+        if not spec:
+            raise HTTPException(400, "nothing to change")
+        await engine.edit(image_id, "retouch_set", formid=body.formid, **spec)
+        return await _retouch(image_id)
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+@app.post("/api/photo/{image_id}/retouch/remove")
+async def photo_retouch_remove(image_id: int, body: RetouchRemoveBody):
+    try:
+        await engine.edit(image_id, "retouch_remove", formids=body.formids)
+        return await _retouch(image_id)
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+@app.post("/api/photo/{image_id}/retouch/scales")
+async def photo_retouch_scales(image_id: int, body: RetouchScalesBody):
+    """The wavelet decomposition, as retouch's scale bar."""
+    args = body.model_dump(exclude_none=True)
+    if not args:
+        raise HTTPException(400, "nothing to change")
+    try:
+        r = await engine.edit(image_id, "retouch_scales", **args)
+        return {"unused_spots": r.get("unused_spots", 0), **await _retouch(image_id)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
 
 
 _fill_models: list | None = None

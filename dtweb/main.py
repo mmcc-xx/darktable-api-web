@@ -715,6 +715,16 @@ async def photo_pick(image_id: int, body: PickBody):
         raise _bad(exc)
 
 
+@app.get("/api/photo/{image_id}/pickers")
+async def photo_pickers(image_id: int, operation: str):
+    """A module's pickers for its panel's buttons; none where the engine has none."""
+    try:
+        r = await engine.edit(image_id, "picker_list", operation=operation)
+    except EngineError:
+        return {"pickers": []}
+    return {"pickers": [c["name"] for c in r["controls"] if c["kind"] == "picker"]}
+
+
 # ── black & white: a second color calibration instance with a gray mix, as
 # darktable's monochrome presets make (the first keeps the white balance).
 # The looks: darktable's film presets, and color filters as gray mixes on

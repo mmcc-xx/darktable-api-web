@@ -472,9 +472,10 @@
     v.addEventListener('pointercancel', end);
   }
   // the sheet: tap the handle, or swipe it vertically (> 30 px), to raise / lower; opening a section raises it
+  let setSheet = () => {};
   {
     const h = $('#sheet-handle');
-    const sheet = (up, keep) => {
+    const sheet = setSheet = (up, keep) => {
       document.body.classList.toggle('sheet-up', up);
       h.setAttribute('aria-expanded', up);
       h.setAttribute('aria-label', up ? 'hide the edit panel' : 'show the edit panel');
@@ -1366,12 +1367,52 @@
   }
 
   // ── pickers: a button arms one, the next click on the photo samples a
-  // small box there (as darktable's picker, one history step)
-  let picking = null;
+  // small box there, a drag the box drawn (as darktable's picker, one history step)
+  let picking = null, pickDrag = null, pickSheet = false;
   function togglePick(btn) {
-    setPicking(picking && picking.btn === btn ? null : btn);
+    const same = picking && picking.operation === (btn.dataset.op || 'rgblevels') && picking.control === btn.dataset.pick &&
+                 picking.instance === (+btn.dataset.inst || 0);
+    setPicking(same ? null : btn);
+  }
+  // a row of buttons for a module's pickers (W70), any module with some;
+  // the engine's list is the module's, so one request per operation
+  const pickerLists = new Map();
+  function pickerList(op) {
+    if (!pickerLists.has(op)) pickerLists.set(op, api(`pickers?operation=${encodeURIComponent(op)}`).then((r) => r.json()).then((j) => j.pickers || []));
+    return pickerLists.get(op).catch(() => { pickerLists.delete(op); return []; });
+  }
+  // "pickers/black": black; "lift/hue" needs its section
+  function pickerLabel(op, control) {
+    if (op === 'channelmixerrgb' && control === 'picker') return 'neutral spot';
+    const parts = control.split('/'), last = parts[parts.length - 1];
+    return (last === 'hue' || last === 'factor') && parts.length > 1 ? parts.slice(-2).join(' ') : last;
+  }
+  function pickerRow(op, instance) {
+    const row = document.createElement('div');
+    row.className = 'pickers dim'; row.hidden = true;
+    row.textContent = 'pick';
+    row.title = 'click one, then click the photo or drag a box on it (Esc: cancel)';
+    pickerList(op).then((list) => {
+      for (const control of list) {
+        const b = document.createElement('button');
+        b.dataset.pick = control; b.dataset.op = op; b.dataset.inst = instance;
+        b.dataset.label = pickerLabel(op, control);
+        b.textContent = b.dataset.label;
+        const on = picking && picking.operation === op && picking.instance === instance && picking.control === control;
+        b.classList.toggle('on', !!on);
+        b.onclick = () => togglePick(b);
+        row.appendChild(b);
+      }
+      row.hidden = !list.length;
+    });
+    return row;
+  }
+  function endPickDrag() {
+    if (pickDrag) pickDrag.el.remove();
+    pickDrag = null;
   }
   function setPicking(btn) {
+    endPickDrag();
     if (btn && cropping) setCropping(false);
     if (btn && dust) setDust(false);
     if (btn && erase) setErase(false);
@@ -1380,27 +1421,59 @@
     if (btn && mark) setMark(false);
     if (btn && masks) setMasks(false);
     if (btn && cmp) closeCompare();
-    picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', control: btn.dataset.pick, label: btn.dataset.label};
+    picking = btn && {btn, operation: btn.dataset.op || 'rgblevels', instance: +btn.dataset.inst || 0,
+                      control: btn.dataset.pick, label: btn.dataset.label};
     document.querySelectorAll('[data-pick]').forEach((b) => {
       b.classList.toggle('on', !!picking && b === btn);
       b.setAttribute('aria-pressed', !!picking && b === btn);
     });
     $('.view').classList.toggle('picking', !!picking);
-    if (picking) status(`click the photo: the ${picking.label} (Esc: cancel)`);
+    // the phone's raised sheet leaves little of the photo: lower it while one is armed
+    if (PHONE.matches && picking && document.body.classList.contains('sheet-up')) { pickSheet = true; setSheet(false, true); }
+    else if (!picking && pickSheet) { pickSheet = false; setSheet(true, true); }
+    if (picking) status(`click the photo, or drag a box on it: the ${picking.label} (Esc: cancel)`);
   }
-  $('.view').addEventListener('click', (e) => {
+  const PICK_DRAG = 6;     // px; less is a click
+  $('.view').addEventListener('pointerdown', (e) => {
     if (!picking || showing) return;
-    const pt = photoPoint(e);
-    if (!pt) return;
-    const {x, y} = pt;
-    // a box of about 1.5% of the view's photo, either side
-    const kx = 0.015 * (shown ? shown.region.right - shown.region.left : 1),
-          ky = 0.015 * (shown ? shown.region.bottom - shown.region.top : 1), c = (a) => Math.max(0, Math.min(1, a));
+    if (!e.isPrimary) { endPickDrag(); return; }     // a second finger: not a box
+    if (e.button !== 0 || !photoPoint(e)) return;
+    const v = $('.view'), el = document.createElement('div');
+    el.className = 'pickbox'; el.hidden = true;
+    v.appendChild(el);
+    v.setPointerCapture(e.pointerId);
+    pickDrag = {id: e.pointerId, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, el};
+  });
+  $('.view').addEventListener('pointermove', (e) => {
+    const d = pickDrag;
+    if (!d || e.pointerId !== d.id) return;
+    const r = imgRect(), v = $('.view').getBoundingClientRect(), c = (a, lo, n) => Math.max(lo, Math.min(lo + n, a));
+    d.x1 = c(e.clientX, v.left + r.x, r.w); d.y1 = c(e.clientY, v.top + r.y, r.h);
+    d.el.hidden = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) < PICK_DRAG;
+    Object.assign(d.el.style, {left: Math.min(d.x0, d.x1) - v.left + 'px', top: Math.min(d.y0, d.y1) - v.top + 'px',
+                               width: Math.abs(d.x1 - d.x0) + 'px', height: Math.abs(d.y1 - d.y0) + 'px'});
+  });
+  $('.view').addEventListener('pointercancel', (e) => { if (pickDrag && e.pointerId === pickDrag.id) endPickDrag(); });
+  $('.view').addEventListener('pointerup', (e) => {
+    const d = pickDrag;
+    if (!d || e.pointerId !== d.id) return;
+    const dragged = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) >= PICK_DRAG;
+    const a = photoPoint({clientX: d.x0, clientY: d.y0}), b = dragged ? photoPoint({clientX: d.x1, clientY: d.y1}) : a;
     const p = picking;
     setPicking(null);
+    if (!a || !b) return;
+    // a click: a box of about 1.5% of the view's photo, either side
+    const kx = 0.015 * (shown ? shown.region.right - shown.region.left : 1),
+          ky = 0.015 * (shown ? shown.region.bottom - shown.region.top : 1), c = (v) => Math.max(0, Math.min(1, v));
+    const box = dragged ? {left: Math.min(a.x, b.x), top: Math.min(a.y, b.y), right: Math.max(a.x, b.x), bottom: Math.max(a.y, b.y)}
+                        : {left: a.x - kx, top: a.y - ky, right: a.x + kx, bottom: a.y + ky};
+    // a drag along one edge still needs some height
+    const mx = 0.1 * kx, my = 0.1 * ky;
+    if (box.right - box.left < 2 * mx) { box.left -= mx; box.right += mx; }
+    if (box.bottom - box.top < 2 * my) { box.top -= my; box.bottom += my; }
     status(`picking the ${p.label}…`);
-    enqueue('pick', {operation: p.operation, instance: 0, control: p.control,
-                     box: {left: c(x - kx), top: c(y - ky), right: c(x + kx), bottom: c(y + ky)}});
+    enqueue('pick', {operation: p.operation, instance: p.instance, control: p.control,
+                     box: {left: c(box.left), top: c(box.top), right: c(box.right), bottom: c(box.bottom)}});
   });
 
   // ── rgb levels under the histogram: black, gray and white of the first
@@ -1513,6 +1586,7 @@
       row.append(lab, val, sl);
       sec.appendChild(row);
     });
+    if (m.title && !m.missing) sec.appendChild(pickerRow(m.operation, m.instance || 0));
     if (!bare && !m.missing) sec.appendChild(maskRow(m.operation, m.instance));
     return sec;
   }

@@ -50,7 +50,9 @@ edit panel as a sheet; swipe for the next photo, pinch to zoom).
   rejected. Photos already in the library are skipped, as darktable does.
 - **Darkroom:** a toolbar above the photo and a panel at the right. The
   panel: an RGB + luminance histogram with clipped shares and rgb levels'
-  handles and pickers, the camera data, then two views. *Quick*: exposure,
+  handles and pickers, the camera data, then two views. Each module's panel
+  has a button for every picker the engine has: click the photo for a small
+  area or drag a box. *Quick*: exposure,
   white balance (color calibration as temperature and tint, *pick a neutral
   spot*), AgX (or sigmoid), the tone equalizer's nine bands, color balance
   rgb, capture sharpening (with *measure for this photo*), a black & white

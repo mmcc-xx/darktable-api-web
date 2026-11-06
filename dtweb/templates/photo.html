@@ -3373,43 +3373,55 @@
   }
   async function run() {
     busy = true;
-    while (waiting.length) {
-      const {path, body: p} = waiting.shift();
-      pending = waiting.length > 0;
-      const t = performance.now();
-      const r = await api(path, p);
-      if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
-      setDirty(true);
-      const s = await r.json();
-      if (path === 'history_end' || path === 'pick') show(s);
-      else renderHistory(s.history);
-      if (path === 'geometry') { showGeo(s.geometry); full = null; }
-      if (path === 'curve' && s.enabled) {
-        // the first change switches the module on, as in darktable: tick its row without redrawing the graph
-        const e = (state.pipeline || []).find((x) => x.operation === p.operation && x.instance === p.instance);
-        if (e && !e.enabled) {
-          e.enabled = true;
-          const cb = document.querySelector(`#pipeline .prow[data-key="${key(p.operation, p.instance)}"] .phead input[type=checkbox]`);
-          if (cb) cb.checked = true;
+    // a change that fails (a dropped request, an error while drawing its preview)
+    // must not leave busy set: every later change would wait here and never be sent
+    try {
+      while (waiting.length) {
+        const {path, body: p} = waiting.shift();
+        let sent = false;
+        try {
+          pending = waiting.length > 0;
+          const t = performance.now();
+          const r = await api(path, p);
+          if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
+          sent = true; setDirty(true);
+          const s = await r.json();
+          if (path === 'history_end' || path === 'pick') show(s);
+          else renderHistory(s.history);
+          if (path === 'geometry') { showGeo(s.geometry); full = null; }
+          if (path === 'curve' && s.enabled) {
+            // the first change switches the module on, as in darktable: tick its row without redrawing the graph
+            const e = (state.pipeline || []).find((x) => x.operation === p.operation && x.instance === p.instance);
+            if (e && !e.enabled) {
+              e.enabled = true;
+              const cb = document.querySelector(`#pipeline .prow[data-key="${key(p.operation, p.instance)}"] .phead input[type=checkbox]`);
+              if (cb) cb.checked = true;
+            }
+          }
+          const m = path === 'set' && !p.instance && state.modules.find((x) => x.operation === p.operation);
+          if (m && !m.enabled && s.enabled) { m.enabled = true; state.history = s.history; show(state); }
+          // a slider switched the module on: show it on (not while more values wait)
+          if (path === 'set' && !p.instance && p.operation === 'rgblevels' && state.levels && !state.levels.enabled && s.enabled) {
+            state.levels.enabled = true; drawLevels();
+          }
+          if (path === 'wb' && !waiting.some((w) => w.key === 'wb')) {
+            const was = state.wb;
+            state.wb = {...s.wb, temperature: was.temperature, tint: was.tint};
+            if ($('#wb-ill')) $('#wb-ill').textContent = 'illuminant: ' + s.wb.illuminant;
+            if (!was.enabled && s.wb.enabled) { state.history = s.history; state.wb = s.wb; show(state); }
+          }
+          if (!waiting.length) await preview(`${DONE[path]} ${Math.round(performance.now() - t)} ms,`);
+        } catch (e) {
+          console.error(e);
+          status(sent ? `${DONE[path] || path} applied, but the view didn't update (${e.message || e}): reload the page`
+                      : `not applied: ${DONE[path] || path} failed (${e.message || e})`);
         }
       }
-      const m = path === 'set' && !p.instance && state.modules.find((x) => x.operation === p.operation);
-      if (m && !m.enabled && s.enabled) { m.enabled = true; state.history = s.history; show(state); }
-      // a slider switched the module on: show it on (not while more values wait)
-      if (path === 'set' && !p.instance && p.operation === 'rgblevels' && state.levels && !state.levels.enabled && s.enabled) {
-        state.levels.enabled = true; drawLevels();
-      }
-      if (path === 'wb' && !waiting.some((w) => w.key === 'wb')) {
-        const was = state.wb;
-        state.wb = {...s.wb, temperature: was.temperature, tint: was.tint};
-        if ($('#wb-ill')) $('#wb-ill').textContent = 'illuminant: ' + s.wb.illuminant;
-        if (!was.enabled && s.wb.enabled) { state.history = s.history; state.wb = s.wb; show(state); }
-      }
-      if (!waiting.length) await preview(`${DONE[path]} ${Math.round(performance.now() - t)} ms,`);
+    } finally {
+      endTarget = null;
+      pending = false;
+      busy = false;
     }
-    endTarget = null;
-    pending = false;
-    busy = false;
   }
 
   // export: darktable's export of the saved edit, into darktable's export

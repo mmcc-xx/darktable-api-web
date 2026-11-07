@@ -239,6 +239,8 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   .toolbar button, .toolbar-bar button, .panel-foot button, .menu-list button { min-height: 44px; min-width: 44px; white-space: nowrap; }
   .toolbar-bar { flex: none; }
   .toolbar-bar .angle input { width: 6rem; }
+  /* drawing lines (W72): only the lines controls, so the photo keeps its room */
+  #toolbar-crop.persp-on #geo > :not(#persp) { display: none; }
   .status { flex: none; }
 
   .panel { flex: none; max-height: 32vh; max-height: 32dvh; overflow-y: auto; border-left: none; border-top: 1px solid var(--line); }
@@ -286,6 +288,19 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background-image: linear-gradient(to right, rgba(255,255,255,.4) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.4) 1px, transparent 1px);
   background-size: 12.5% 12.5%; background-position: -.5px -.5px; }
+/* perspective lines (W72): over the uncropped photo; the crop box stays as
+   a dashed outline, without its shade, so edges near it can be drawn on */
+.persp-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.persp-svg line, .persp-svg polygon { stroke-width: 2; fill: none; filter: drop-shadow(0 0 1px #000); }
+.persp-svg .v, .persp-svg .pq { stroke: #4fd16b; }
+.persp-svg .h { stroke: #4fa3ff; }
+.persp-svg .pq { fill: rgba(79, 209, 107, .08); }
+.persp-svg .sel { stroke: #f0bd70; stroke-width: 3; }
+.persp-svg circle { fill: rgba(0, 0, 0, .35); stroke: #fff; stroke-width: 1.5; }
+.cropframe.lines .cropbox { box-shadow: none; background-image: none; border-style: dashed; pointer-events: none; }
+.cropframe.lines::after { display: none; }
+.toolbar-bar .persp { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; }
+.toolbar-bar .persp label { display: inline-flex; align-items: center; gap: .3rem; }
 #export label { font-size: .85rem; display: inline-flex; align-items: center; gap: .3rem; }
 #export .num { width: 3.5rem; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: .2rem .3rem; }
 #ex-result { word-break: break-all; }

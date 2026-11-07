@@ -444,7 +444,7 @@ async def photo_page(request: Request, image_id: int):
     ctx = {"image_id": image_id, "img": None, "query": _query(f), "lib": lib,
            "prev": None, "next": None, "pos": 0, "total": 0, "error": None, "labels": LABELS, "shot": [],
            "can_fill": False, "can_mask": False, "can_mark": False, "can_masks": False, "can_retouch": False,
-           "can_immich": _immich_conf()["configured"]}
+           "can_persp": False, "can_immich": _immich_conf()["configured"]}
     if lib.get("state") == "owned":
         try:
             ctx["can_fill"] = await engine.supports("ai_fill")
@@ -452,6 +452,7 @@ async def photo_page(request: Request, image_id: int):
             ctx["can_mark"] = await engine.supports("marker_set")
             ctx["can_masks"] = await engine.supports("mask_add")
             ctx["can_retouch"] = await engine.supports("retouch_scales")
+            ctx["can_persp"] = await engine.supports("perspective_fit")
             info = await engine.call("image_info", imgid=image_id)
             ctx["img"], ctx["shot"] = info["image"], _shot(info.get("exif"))
             ctx["prev"], ctx["next"], ctx["pos"], ctx["total"] = await _neighbours(image_id, f)
@@ -1630,6 +1631,45 @@ async def photo_geometry(image_id: int, body: GeometryBody):
     try:
         g = await engine.edit(image_id, "geometry_set", **body.model_dump(exclude_unset=True))
         return {"geometry": g, "history": await engine.edit(image_id, "history_list")}
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class PerspectiveBody(BaseModel):
+    """lines [[x1, y1, x2, y2], ...] or quad [[x, y] x 4] in fractions of the
+    uncropped photo (the crop tool's view), fit ("auto", "vertical",
+    "horizontal", "both"), shear (with both)."""
+    model_config = {"extra": "forbid"}
+    lines: list[list[float]] | None = None
+    quad: list[list[float]] | None = None
+    fit: str = "auto"
+    shear: bool = False
+
+
+@app.post("/api/photo/{image_id}/perspective")
+async def photo_perspective(image_id: int, body: PerspectiveBody):
+    """Rotate and perspective's fit from drawn lines (W72, engine
+    perspective_fit). The lines come back moved with the photo, through the
+    raw, so they stay on the edges they were drawn along."""
+    if (body.lines is None) == (body.quad is None):
+        raise HTTPException(400, "give lines or quad")
+    if body.lines is not None and any(len(l) != 4 for l in body.lines):
+        raise HTTPException(400, "each line needs [x1, y1, x2, y2]")
+    if body.quad is not None and (len(body.quad) != 4 or any(len(p) != 2 for p in body.quad)):
+        raise HTTPException(400, "quad needs four corners [x, y]")
+    pts = [p for l in body.lines for p in (l[:2], l[2:])] if body.lines is not None else body.quad
+    shape = {"lines": body.lines} if body.lines is not None else {"quad": body.quad}
+    try:
+        raw = (await engine.edit(image_id, "coords", points=pts, **{"from": "uncropped", "to": "raw"}))["points"]
+        g = await engine.edit(image_id, "perspective_fit", space="uncropped", fit=body.fit, shear=body.shear, **shape)
+        back = (await engine.edit(image_id, "coords", points=raw, **{"from": "raw", "to": "uncropped"}))["points"]
+        out = {"geometry": g, "history": await engine.edit(image_id, "history_list"),
+               "fitted": g.get("fitted"), "straightened": g.get("straightened")}
+        if body.lines is not None:
+            out["lines"] = [back[2 * i] + back[2 * i + 1] for i in range(len(body.lines))]
+        else:
+            out["quad"] = back
+        return out
     except EngineError as exc:
         raise _bad(exc)
 

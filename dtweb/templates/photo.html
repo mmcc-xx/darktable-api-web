@@ -56,6 +56,19 @@
           <option value="grid">grid</option><option value="golden">golden ratio</option>
         </select>
         <button id="crop-reset" class="secondary" title="remove the crop">no crop</button>
+        <button id="persp" aria-pressed="false" {% if not can_persp %}disabled {% endif %}title="{{ "perspective: draw lines along edges that should be vertical or horizontal, then fit (l)" if can_persp else "needs a newer darktable-api engine" }}">lines</button>
+      </span>
+      <span id="persp-bar" class="persp" hidden>
+        <span id="persp-n" class="dim" role="status"></span>
+        <button id="persp-quad" aria-pressed="false" title="draw a rectangle instead: put its corners on the corners of something rectangular">rectangle</button>
+        <select id="persp-fit" title="what the fit straightens (auto: each direction with 2 lines)">
+          <option value="auto">auto</option><option value="vertical">verticals</option>
+          <option value="horizontal">horizontals</option><option value="both">both</option>
+        </select>
+        <label title="also fit shear (with 2 vertical and 2 horizontal lines)"><input type="checkbox" id="persp-shear"> shear</label>
+        <button id="persp-del" class="secondary" disabled title="delete the selected line (Delete)">delete</button>
+        <button id="persp-clear" class="secondary" disabled title="delete every line">clear</button>
+        <button id="persp-go" class="primary" disabled title="fit rotation and lens shift to the lines, then crop">fit</button>
       </span>
       <button id="crop-cancel" class="secondary" title="leave the crop as it was (Esc)">cancel</button>
       <button id="crop-apply" class="primary" title="apply the box (Enter)">done</button>
@@ -146,7 +159,7 @@
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
       <canvas id="clipov" class="clipov" hidden></canvas>
       <div id="tonebar" class="tonebar" hidden><span id="tone-band">tap the photo</span><button id="tone-down" aria-label="lower the band">−</button><button id="tone-up" aria-label="raise the band">+</button><button id="tone-done" class="secondary">done</button></div>
-      <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
+      <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div><svg id="persp-svg" class="persp-svg" hidden></svg></div>
       <div id="cmpframe" class="cmpframe" hidden>
         <img id="cmp-before" alt="before"><div id="cmp-line" class="cmp-line"></div>
         <span class="cmp-tag left">before</span><span class="cmp-tag right">after</span>
@@ -3743,6 +3756,7 @@
     Object.assign(f.style, {left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px'});
     Object.assign(b.style, {left: box.left * r.w + 'px', top: box.top * r.h + 'px',
                             width: (box.right - box.left) * r.w + 'px', height: (box.bottom - box.top) * r.h + 'px'});
+    drawPersp();
   }
 
   // the largest box of the chosen ratio inside b, centered on it
@@ -3761,6 +3775,7 @@
   // drag inside the box to move it, near an edge or corner to resize
   let drag = null;
   $('#cropframe').addEventListener('pointerdown', (e) => {
+    if (persp.on) { perspDown(e); $('#cropframe').setPointerCapture(e.pointerId); e.preventDefault(); return; }
     const r = imgRect(), x = (e.clientX - $('#cropframe').getBoundingClientRect().left) / r.w,
           y = (e.clientY - $('#cropframe').getBoundingClientRect().top) / r.h;
     const tol = 14 / r.w, toly = 14 / r.h;
@@ -3775,6 +3790,7 @@
     e.preventDefault();
   });
   $('#cropframe').addEventListener('pointermove', (e) => {
+    if (persp.on) return perspMove(e);
     if (!drag) return;
     const r = imgRect(), fr = $('#cropframe').getBoundingClientRect();
     const dx = (e.clientX - fr.left) / r.w - drag.x, dy = (e.clientY - fr.top) / r.h - drag.y;
@@ -3804,7 +3820,7 @@
     box = b;
     drawBox();
   });
-  const endDrag = () => { drag = null; };
+  const endDrag = () => { drag = null; perspUp(); };
   $('#cropframe').addEventListener('pointerup', endDrag);
   $('#cropframe').addEventListener('pointercancel', endDrag);
 
@@ -3818,6 +3834,7 @@
     if (on && masks) setMasks(false);
     if (on && zoom) markZoom(0);
     cropping = on && !!geo;
+    if (!on && persp.on) setPersp(false);
     $('#toolbar-crop').hidden = !on;
     $('#tool-crop').setAttribute('aria-pressed', on);
     $('#tool-crop').classList.toggle('on', on);
@@ -3870,15 +3887,163 @@
   addEventListener('resize', drawBox);
   $('#pv').addEventListener('load', drawBox);
 
+  // ── perspective from drawn lines (W72) ─────────────────────────────────
+  // in the crop tool, lines along edges that should come out vertical or
+  // horizontal, or a rectangle's corners on something rectangular, in
+  // fractions of the uncropped photo; fit sends them to the engine's
+  // perspective_fit (rotation, lens shift, shear if asked, then the crop).
+  // They stay while the page is open, and come back from a fit moved with
+  // the photo, so they can be adjusted and fitted again
+  const persp = {on: false, quadMode: false, lines: [], quad: null, sel: -1};
+  let pdrag = null;
+  const pTol = () => matchMedia('(pointer: coarse)').matches ? 22 : 10;
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  function perspXY(e) {
+    const r = imgRect(), fr = $('#cropframe').getBoundingClientRect();
+    return [clamp01((e.clientX - fr.left) / r.w), clamp01((e.clientY - fr.top) / r.h)];
+  }
+  const isVert = (l, r) => Math.abs((l[2] - l[0]) * r.w) <= Math.abs((l[3] - l[1]) * r.h);
+  // what's under the pointer: a corner or end first, then a line or the rectangle
+  function perspHit(x, y) {
+    const r = imgRect(), t = pTol(), d = (ax, ay, bx, by) => Math.hypot((ax - bx) * r.w, (ay - by) * r.h);
+    if (persp.quadMode) {
+      const q = persp.quad;
+      if (!q) return null;
+      for (let i = 0; i < 4; i++) if (d(x, y, q[i][0], q[i][1]) < t) return {corner: i};
+      let inside = false;
+      for (let i = 0, j = 3; i < 4; j = i++)
+        if ((q[i][1] > y) !== (q[j][1] > y) && x < (q[j][0] - q[i][0]) * (y - q[i][1]) / (q[j][1] - q[i][1]) + q[i][0]) inside = !inside;
+      return inside ? {whole: true} : null;
+    }
+    const order = [...persp.lines.keys()].sort((a, b) => (b === persp.sel) - (a === persp.sel));
+    for (const i of order) {
+      const l = persp.lines[i];
+      if (d(x, y, l[0], l[1]) < t) return {line: i, end: 0};
+      if (d(x, y, l[2], l[3]) < t) return {line: i, end: 1};
+    }
+    for (const i of order) {
+      const l = persp.lines[i], ax = l[0] * r.w, ay = l[1] * r.h, bx = l[2] * r.w, by = l[3] * r.h;
+      const px = x * r.w, py = y * r.h, L = (bx - ax) ** 2 + (by - ay) ** 2;
+      const u = L ? Math.max(0, Math.min(1, ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / L)) : 0;
+      if (Math.hypot(px - ax - u * (bx - ax), py - ay - u * (by - ay)) < t) return {line: i, whole: true};
+    }
+    return null;
+  }
+  // press on an end or corner: move it; on a line or inside the rectangle:
+  // move the whole; elsewhere: draw a new line (a new rectangle)
+  function perspDown(e) {
+    const [x, y] = perspXY(e), h = perspHit(x, y);
+    if (persp.quadMode) {
+      if (h) pdrag = {...h, x, y, start: persp.quad.map((p) => [...p])};
+      else { persp.quad = [[x, y], [x, y], [x, y], [x, y]]; pdrag = {draw: true, x, y}; }
+    } else if (h) {
+      persp.sel = h.line;
+      pdrag = {...h, x, y, start: [...persp.lines[h.line]]};
+    } else {
+      persp.lines.push([x, y, x, y]);
+      persp.sel = persp.lines.length - 1;
+      pdrag = {line: persp.sel, end: 1, x, y, fresh: true};
+    }
+    drawPersp();
+  }
+  function perspMove(e) {
+    if (!pdrag) return;
+    const [x, y] = perspXY(e), dx = x - pdrag.x, dy = y - pdrag.y;
+    if (persp.quadMode) {
+      if (pdrag.draw) persp.quad = [[pdrag.x, pdrag.y], [x, pdrag.y], [x, y], [pdrag.x, y]];
+      else if (pdrag.corner !== undefined) persp.quad[pdrag.corner] = [x, y];
+      else persp.quad = pdrag.start.map(([a, b]) => [a + dx, b + dy]);
+    } else {
+      const l = persp.lines[pdrag.line], s = pdrag.start;
+      if (pdrag.whole) persp.lines[pdrag.line] = [s[0] + dx, s[1] + dy, s[2] + dx, s[3] + dy];
+      else if (pdrag.end === 0) { l[0] = x; l[1] = y; } else { l[2] = x; l[3] = y; }
+    }
+    drawPersp();
+  }
+  // a tap (under 12 px) draws nothing; a tap on nothing deselects
+  function perspUp() {
+    if (!pdrag) return;
+    const r = imgRect();
+    if (pdrag.fresh) {
+      const l = persp.lines[pdrag.line];
+      if (Math.hypot((l[2] - l[0]) * r.w, (l[3] - l[1]) * r.h) < 12) { persp.lines.pop(); persp.sel = -1; }
+    }
+    if (pdrag.draw) {
+      const q = persp.quad;
+      if (Math.abs(q[2][0] - q[0][0]) * r.w < 12 || Math.abs(q[2][1] - q[0][1]) * r.h < 12) persp.quad = null;
+    }
+    pdrag = null;
+    drawPersp();
+  }
+  function drawPersp() {
+    const svg = $('#persp-svg');
+    svg.toggleAttribute('hidden', !persp.on);   // an <svg> has no .hidden property
+    $('#cropframe').classList.toggle('lines', persp.on);
+    if (!persp.on) return;
+    const r = imgRect(), X = (v) => (v * r.w).toFixed(1), Y = (v) => (v * r.h).toFixed(1);
+    const hr = pTol() > 10 ? 9 : 5;
+    svg.setAttribute('viewBox', `0 0 ${r.w} ${r.h}`);
+    const dot = (a, b, c = '') => `<circle class="ph${c}" cx="${X(a)}" cy="${Y(b)}" r="${hr}"/>`;
+    let h = '', nv = 0, nh = 0;
+    if (persp.quadMode) {
+      if (persp.quad) {
+        h += `<polygon class="pq" points="${persp.quad.map(([a, b]) => X(a) + ',' + Y(b)).join(' ')}"/>`;
+        persp.quad.forEach(([a, b]) => { h += dot(a, b); });
+      }
+    } else {
+      persp.lines.forEach((l, i) => {
+        const v = isVert(l, r);
+        if (v) nv++; else nh++;
+        const c = (v ? 'v' : 'h') + (i === persp.sel ? ' sel' : '');
+        h += `<line class="pl ${c}" x1="${X(l[0])}" y1="${Y(l[1])}" x2="${X(l[2])}" y2="${Y(l[3])}"/>` + dot(l[0], l[1]) + dot(l[2], l[3]);
+      });
+    }
+    svg.innerHTML = h;
+    $('#persp-n').textContent = persp.quadMode ? (persp.quad ? 'rectangle' : 'drag a rectangle')
+      : persp.lines.length ? `${nv} vertical, ${nh} horizontal` : 'drag along an edge';
+    $('#persp-go').disabled = persp.quadMode ? !persp.quad : nv < 2 && nh < 2;
+    $('#persp-del').disabled = persp.quadMode ? !persp.quad : persp.sel < 0;
+    $('#persp-clear').disabled = !persp.lines.length && !persp.quad;
+  }
+  function setPersp(on) {
+    persp.on = on;
+    pdrag = null;
+    $('#persp').setAttribute('aria-pressed', on);
+    $('#persp').classList.toggle('on', on);
+    $('#persp-bar').hidden = !on;
+    $('#toolbar-crop').classList.toggle('persp-on', on);
+    // the bar can wrap the toolbar to another line (the phone), and the view
+    // with it: place the frame again
+    if (cropping) drawBox(); else drawPersp();
+  }
+  function perspDelete() {
+    if (persp.quadMode) persp.quad = null;
+    else if (persp.sel >= 0) { persp.lines.splice(persp.sel, 1); persp.sel = -1; }
+    drawPersp();
+  }
+  $('#persp').onclick = () => setPersp(!persp.on);
+  $('#persp-quad').onclick = () => {
+    persp.quadMode = !persp.quadMode;
+    persp.sel = -1;
+    $('#persp-quad').setAttribute('aria-pressed', persp.quadMode);
+    $('#persp-quad').classList.toggle('on', persp.quadMode);
+    drawPersp();
+  };
+  $('#persp-del').onclick = perspDelete;
+  $('#persp-clear').onclick = () => { persp.lines = []; persp.quad = null; persp.sel = -1; drawPersp(); };
+  $('#persp-go').onclick = () => enqueue('perspective', {...(persp.quadMode ? {quad: persp.quad} : {lines: persp.lines}),
+                                                         fit: $('#persp-fit').value, shear: $('#persp-shear').checked});
+
   // one change in flight; newer slider values replace the waiting one
   // (only a change of the same kind: a rotation isn't dropped for a slider)
   let waiting = [];
-  const DONE = {set: 'set', curve: 'curve', geometry: 'crop/rotate', history_end: 'undo/redo', wb: 'white balance', pick: 'picker'};
+  const DONE = {set: 'set', curve: 'curve', geometry: 'crop/rotate', perspective: 'perspective fit', history_end: 'undo/redo', wb: 'white balance', pick: 'picker'};
   function queue(op, name, v, instance) { enqueue('set', {operation: op, ...(instance ? {instance} : {}), values: {[name]: v}}); }
   function queueGeo(body) { enqueue('geometry', body); }
   function enqueue(path, body) {
     const key = path === 'set' ? 'set ' + body.operation + (body.instance || '') + ' ' + Object.keys(body.values)
               : path === 'geometry' ? 'geometry ' + Object.keys(body).sort()
+              : path === 'perspective' ? 'perspective'
               : path === 'curve' ? `curve ${body.operation} ${body.instance} ${body.channel}`
               : path === 'pick' ? 'pick ' + performance.now() : path === 'wb' ? 'wb' : 'history';
     waiting = waiting.filter((w) => w.key !== key);
@@ -3904,7 +4069,12 @@
           toneBandSent = path === 'set' && p.operation === 'toneequal' && Object.keys(p.values).every((n) => TONE_BANDS.includes(n));
           if (path === 'history_end' || path === 'pick') show(s);
           else renderHistory(s.history);
-          if (path === 'geometry') { showGeo(s.geometry); full = null; }
+          if (path === 'geometry' || path === 'perspective') { showGeo(s.geometry); full = null; }
+          if (path === 'perspective') {
+            if (s.lines) persp.lines = s.lines;
+            if (s.quad) persp.quad = s.quad;
+            drawPersp();
+          }
           if (path === 'curve' && s.enabled) {
             // the first change switches the module on, as in darktable: tick its row without redrawing the graph
             const e = (state.pipeline || []).find((x) => x.operation === p.operation && x.instance === p.instance);
@@ -4438,6 +4608,8 @@
     if (k === 'r' && CAN_RETOUCH && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setRetouch(!retouch); return; }
     if (k === 'k' && CAN_MASKS && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setMasks(!masks); return; }
     if (k === 'o' && !e.metaKey && !e.ctrlKey && !e.altKey) { $('#clip').click(); return; }
+    if (cropping && k === 'l' && !$('#persp').disabled && !e.metaKey && !e.ctrlKey && !e.altKey && !e.repeat) { e.preventDefault(); setPersp(!persp.on); return; }
+    if (cropping && persp.on && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); perspDelete(); return; }
     if (cropping && e.key === 'Enter') { e.preventDefault(); $('#crop-apply').click(); return; }
     const go = {Escape: 'back', PageUp: 'prev', PageDown: 'next'}[e.key];
     const a = go && document.getElementById(go);

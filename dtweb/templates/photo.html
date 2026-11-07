@@ -1411,7 +1411,7 @@
     if (pickDrag) pickDrag.el.remove();
     pickDrag = null;
   }
-  function setPicking(btn) {
+  function setPicking(btn, tapped) {
     endPickDrag();
     if (btn && cropping) setCropping(false);
     if (btn && dust) setDust(false);
@@ -1430,7 +1430,11 @@
     $('.view').classList.toggle('picking', !!picking);
     // the phone's raised sheet leaves little of the photo: lower it while one is armed
     if (PHONE.matches && picking && document.body.classList.contains('sheet-up')) { pickSheet = true; setSheet(false, true); }
-    else if (!picking && pickSheet) { pickSheet = false; setSheet(true, true); }
+    else if (!picking && pickSheet) {
+      pickSheet = false;
+      // after a pick wait for the tap's own click, which would land on whatever rises under the finger
+      if (tapped) setTimeout(() => setSheet(true, true), 350); else setSheet(true, true);
+    }
     if (picking) status(`click the photo, or drag a box on it: the ${picking.label} (Esc: cancel)`);
   }
   const PICK_DRAG = 6;     // px; less is a click
@@ -1460,7 +1464,7 @@
     const dragged = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) >= PICK_DRAG;
     const a = photoPoint({clientX: d.x0, clientY: d.y0}), b = dragged ? photoPoint({clientX: d.x1, clientY: d.y1}) : a;
     const p = picking;
-    setPicking(null);
+    setPicking(null, true);
     if (!a || !b) return;
     // a click: a box of about 1.5% of the view's photo, either side
     const kx = 0.015 * (shown ? shown.region.right - shown.region.left : 1),

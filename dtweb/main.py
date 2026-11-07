@@ -715,6 +715,16 @@ async def photo_pick(image_id: int, body: PickBody):
         raise _bad(exc)
 
 
+@app.get("/api/photo/{image_id}/tonemask")
+async def photo_tonemask(image_id: int, instance: int = 0):
+    """The tone equalizer's own luminance mask in EV, a grid over the photo
+    as rendered: which band a point of the photo is in."""
+    try:
+        return await engine.edit(image_id, "toneequal_mask", instance=instance)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
 @app.get("/api/photo/{image_id}/pickers")
 async def photo_pickers(image_id: int, operation: str):
     """A module's pickers for its panel's buttons; none where the engine has none."""

@@ -145,6 +145,7 @@
       <button id="maskshow" class="secondary maskshow" hidden title="hide the mask (the preview shows it in yellow, as darktable's display mask)"></button>
       <img id="pv" alt="{{ img.filename }}" src="/thumb/{{ img.id }}/{{ img.changed }}-{{ img.history_end }}.jpg?size=1200">
       <canvas id="clipov" class="clipov" hidden></canvas>
+      <div id="tonebar" class="tonebar" hidden><span id="tone-band">tap the photo</span><button id="tone-down" aria-label="lower the band">−</button><button id="tone-up" aria-label="raise the band">+</button><button id="tone-done" class="secondary">done</button></div>
       <div id="cropframe" class="cropframe" hidden><div id="cropbox" class="cropbox"></div></div>
       <div id="cmpframe" class="cmpframe" hidden>
         <img id="cmp-before" alt="before"><div id="cmp-line" class="cmp-line"></div>
@@ -388,7 +389,7 @@
   // a mouse drag on the <img> would start the browser's image drag and cancel the pan
   $('.view').addEventListener('dragstart', (e) => e.preventDefault());
   $('.view').addEventListener('pointerdown', (e) => {
-    if (!shown || picking || cropping || cmp || erase || mark || (retouch && !e.altKey) || e.button !== 0 || panPointer !== null) return;
+    if (!shown || picking || toning || cropping || cmp || erase || mark || (retouch && !e.altKey) || e.button !== 0 || panPointer !== null) return;
     const v = $('.view'), x0 = e.clientX, y0 = e.clientY, from = shown;
     v.setPointerCapture(e.pointerId);
     v.classList.add('panning');
@@ -414,7 +415,7 @@
   });
   // double-click: 100% there, or back to fit
   $('.view').addEventListener('dblclick', (e) => {
-    if (picking || cropping || cmp || dust || erase || area || mark || retouch) return;
+    if (picking || toning || cropping || cmp || dust || erase || area || mark || retouch) return;
     if (zoom) { setZoom(0); return; }
     const p = photoPoint(e);
     if (p) setZoom(1, p);
@@ -424,7 +425,7 @@
 
   // ── phone (W21): swipe for prev / next, pinch to zoom in steps, the edit panel as a bottom sheet
   const PHONE = matchMedia('(max-width: 800px)');
-  const anyTool = () => picking || cropping || cmp || dust || erase || area || mark || retouch;
+  const anyTool = () => picking || toning || cropping || cmp || dust || erase || area || mark || retouch;
   {
     const v = $('.view'), touches = new Map();
     let start = null, pinch = null;
@@ -519,6 +520,7 @@
 
   function renderHistory(h) {
     hist = h;
+    if (toning && !toneBandSent) toneLoad();
     $('#undo').disabled = h.history_end === 0;
     $('#redo').disabled = h.history_end >= h.items.length;
     const ol = $('#history');
@@ -1413,6 +1415,7 @@
   }
   function setPicking(btn, tapped) {
     endPickDrag();
+    if (btn && toning) setToning(null);
     if (btn && cropping) setCropping(false);
     if (btn && dust) setDust(false);
     if (btn && erase) setErase(false);
@@ -1480,6 +1483,137 @@
                      box: {left: c(box.left), top: c(box.top), right: c(box.right), bottom: c(box.bottom)}});
   });
 
+  // ── tone equalizer on the photo (W71): a panel's button starts it; pointing
+  // at the photo shows the band there on the panel, from the module's own mask;
+  // the wheel or a vertical drag moves that band, on the phone a tap picks it,
+  // a drag or +/− moves it
+  const TONE_BANDS = ['noise', 'ultra_deep_blacks', 'deep_blacks', 'blacks', 'shadows', 'midtones', 'highlights', 'whites', 'speculars'];
+  const TONE_STEP = 0.1, TONE_DRAG = 0.01;     // EV per wheel notch or press, EV per px
+  let toning = null, toneMask = null, toneBand = null, toneDrag = null, toneWheel = 0, toneLoading = 0, toneBandSent = false, toneSheet = false, toneLast = null;
+  function toneRow(instance) {
+    const row = document.createElement('div');
+    row.className = 'pickers dim';
+    const b = document.createElement('button');
+    b.dataset.tone = instance;
+    b.textContent = 'on the photo';
+    b.title = 'point at the photo to see its band, scroll or drag up and down to move it (Esc: done)';
+    b.classList.toggle('on', !!toning && toning.instance === instance);
+    b.onclick = () => setToning(toning && toning.instance === instance ? null : b);
+    row.append('bands', b);
+    return row;
+  }
+  // the panel the button is in (quick or pipeline view): panels are rebuilt, so looked up each time
+  function toneField(band) {
+    return document.querySelector(`${toning.scope} .module[data-op="toneequal"][data-inst="${toning.instance}"] .field[data-field="${band}"]`);
+  }
+  function toneSlider(band) { const f = toneField(band); return f && f.querySelector('input[type=range]'); }
+  async function toneLoad() {
+    const n = ++toneLoading, inst = toning.instance;
+    try {
+      const r = await api(`tonemask?instance=${inst}`);
+      const j = await r.json();
+      if (n !== toneLoading || !toning) return;
+      if (!r.ok) { status('tone equalizer: ' + j.detail); setToning(null); return; }
+      toneMask = j;
+    } catch (e) {
+      if (n === toneLoading && toning) { status(`tone equalizer: the mask didn't load (${e.message || e})`); setToning(null); }
+    }
+  }
+  function setToning(btn) {
+    if (btn && picking) setPicking(null);
+    if (btn && cropping) setCropping(false);
+    if (btn && dust) setDust(false);
+    if (btn && erase) setErase(false);
+    if (btn && retouch) setRetouch(false);
+    if (btn && area) setArea(false);
+    if (btn && mark) setMark(false);
+    if (btn && masks) setMasks(false);
+    if (btn && cmp) closeCompare();
+    toneDrag = null; toneMask = null; toneWheel = 0;
+    toneShow(null);
+    toneLoading++;
+    toning = btn && {instance: +btn.dataset.tone, scope: btn.closest('#pipeline') ? '#pipeline' : '#panels'};
+    document.querySelectorAll('[data-tone]').forEach((b) => b.classList.toggle('on', !!toning && +b.dataset.tone === toning.instance));
+    $('.view').classList.toggle('toning', !!toning);
+    $('#tonebar').hidden = !toning || !PHONE.matches;
+    if (PHONE.matches && toning && document.body.classList.contains('sheet-up')) { toneSheet = true; setSheet(false, true); }
+    else if (!toning && toneSheet) { toneSheet = false; setSheet(true, true); }
+    if (toning) {
+      status(PHONE.matches ? 'tap the photo for its band, then drag up or down, or +/−' : 'point at the photo for its band; scroll or drag up and down to move it (Esc: done)');
+      toneLoad();
+    }
+  }
+  $('#tone-done').onclick = () => setToning(null);
+  // the band at a point of the photo, and the mask's EV there
+  function toneAt(e) {
+    const p = toneMask && photoPoint(e);
+    if (!p) return null;
+    const {width: w, height: h, ev} = toneMask;
+    const v = ev[Math.min(h - 1, Math.floor(p.y * h)) * w + Math.min(w - 1, Math.floor(p.x * w))];
+    return v === null ? null : {band: TONE_BANDS[Math.max(-8, Math.min(0, Math.round(v))) + 8], ev: v};
+  }
+  function toneShow(hit) {
+    document.querySelectorAll('.field.tonehit').forEach((f) => f.classList.remove('tonehit'));
+    toneBand = hit && hit.band; toneLast = hit;
+    if (!hit) return;
+    const f = toneField(hit.band);
+    if (f) f.classList.add('tonehit');
+    const sl = toneSlider(hit.band);
+    const text = `${hit.ev.toFixed(1).replace('-', '−')} EV here: ${f ? f.querySelector('span').textContent : hit.band}, ${sl ? fmtEv(+sl.value) : ''}`;
+    $('#tone-band').textContent = text;
+    if (!PHONE.matches) status(text);
+  }
+  const fmtEv = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(2)} EV`;
+  function toneMove(band, v) {
+    const sl = toneSlider(band);
+    if (!sl) { status('tone equalizer: its panel is gone'); setToning(null); return; }
+    sl.value = Math.max(+sl.min, Math.min(+sl.max, Math.round(v * 100) / 100));
+    sl.oninput();
+    if (toneLast && toneLast.band === band) toneShow(toneLast);
+  }
+  const toneNudge = (sign) => { if (toneBand) { const sl = toneSlider(toneBand); if (sl) toneMove(toneBand, +sl.value + sign * TONE_STEP); } };
+  $('#tone-down').onclick = () => toneNudge(-1);
+  $('#tone-up').onclick = () => toneNudge(1);
+  $('.view').addEventListener('pointerdown', (e) => {
+    if (!toning || showing || e.target.closest('.tonebar')) return;
+    if (!e.isPrimary) { toneDrag = null; return; }     // a second finger: stop moving
+    if (e.button !== 0) return;
+    const hit = toneAt(e);
+    if (!hit) return;
+    toneShow(hit);
+    const sl = toneSlider(hit.band);
+    if (!sl) return;
+    $('.view').setPointerCapture(e.pointerId);
+    toneDrag = {id: e.pointerId, band: hit.band, y0: e.clientY, from: +sl.value, moved: false};
+  });
+  $('.view').addEventListener('pointermove', (e) => {
+    if (!toning) return;
+    const d = toneDrag;
+    if (d && e.pointerId === d.id) {
+      const dy = d.y0 - e.clientY;
+      if (!d.moved && Math.abs(dy) < PICK_DRAG) return;
+      d.moved = true;
+      toneMove(d.band, d.from + dy * TONE_DRAG);
+    } else if (!d && e.pointerType === 'mouse') toneShow(toneAt(e));
+  });
+  const toneEnd = (e) => { if (toneDrag && e.pointerId === toneDrag.id) toneDrag = null; };
+  $('.view').addEventListener('pointerup', toneEnd);
+  $('.view').addEventListener('pointercancel', toneEnd);
+  $('.view').addEventListener('wheel', (e) => {
+    if (!toning) return;
+    e.preventDefault();
+    const hit = toneAt(e);
+    if (!hit) return;
+    if (hit.band !== toneBand) { toneWheel = 0; toneShow(hit); }
+    toneWheel += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+    // a mouse notch is 100 px or so, a trackpad many small ones
+    const notches = Math.trunc(toneWheel / 50);
+    if (!notches) return;
+    toneWheel -= notches * 50;
+    const sl = toneSlider(hit.band);
+    if (sl) toneMove(hit.band, +sl.value - notches * TONE_STEP);
+  }, {passive: false});
+
   // ── rgb levels under the histogram: black, gray and white of the first
   // channel (the one "RGB, linked channels" uses for all three)
   function drawLevels() {
@@ -1540,7 +1674,7 @@
 
   function modulePanel(m, resum, bare) {
     const sec = document.createElement('section');
-    sec.className = 'module';
+    sec.className = 'module'; sec.dataset.op = m.operation; sec.dataset.inst = m.instance || 0;
     const head = document.createElement('label');
     head.className = 'head';
     const cb = document.createElement('input');
@@ -1591,6 +1725,7 @@
       sec.appendChild(row);
     });
     if (m.title && !m.missing) sec.appendChild(pickerRow(m.operation, m.instance || 0));
+    if (m.operation === 'toneequal' && !m.missing) sec.appendChild(toneRow(m.instance || 0));
     if (!bare && !m.missing) sec.appendChild(maskRow(m.operation, m.instance));
     return sec;
   }
@@ -2131,6 +2266,7 @@
     if (on) {
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
+      if (toning) setToning(null);
       if (cmp) closeCompare();
       if (erase) setErase(false); if (retouch) setRetouch(false);
       if (area) setArea(false);
@@ -2312,6 +2448,7 @@
     if (on) {
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
+      if (toning) setToning(null);
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (retouch) setRetouch(false);
@@ -2631,6 +2768,7 @@
     if (on) {
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
+      if (toning) setToning(null);
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (erase) setErase(false); if (retouch) setRetouch(false);
@@ -3090,6 +3228,7 @@
     if (on) {
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
+      if (toning) setToning(null);
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (erase) setErase(false); if (retouch) setRetouch(false);
@@ -3356,6 +3495,7 @@
     if (on) {
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
+      if (toning) setToning(null);
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (erase) setErase(false);
@@ -3520,6 +3660,7 @@
     if (on) {
       if (cropping) setCropping(false);
       if (picking) setPicking(null);
+      if (toning) setToning(null);
       if (cmp) closeCompare();
       if (dust) setDust(false);
       if (erase) setErase(false); if (retouch) setRetouch(false);
@@ -3760,6 +3901,7 @@
           if (!r.ok) { status('not applied: ' + (await r.json()).detail); continue; }
           sent = true; setDirty(true);
           const s = await r.json();
+          toneBandSent = path === 'set' && p.operation === 'toneequal' && Object.keys(p.values).every((n) => TONE_BANDS.includes(n));
           if (path === 'history_end' || path === 'pick') show(s);
           else renderHistory(s.history);
           if (path === 'geometry') { showGeo(s.geometry); full = null; }
@@ -3784,6 +3926,7 @@
             if ($('#wb-ill')) $('#wb-ill').textContent = 'illuminant: ' + s.wb.illuminant;
             if (!was.enabled && s.wb.enabled) { state.history = s.history; state.wb = s.wb; show(state); }
           }
+          toneBandSent = false;
           if (!waiting.length) await preview(`${DONE[path]} ${Math.round(performance.now() - t)} ms,`);
         } catch (e) {
           console.error(e);
@@ -4273,6 +4416,7 @@
     if (e.target.closest('input, select, textarea')) return;
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && k === 'd') { e.preventDefault(); duplicate(false); return; }
     if (picking && e.key === 'Escape') { e.preventDefault(); setPicking(null); status('picker cancelled'); return; }
+    if (toning && e.key === 'Escape') { e.preventDefault(); setToning(null); return; }
     if (dust && e.key === 'Escape') { e.preventDefault(); setDust(false); return; }
     if (erase && e.key === 'Escape') { e.preventDefault(); if (!eraseClear()) setErase(false); return; }
     if (retouch && e.key === 'Escape') { e.preventDefault(); if (rtSel !== null) { rtSel = null; rtControls(); rtShow(); rtSummary(); } else setRetouch(false); return; }

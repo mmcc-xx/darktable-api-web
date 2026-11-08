@@ -64,6 +64,17 @@ def main() -> int:
             assert st["last"] == "- Pushed: x" and st["note"] == f"night-run-{TODAY}.md", st
         check("idle: next item is the partial, cap from the reset, last note line", status_idle)
 
+        def status_qhash():
+            reset()
+            h = B.run_status()["qhash"]
+            assert h == B.sha(B.queue_section_text(B.read_lines("QUEUE.md"))), h
+            reset(QUEUE.replace("- [ ] **#2**", "- [x] **#2**"))
+            assert B.run_status()["qhash"] != h
+            reset("# no sections\n")
+            st = B.run_status()                                                 # the run bar still answers
+            assert st["qhash"] is None and st["open"] == 0, st
+        check("qhash: the page's hash, changes when an item is ticked, none without a Queue section", status_qhash)
+
         def cap_write():
             reset()
             code, j = body(B.backlog_cap(B.CapBody(cap=55)))

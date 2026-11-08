@@ -1075,14 +1075,17 @@ def run_status() -> dict:
     anchor = dict(_live).get("reset")
     day, week_cap = week_day_cap(datetime.datetime.combine(now.date(), datetime.time(18)).astimezone(), anchor)
     override = cap_override(now.date())
-    opens = [it for it in parse_queue(read_lines("QUEUE.md")) if is_open(it)]
+    lines = read_lines("QUEUE.md")
+    opens = [it for it in parse_queue(lines) if is_open(it)]
     nxt = next((it for it in opens if it["status"] == "partial"), opens[0] if opens else None)
     lock = run_lock()
     st = {"day": day, "week_cap": week_cap, "override": override,
           "cap": week_cap if override is None else override, "date": now.date().isoformat(),
           "week": None, "week_when": None, "open": len(opens), "item": nxt["label"] if nxt else None,
           **{k: lock[k] for k in ("held", "pid", "stale")}, "since": None, "run_cap": None, "item_since": None,
-          "last": None, "note": None, "dash": run_dashboard(lock["held"])}
+          "last": None, "note": None, "dash": run_dashboard(lock["held"]), "qhash": None}
+    with contextlib.suppress(KeyError):                  # the page polls this to swap in a changed queue (W82)
+        st["qhash"] = sha(queue_section_text(lines))
     with contextlib.suppress(OSError, ValueError):
         c = night_capacity()
         if c:

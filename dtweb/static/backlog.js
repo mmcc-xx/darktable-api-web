@@ -152,11 +152,26 @@
   const capBar = root.querySelector('.bl-cap');
   if (root.dataset.tab === 'queue' && capBar) {
     fetch('/api/backlog/usage').then((r) => r.json()).then(async (j) => {
-      if (j.week == null || j.week === parseFloat(capBar.dataset.week) || document.querySelector('dialog[open]')) return;
-      const doc = new DOMParser().parseFromString(await (await fetch('/backlog?f=queue')).text(), 'text/html');
-      const fresh = doc.getElementById('bl');
-      if (fresh && !document.querySelector('dialog[open]')) { root.innerHTML = fresh.innerHTML; root.dataset.qhash = fresh.dataset.qhash; const rb = document.getElementById('bl-run'); if (rb) renderRun(JSON.parse(rb.dataset.run)); }
+      if (j.week != null && j.week !== parseFloat(capBar.dataset.week)) swapQueue();
     }).catch(() => {});
+  }
+
+  // Swap in the tab as the server renders it now, unless that would disturb
+  // something: an open dialog, typing in the cap field, a text selection (the
+  // next poll tries again).
+  function queueBusy() {
+    const sel = getSelection();
+    return document.querySelector('dialog[open]') || document.activeElement === document.getElementById('bl-cap-in') || (sel && !sel.isCollapsed);
+  }
+  async function swapQueue() {
+    if (queueBusy()) return;
+    const doc = new DOMParser().parseFromString(await (await fetch('/backlog?f=queue')).text(), 'text/html');
+    const fresh = doc.getElementById('bl');
+    if (!fresh || !fresh.dataset.qhash || queueBusy()) return;
+    root.innerHTML = fresh.innerHTML;
+    root.dataset.qhash = fresh.dataset.qhash;
+    const rb = document.getElementById('bl-run');
+    if (rb) renderRun(JSON.parse(rb.dataset.run));
   }
 
   // The night run (W66): today's cap (launchd/.cap-<date>, read by a run when
@@ -187,6 +202,18 @@
     if (st.last) s += `<br>${esc(st.note)}: ${esc(st.last)}`;
     runStatus.innerHTML = s;
     renderDash(st.dash);
+    markRunning(st);
+  }
+  // The item a going run is on shows "in progress" (W82); it goes back to its
+  // own status when the run moves on or ends.
+  function markRunning(st) {
+    const items = [...root.querySelectorAll('.bl-item')];
+    const cur = st.held && st.item ? items.find((el) => el.dataset.label === st.item && ['open', 'partial'].includes(el.dataset.status)) : null;
+    for (const el of items) {
+      const badge = el.querySelector('.badge'), s = el === cur ? 'in progress' : el.dataset.status;
+      badge.textContent = s;
+      badge.className = 'badge ' + (el === cur ? 'running' : s);
+    }
   }
   // What the run scripts last wrote (W73, launchd/.run-status.json): running or
   // why not, the caps, session and week used, the item, and how old that is.
@@ -212,7 +239,14 @@
   function pollRun(ms) {
     clearTimeout(runTimer);
     runTimer = setTimeout(async () => {
-      try { const r = await fetch('/api/backlog/run'); if (r.ok) renderRun(await r.json()); } catch (e) {}
+      try {
+        const r = await fetch('/api/backlog/run');
+        if (r.ok) {
+          const st = await r.json();
+          renderRun(st);
+          if (st.qhash && st.qhash !== root.dataset.qhash) await swapQueue();       // an item was ticked, added or moved (W82)
+        }
+      } catch (e) {}
       pollRun(30000);
     }, ms);
   }

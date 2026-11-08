@@ -23,7 +23,7 @@
       <button id="tool-dust" data-tool="dust" aria-pressed="false" title="find sensor dust, review the spots, click to heal (d)">dust</button>
       <button id="tool-retouch" data-tool="retouch" aria-pressed="false" {% if not can_retouch %}disabled {% endif %}title="{{ "heal, clone, blur or fill spots you draw (r)" if can_retouch else "needs a newer darktable-api engine" }}">retouch</button>
       <button id="tool-erase" data-tool="erase" aria-pressed="false" {% if not can_fill %}disabled {% endif %}title="{{ "remove an object: draw around it, or click for a round spot (e)" if can_fill else "erase needs darktable-api on darktable master (ai_fill); this engine doesn't have it" }}">erase</button>
-      <button id="tool-area" data-tool="area" aria-pressed="false" {% if not can_mask %}disabled {% endif %}title="{{ "adjust the sky or the subject on its own: click it on the photo (a)" if can_mask else "sky / subject needs darktable-api on darktable master (mask_ai); this engine doesn't have it" }}">sky / subject</button>
+      <button id="tool-area" data-tool="area" aria-pressed="false" hidden {% if not can_mask %}disabled {% endif %}title="{{ "adjust the sky or the subject on its own: click it on the photo (a)" if can_mask else "sky / subject needs darktable-api on darktable master (mask_ai); this engine doesn't have it" }}">sky / subject</button>
       <button id="tool-mark" data-tool="mark" aria-pressed="false" {% if not can_mark %}disabled {% endif %}title="{{ "name points and areas on the photo, so others (and your AI assistant) can refer to them: \"the left tree\" (m)" if can_mark else "markers need darktable-api with marker_set; this engine doesn't have it" }}">markers</button>
       <button id="tool-masks" data-tool="masks" aria-pressed="false" {% if not can_masks %}disabled {% endif %}title="{{ "draw named masks (circle, ellipse, gradient, path, brush, sky, subject); a module works through one with its mask row (k)" if can_masks else "masks need darktable-api with mask_add; this engine doesn't have it" }}">masks</button>
       <span class="sep"></span>
@@ -4765,7 +4765,7 @@
     if (k === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cropping) { e.preventDefault(); fullScreen(); return; }
     if (k === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setDust(!dust); return; }
     if (k === 'e' && CAN_FILL && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setErase(!erase); return; }
-    if (k === 'a' && CAN_MASK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setArea(!area); return; }
+    // no "a" key: the sky / subject tool is hidden (2026-11-08); the masks tool has sky and subject shapes
     if (k === 'm' && CAN_MARK && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setMark(!mark); return; }
     if (k === 'r' && CAN_RETOUCH && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setRetouch(!retouch); return; }
     if (k === 'k' && CAN_MASKS && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !picking && !cmp) { e.preventDefault(); setMasks(!masks); return; }

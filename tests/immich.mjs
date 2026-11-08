@@ -2,8 +2,8 @@
 // The Immich inbox in the library (W61) and "send to Immich" (W57) over CDP, against a fake Immich
 // (darktableluamcp/darktable-api/fake_immich_serve.py: source its env file
 // first, so the web app and this test see the same IMMICH_URL and
-// FAKE_IMMICH_ORIG / FAKE_IMMICH_TRIPS / FAKE_IMMICH_SECOND). Desktop: the nav link and
-// /immich lead to the library filtered to the inbox (a pseudo-roll in the picker, a
+// FAKE_IMMICH_ORIG / FAKE_IMMICH_TRIPS / FAKE_IMMICH_SECOND). Desktop: no nav link;
+// /immich leads to the library filtered to the inbox (a pseudo-roll in the picker, a
 // bar, JPEG badges, wide mode, darkroom prev/next inside it); the inbox photo is
 // opened, edited, sent with an album (saved first, after the question), the
 // fake's state checked, resent, opened again from its URL. Phone: the inbox view
@@ -109,10 +109,10 @@ async function run(mode) {
     const c = (name, f) => check(mode, page, name, f);
 
     if (mode === 'desktop') {
-      if (!await c('nav link and /immich lead to the inbox view', async () => {
+      if (!await c('no nav link (the inbox is a roll); /immich leads to the inbox view', async () => {
         await page.goto(URL_ + '/');
         const hrefs = await page.eval("[...document.querySelectorAll('header.top a')].map((a) => a.getAttribute('href'))");
-        assert(hrefs.includes('/?tag=immich%7Cinbox'), 'no inbox link in the nav: ' + hrefs);
+        assert(!hrefs.some((h) => /immich/.test(h || '')), 'an Immich link in the nav: ' + hrefs);
         await page.goto(URL_ + '/immich');
         const loc = await page.eval('decodeURIComponent(location.pathname + location.search)');
         assert(loc === '/?tag=immich|inbox', 'redirected to ' + loc);

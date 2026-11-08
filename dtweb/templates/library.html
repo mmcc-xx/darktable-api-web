@@ -1308,7 +1308,7 @@
   let pvNat = null, pvBoxW = 0, pvBoxH = 0;
   const wideOn = () => split.offsetParent !== null;          // the W28 test: the wide split
   function pvTitle() {
-    pv.title = wideOn() && z.zoomed() ? 'drag: pan, double-click: open' : wideOn() ? 'click: full screen, double-click: open, wheel: zoom'
+    pv.title = wideOn() && z.zoomed() ? 'click: fit, drag: pan, double-click: open' : wideOn() ? 'click: 100%, double-click: open, wheel: zoom'
       : 'click: full screen, double-click: open';
   }
   function pvButtons() {
@@ -1340,8 +1340,8 @@
     clearTimeout(pvTimer); pvTimer = setTimeout(pvSize, 150);
   }).observe(pv);
 
-  // mouse and pen in the wide split: wheel zooms at the pointer, a drag pans when zoomed;
-  // touch is a plain tap (click) as in the narrow panel
+  // mouse and pen in the wide split: wheel zooms at the pointer, a click toggles 100% there,
+  // a drag pans when zoomed; touch is a plain tap (click) as in the narrow panel
   pv.addEventListener('wheel', (e) => {
     if (!wideOn()) return;
     e.preventDefault();
@@ -1349,7 +1349,9 @@
     z.zoomAt(z.state().s * dtZoom.wheelFactor(e), x, y);
   }, {passive: false});
   let pvG = null;      // {x, y, s, tx, ty, moved} of a mouse press
+  let pvTouch = false; // the last press on the preview was a finger
   pv.addEventListener('pointerdown', (e) => {
+    pvTouch = e.pointerType === 'touch';
     if (!wideOn() || e.pointerType === 'touch' || e.button !== 0) return;
     const v = z.state();
     pvG = {x: e.clientX, y: e.clientY, s: v.s, tx: v.tx, ty: v.ty, moved: false};
@@ -1370,9 +1372,18 @@
   }
   pv.addEventListener('pointerup', pvUp);
   pv.addEventListener('pointercancel', pvUp);
-  pv.addEventListener('click', () => {
-    if (!pvTile || (wideOn() && (z.zoomed() || (pvG && pvG.moved)))) return;   // zoomed: it was a pan
-    clearTimeout(pvClick); const t = pvTile; pvClick = setTimeout(() => fullScreen(t), 250);
+  pv.addEventListener('click', (e) => {
+    if (!pvTile || (pvG && pvG.moved)) return;       // it was a pan
+    clearTimeout(pvClick);
+    const t = pvTile;
+    if (wideOn() && !pvTouch) {
+      const [x, y] = z.local(e.clientX, e.clientY);
+      pvClick = setTimeout(() => {
+        if (pvTile !== t) return;
+        if (z.zoomed()) z.reset(); else z.zoomTo(1, x, y);
+        pvButtons();
+      }, 250);
+    } else if (!wideOn() || !z.zoomed()) pvClick = setTimeout(() => fullScreen(t), 250);
   });
   pv.addEventListener('dblclick', () => { clearTimeout(pvClick); if (pvTile) open(pvTile); });
   for (const type of ['pointerdown', 'click', 'dblclick']) pvBar.addEventListener(type, (e) => e.stopPropagation());
@@ -1396,7 +1407,9 @@
   pvLayer.append(clipBox);          // after the sharp layer: zoomed in, the sharp render would cover it
   const clipNote = el('span', 'dz-note', 'approximate: lens / rotation on'); clipNote.hidden = true;
   const clipBtn = el('button', clipOn() ? 'on' : null, 'clip'); clipBtn.type = 'button'; clipBtn.title = 'sensor clipping (o)';
-  pvBar.prepend(clipNote); pvBar.append(clipBtn);
+  const fsBtn = el('button', null, '⛶'); fsBtn.type = 'button'; fsBtn.title = 'full screen (f)';
+  pvBar.prepend(clipNote); pvBar.append(clipBtn, fsBtn);
+  fsBtn.addEventListener('click', () => { clearTimeout(pvClick); fsBtn.blur(); if (pvTile) fullScreen(pvTile); });
   let clipCrop = null;
   // the overlay's place: the base image's box, then the mask inside it
   function clipPlace() {

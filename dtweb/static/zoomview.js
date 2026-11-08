@@ -15,7 +15,7 @@ window.dtZoom = (() => {
     let natW = 0, natH = 0;
     let photo = {id: 0, width: 0, height: 0};
     let sharpToken = 0, sharpTimer = null, sharpUrl = null;
-    let wantZ = null;                   // an engine zoom asked for by zoomTo, until the view moves
+    let wantZ = null, wantX = 0, wantY = 0;   // an engine zoom asked for by zoomTo and its point, until the view moves
 
     // ── layout and the view transform
     const maxS = () => Math.max(1, MAXZ * fullPx() / (fw * dpr || 1));
@@ -65,7 +65,7 @@ window.dtZoom = (() => {
     function zoomTo(Z, px, py) {
       if (px === undefined) { px = W / 2; py = H / 2; }
       zoomRaw(Z * fullPx() / ((fw * dpr) || 1), px, py);
-      wantZ = Z;
+      wantZ = Z; wantX = px; wantY = py;
     }
     function view(s2, tx2, ty2) { wantZ = null; s = s2; tx = tx2; ty = ty2; clampView(); apply(); }
 
@@ -104,9 +104,9 @@ window.dtZoom = (() => {
       if (sharpUrl) URL.revokeObjectURL(sharpUrl);
       sharpUrl = url;
       if (!retry && real > 0 && Math.abs(guess / real - 1) > 0.1) {
-        if (wantZ) {                                  // size known now: the zoom asked for, around the centre
+        if (wantZ) {                                  // size known now: the zoom asked for, around its point
           const s2 = Math.max(1, Math.min(maxS(), wantZ * fullPx() / (fw * dpr)));
-          tx = W / 2 - (W / 2 - tx) * s2 / s; ty = H / 2 - (H / 2 - ty) * s2 / s; s = s2;
+          tx = wantX - (wantX - tx) * s2 / s; ty = wantY - (wantY - ty) * s2 / s; s = s2;
           clampView(); apply();
         }
         if (s > maxS()) { changed(); return; }       // the view changed: a new request follows

@@ -159,10 +159,11 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .prow { border-bottom: 1px solid var(--line); }
 .prow.open { background: #2a2c30; }
 .phead { display: flex; align-items: center; gap: .5rem; padding: .35rem .9rem; font-size: .85rem; }
-.pname { text-align: left; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+/* the name keeps at least a word's width; its mask chip goes on a line under it */
+.pcol { display: flex; flex-direction: column; align-items: flex-start; gap: .15rem; flex: 1 1 auto; min-width: 5.5rem; }
+.pname { text-align: left; font-weight: 600; max-width: 100%; overflow-wrap: anywhere; }
 .prole { font-size: .75rem; }
-.pname { overflow-wrap: break-word; }
-.pmask { font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); white-space: nowrap; background: none; min-height: 0; cursor: pointer; }
+.pmask { font-size: .7rem; padding: 0 .4rem; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); white-space: nowrap; background: none; min-height: 0; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .pmask.on, .hist-mask.on { color: #000; background: #e8d23a; border-color: #e8d23a; }
 .pmask:disabled { cursor: default; opacity: .6; }
 .hist-mask { margin-left: .4rem; padding: 0 .3rem; border-radius: 999px; }

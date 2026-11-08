@@ -997,9 +997,11 @@
     };
     const role = document.createElement('span');
     role.className = 'prole dim'; role.textContent = ROLE(e.operation, e.instance);
-    head.append(dragGrip(e, row), cb, nm, role);
+    const col = document.createElement('div');
+    col.className = 'pcol'; col.appendChild(nm);
     const mb = e.in_history && !e.plumbing && maskOverButton(e.operation, e.instance, 'pmask');
-    if (mb) head.appendChild(mb);
+    if (mb) col.appendChild(mb);
+    head.append(dragGrip(e, row), cb, col, role);
     const last = document.createElement('span');
     last.className = 'plast'; last.textContent = '●'; last.title = 'last changed'; last.hidden = true;
     const chev = document.createElement('span');

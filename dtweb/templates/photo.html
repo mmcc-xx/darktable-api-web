@@ -120,7 +120,8 @@
       <input id="erase-prompt" type="text" size="26" hidden>
       <span class="size"><label id="erase-size-lab" for="erase-size" title="the size of the circle a click places (the wheel over the photo resizes it too)">spot size</label>
         <input type="range" id="erase-size" min="0.005" max="0.08" step="0.001" value="0.02"></span>
-      <button id="erase-fill" title="fill the circle (Enter)" hidden>fill</button>
+      <button id="erase-fill" title="fill the shape (Enter)" hidden>fill</button>
+      <button id="erase-clear" class="secondary" title="remove the shape and start over (Delete)" hidden>clear</button>
       <button id="erase-done" class="secondary" title="leave the erase tool (Esc)">done</button>
       <span id="erase-note" class="status" hidden>sends the area around the shape to Black Forest Labs and uses credits</span>
     </div>
@@ -2305,20 +2306,22 @@
 
   // ── erase: remove an object with ai_fill (the MCP's, run by
   // dtweb/mcp_worker.py on the open edit). With the tool on, a drag draws a
-  // freehand outline that is filled from its surroundings; a click places a
-  // round spot, which the size slider or the wheel resizes and a drag moves,
-  // filled by "fill" or Enter. Drawing wins over panning while the tool is on.
+  // freehand outline, a click places a round spot. Either stays as a draft (W80)
+  // that a drag moves, its handles change (an outline's points, a circle's size;
+  // also the slider or the wheel) and clear removes; only "fill" or Enter fills
+  // it, from its surroundings. Drawing wins over panning while the tool is on.
   let erase = false, eraseBusy = false, eraseModels = null, eraseDraw = null, eraseOutline = null, eraseSure = false;
-  let erasePending = null;   // [x, y]: the placed round spot, not filled yet
+  let erasePending = null;   // the draft, not filled yet: {circle: [x, y]} or {path: [[x, y], ...]}
   const ERASE_HINT = 'draw around the object, or click to place a round spot';
   const eraseMsg = (t) => { $('#erase-status').textContent = t; };
   const eraseModel = () => (eraseModels || []).find((m) => m.id === $('#erase-model').value);
   try { const v = parseFloat(localStorage.getItem('dr:erasesize')); if (v >= 0.005 && v <= 0.08) $('#erase-size').value = v; } catch (e) {}
   $('#erase-size').oninput = () => {
     try { localStorage.setItem('dr:erasesize', $('#erase-size').value); } catch (e) {}
-    if (erasePending) erasePendingShow();
+    if (erasePending && !eraseBusy) erasePendingShow();
   };
-  $('#erase-size').addEventListener('keydown', (e) => { if (e.key === 'Enter' && erasePending) { e.preventDefault(); eraseFillPending(); } });
+  for (const id of ['#erase-size', '#erase-prompt'])
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter' && erasePending) { e.preventDefault(); eraseFillPending(); } });
   function eraseControls() {
     const m = eraseModel(), p = $('#erase-prompt');
     p.hidden = !m || !['flux', 'flux3'].includes(m.id);
@@ -2326,7 +2329,7 @@
     $('#erase-note').hidden = !m || !m.online;
     try { if (m) localStorage.setItem('dr:erasemodel', m.id); } catch (e) {}
   }
-  $('#erase-model').onchange = eraseControls;
+  $('#erase-model').onchange = () => { eraseControls(); $('#erase-model').blur(); };   // blur: Enter fills
   async function eraseLoadModels() {
     if (eraseModels) return;
     try {
@@ -2356,67 +2359,134 @@
   function eraseShow(d) {
     ov.set(d ? [{id: 'erase', kind: 'polygon', points: d.pts, cls: 'lasso'}] : []);
   }
+  const eraseShape = (d, cls) => d.path ? {id: 'erase', kind: 'polygon', points: d.path, cls} : eraseCircle(d.circle, +$('#erase-size').value, cls);
+  const eraseCoarse = () => matchMedia('(pointer: coarse)').matches;
+  // the draft's handles (photo fractions): an outline's points, or a circle's
+  // size handle on its right edge (left when that's off the photo), clear of the center
+  function eraseHandles() {
+    const d = erasePending;
+    if (!d || d.path) return d ? d.path : [];
+    const r = Math.max(eraseShape(d).r, 12 / markScale()[0]);
+    return [[d.circle[0] + r <= 0.98 ? d.circle[0] + r : d.circle[0] - r, d.circle[1]]];
+  }
   function erasePendingShow() {
-    $('#erase-fill').hidden = !erasePending;
-    ov.set(erasePending ? [eraseCircle(erasePending, +$('#erase-size').value, 'lasso pending')] : []);
+    const d = erasePending, hr = d && d.path ? (eraseCoarse() ? 5 : 3.5) : (eraseCoarse() ? 9 : 6);
+    $('#erase-fill').hidden = $('#erase-clear').hidden = !d;
+    $('#erase-size').closest('.size').hidden = !!(d && d.path);
+    ov.set(d ? [eraseShape(d, 'lasso pending'), ...eraseHandles().map((h, i) => ({id: 'eh' + i, kind: 'circle', x: h[0], y: h[1], r: 0, minR: hr, cls: 'mark-handle'}))] : []);
   }
-  function erasePlace(pt) {
-    erasePending = pt;
+  function erasePlace(d) {
+    erasePending = d;
     erasePendingShow();
-    eraseMsg('size the circle (slider or wheel), drag to move it, then fill (Enter)');
+    eraseMsg(d.path ? 'drag the shape or its points, then fill (Enter)' : 'size or drag the circle, then fill (Enter)');
   }
-  function eraseClear() {   // false: there was no placed spot
-    if (!erasePending) return false;
+  function eraseClear() {   // false: there was no draft
+    if (!erasePending || eraseBusy) return false;
     erasePending = null;
     erasePendingShow();
     eraseMsg(ERASE_HINT);
     return true;
   }
-  function eraseFillPending() {
-    if (!erasePending || eraseBusy) return;
-    const radius = +$('#erase-size').value, pt = erasePending;
-    eraseFill({shape: 'circle', x: +pt[0].toFixed(5), y: +pt[1].toFixed(5), radius}, eraseCircle(pt, radius, 'lasso'));
-  }
-  // is a client point on the placed spot's circle (a few px of slack)?
-  function eraseOnPending(e) {
-    if (!erasePending) return false;
-    const r = imgRect(), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1}, p = erasePoint(e);
-    const kx = r.w / (R.right - R.left), ky = r.h / (R.bottom - R.top);
-    const rpx = Math.max(8, eraseCircle(erasePending, +$('#erase-size').value).r * kx);
-    const slack = matchMedia('(pointer: coarse)').matches ? 16 : 6;
-    return Math.hypot((p[0] - erasePending[0]) * kx, (p[1] - erasePending[1]) * ky) <= rpx + slack;
-  }
-  async function eraseFill(body, outline) {
+  async function eraseFillPending() {
     const m = eraseModel();
-    if (!m || eraseBusy) return;
+    if (!erasePending || !m || eraseBusy) return;
     if (m.online && !eraseSure) {
-      if (!await ask('Send the area around the shape to Black Forest Labs? It uses credits.', {ok: 'send'})) { erasePendingShow(); return; }
+      if (!await ask('Send the area around the shape to Black Forest Labs? It uses credits.', {ok: 'send'})) return;
       eraseSure = true;
     }
-    erasePending = null;
-    $('#erase-fill').hidden = true;
+    const d = erasePending;
+    if (!d || eraseBusy) return;
+    const round = (p) => p.map((v) => +v.toFixed(5));
+    const body = d.path ? {shape: 'path', points: d.path.map(round)} : {shape: 'circle', x: round(d.circle)[0], y: round(d.circle)[1], radius: +$('#erase-size').value};
+    $('#erase-fill').hidden = $('#erase-clear').hidden = true;
     eraseBusy = true;
-    ov.set([outline]);
+    ov.set([eraseShape(d, 'lasso')]);
     eraseMsg(`filling with ${m.id === 'local' ? 'LaMa' : m.label}… ${m.online ? '(online: up to a minute)' : ''}`);
     const prompt = $('#erase-prompt').hidden ? '' : $('#erase-prompt').value;
     let r, s;
     try { r = await api('fill', {...body, model: m.id, prompt, context: 0.5}); s = await r.json(); } catch (e) { r = null; }
     eraseBusy = false;
     if (!erase) return;
-    ov.set([]);
-    if (!r || !r.ok) { eraseMsg('fill failed: ' + (s && s.detail || 'no answer')); return; }
+    if (!r || !r.ok) { erasePendingShow(); eraseMsg('fill failed: ' + (s && s.detail || 'no answer') + '; the shape is kept'); return; }
+    erasePending = null;
+    erasePendingShow();
     await refreshEdit();
     eraseMsg(`filled (${s.process_ms} ms)` + (s.warning ? ' ' + s.warning : ''));
+  }
+  // what a press is on: a handle of the draft ({h: index}), else the draft ({}), else null
+  function eraseGrab(e) {
+    const d = erasePending;
+    if (!d) return null;
+    const p = erasePoint(e), [kx, ky] = markScale();
+    const dist = (q) => Math.hypot((p[0] - q[0]) * kx, (p[1] - q[1]) * ky);
+    const lim = eraseCoarse() ? 22 : 10;
+    if (d.circle) {
+      const h = eraseHandles()[0];
+      if (dist(h) <= lim && dist(h) < dist(d.circle)) return {h: 0};
+      return dist(d.circle) <= Math.max(8, eraseShape(d).r * kx) + (eraseCoarse() ? 16 : 6) ? {} : null;
+    }
+    // a small outline: leave its middle free for moving it
+    const xs = d.path.map((q) => q[0]), ys = d.path.map((q) => q[1]);
+    const near = Math.max(8, Math.min(lim, (Math.max(...xs) - Math.min(...xs)) * kx / 4, (Math.max(...ys) - Math.min(...ys)) * ky / 4));
+    let best = -1, bd = near;
+    d.path.forEach((q, i) => { if (dist(q) <= bd) { best = i; bd = dist(q); } });
+    if (best >= 0) return {h: best};
+    let inside = false;
+    for (let i = 0, j = d.path.length - 1; i < d.path.length; j = i++) {
+      const a = d.path[i], b = d.path[j];
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+    }
+    return inside ? {} : null;
+  }
+  // the pointermove of a drag that grabbed the draft (from eraseGrab) at photo point p0
+  function eraseMover(grab, p0) {
+    const c = erasePending;
+    if (grab.h !== undefined && c.circle) return (ev) => {
+      const p = erasePoint(ev), [kx, ky] = markScale(), s = $('#erase-size');
+      const rpx = Math.hypot((p[0] - c.circle[0]) * kx, (p[1] - c.circle[1]) * ky);
+      s.value = Math.min(+s.max, Math.max(+s.min, rpx / kx / Math.min(1, 1 / photoAspect())));
+      s.oninput();
+    };
+    if (grab.h !== undefined) return (ev) => {
+      const path = c.path.slice();
+      path[grab.h] = erasePoint(ev);
+      erasePending = {path};
+      erasePendingShow();
+    };
+    const pts = c.path || [c.circle], xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    return (ev) => {
+      const p = erasePoint(ev), dx = clamp(p[0] - p0[0], -Math.min(...xs), 1 - Math.max(...xs)), dy = clamp(p[1] - p0[1], -Math.min(...ys), 1 - Math.max(...ys));
+      const moved = pts.map((q) => [q[0] + dx, q[1] + dy]);
+      erasePending = c.path ? {path: moved} : {circle: moved[0]};
+      erasePendingShow();
+    };
+  }
+  // the points of a freehand line that matter (Douglas-Peucker on screen px,
+  // 2 px off at most), so the draft has handles worth dragging
+  function eraseSimplify(px) {
+    const keep = new Set([0, px.length - 1]);
+    (function walk(i, j) {
+      const [ax, ay] = px[i], dx = px[j][0] - ax, dy = px[j][1] - ay, len = Math.hypot(dx, dy);
+      let far = -1, fd = 2;
+      for (let k = i + 1; k < j; k++) {
+        const d = len ? Math.abs(dx * (ay - px[k][1]) - dy * (ax - px[k][0])) / len : Math.hypot(px[k][0] - ax, px[k][1] - ay);
+        if (d > fd) { far = k; fd = d; }
+      }
+      if (far >= 0) { keep.add(far); walk(i, far); walk(far, j); }
+    })(0, px.length - 1);
+    const out = [...keep].sort((a, b) => a - b), n = px.length - 1;
+    if (out.length > 3 && Math.hypot(px[n][0] - px[0][0], px[n][1] - px[0][1]) < 8) out.pop();   // a closed outline: one handle where it closes
+    return out;
   }
   function eraseEnd(d) {
     const xs = d.px.map((p) => p[0]), ys = d.px.map((p) => p[1]);
     const box = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
     if (d.pts.length >= 3 && box > 10) {
-      erasePending = null;
-      let pts = d.pts;
+      let pts = eraseSimplify(d.px).map((i) => d.pts[i]);
       if (pts.length > 60) { const k = Math.ceil(pts.length / 60); pts = pts.filter((_, i) => i % k === 0); }
-      eraseFill({shape: 'path', points: pts.map((p) => p.map((v) => +v.toFixed(5)))}, {id: 'erase', kind: 'polygon', points: pts, cls: 'lasso'});
-    } else erasePlace(d.pts[0]);
+      erasePlace({path: pts.length >= 3 ? pts : d.pts});
+    } else erasePlace({circle: d.pts[0]});
   }
   $('.view').addEventListener('pointerdown', (e) => {
     if (!erase || eraseBusy || e.button !== 0 || eraseDraw) return;
@@ -2424,13 +2494,11 @@
     const v = $('.view');
     v.setPointerCapture(e.pointerId);
     const d = eraseDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]]};
-    if (eraseOnPending(e)) {   // drag the placed spot (a click on it leaves it)
-      const p0 = d.pts[0], c0 = erasePending;
-      d.move = (ev) => {
-        const p = erasePoint(ev);
-        erasePending = [0, 1].map((i) => Math.min(1, Math.max(0, c0[i] + p[i] - p0[i])));
-        erasePendingShow();
-      };
+    const grab = eraseGrab(e);
+    if (grab) d.move = eraseMover(grab, d.pts[0]);   // a click on the draft leaves it
+    else if (erasePending && erasePending.path) {   // a drawn outline isn't lost to a stray press
+      d.move = () => {};
+      eraseMsg('fill the shape, or clear it to draw a new one');
     }
     const move = (ev) => {
       if (ev.pointerId !== d.id || eraseDraw !== d) return;
@@ -2452,13 +2520,14 @@
     v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
   });
   $('.view').addEventListener('wheel', (e) => {
-    if (!erase || !erasePending || eraseBusy) return;
+    if (!erase || !erasePending || !erasePending.circle || eraseBusy) return;
     e.preventDefault();
     const s = $('#erase-size'), v = +s.value * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
     s.value = Math.min(+s.max, Math.max(+s.min, v));
     s.oninput();
   }, {passive: false});
   $('#erase-fill').onclick = eraseFillPending;
+  $('#erase-clear').onclick = eraseClear;
   function setErase(on) {
     if (on === erase || (on && !CAN_FILL)) return;
     if (on) {
@@ -2479,7 +2548,8 @@
     ov.interactive(false);
     ov.show(on);
     erasePending = null;
-    $('#erase-fill').hidden = true;
+    $('#erase-fill').hidden = $('#erase-clear').hidden = true;
+    $('#erase-size').closest('.size').hidden = false;
     if (on) { eraseMsg(ERASE_HINT); eraseLoadModels(); }
     else { eraseDraw = null; ov.set([]); areaDraw(); }
   }
@@ -4755,6 +4825,7 @@
     if (retouch && e.key === 'Escape') { e.preventDefault(); if (rtSel !== null) { rtSel = null; rtControls(); rtShow(); rtSummary(); } else setRetouch(false); return; }
     if (retouch && rtSel !== null && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); rtDelete(); return; }
     if (erase && erasePending && e.key === 'Enter') { e.preventDefault(); eraseFillPending(); return; }
+    if (erase && erasePending && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); eraseClear(); return; }
     if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
     if (masks && e.key === 'Escape') { e.preventDefault(); if (maskDraw) { maskDraw = null; maskShow(); } else if (mshSel !== null) mshSelect(null); else if (maskSel !== null) maskSelect(null); else setMasks(false); return; }
     if (masks && mshSel !== null && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); mshDelete(); return; }

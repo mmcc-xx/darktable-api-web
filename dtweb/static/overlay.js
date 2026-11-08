@@ -13,7 +13,8 @@
 // ov.onclick((item | null, {x, y} | null, event) => ...), ov.remove().
 // While interactive, shapes show a pointer and a tooltip, and a click on
 // the view (not the end of a drag) is hit-tested here: the item under it, else
-// the photo point. Circles are never drawn smaller than MIN_R px across.
+// the photo point. Circles are never drawn smaller than MIN_R px across (a
+// circle's `minR` px replaces it).
 const dtOverlay = (() => {
   const NS = 'http://www.w3.org/2000/svg';
   const MIN_R = 8;
@@ -30,7 +31,7 @@ const dtOverlay = (() => {
       const kx = rect.w / (R.right - R.left), ky = rect.h / (R.bottom - R.top);
       return {rect, kx, ky, px: (x) => (x - R.left) * kx, py: (y) => (y - R.top) * ky, R};
     }
-    const radius = (m, it) => Math.max(MIN_R, it.r * m.kx);
+    const radius = (m, it) => Math.max(it.minR || MIN_R, it.r * m.kx);
 
     function place() {
       const m = map();

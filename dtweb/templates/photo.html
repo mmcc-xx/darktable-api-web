@@ -27,7 +27,7 @@
       <button id="tool-mark" data-tool="mark" aria-pressed="false" {% if not can_mark %}disabled {% endif %}title="{{ "name points and areas on the photo, so others (and your AI assistant) can refer to them: \"the left tree\" (m)" if can_mark else "markers need darktable-api with marker_set; this engine doesn't have it" }}">markers</button>
       <button id="tool-masks" data-tool="masks" aria-pressed="false" {% if not can_masks %}disabled {% endif %}title="{{ "draw named masks (circle, ellipse, gradient, path, brush, sky, subject); a module works through one with its mask row (k)" if can_masks else "masks need darktable-api with mask_add; this engine doesn't have it" }}">masks</button>
       <span class="sep"></span>
-      <button id="compare" aria-pressed="false" title="compare the edit with the original (before/after)">before / after</button>
+      <button id="compare" aria-pressed="false" title="compare the edit with an earlier step (before/after)">before / after</button>
       <button id="clip" aria-pressed="false" title="show clipping: blown highlights red, crushed shadows blue (o)">clipping</button>
       <button id="full" title="full screen (f)">full screen</button>
       <span class="zoom" role="group" aria-label="zoom"><button data-zoom="0" class="on" aria-pressed="true" title="fit the photo in the window (double-click the photo: 100% there, again: fit)">fit</button><button data-zoom="1" aria-pressed="false" title="100%: one photo pixel per screen pixel; drag to pan">100%</button><button data-zoom="2" aria-pressed="false" title="200%; drag to pan">200%</button></span>
@@ -171,7 +171,7 @@
         <figure><img id="cmp-side-after" alt="after"><figcaption>after</figcaption></figure>
       </div>
     </div>
-    <p id="cmp-bar" class="cmp-bar" hidden><span id="cmp-label"></span>
+    <p id="cmp-bar" class="cmp-bar" hidden><label>before <select id="cmp-step" title="the step to compare with; kept for this photo"></select></label><span id="cmp-label"></span>
       <button id="cmp-close" class="secondary">close comparison</button></p>
     <section id="alts" class="alts" hidden>
       <div class="alts-head"><span id="alts-title">alternatives</span>
@@ -558,6 +558,7 @@
                                                 : `the original (${h.items.length} steps undone)`;
     $('#compress-trunc').hidden = h.history_end >= h.items.length;
     markLast();
+    compareHistory();
   }
   // compress history stack, as darktable's history panel: the engine saves
   // the edit first; truncate only drops the steps above the current one
@@ -4451,27 +4452,63 @@
   // ── before/after: the edit against an earlier step (0 = the original),
   // asked for here (⇆) or by an AI (compare_before_after). Same shape: a
   // wipe over the preview; a different shape (a new crop): side by side
-  let cmp = null, beforeUrl = null;
+  let cmp = null, beforeUrl = null, cmpSeq = 0;
+  // the "before" the ⇆ button opens is chosen in the comparison's bar and kept
+  // per photo (W81), with the step's module: a compress can leave a step of
+  // that number holding another module, which counts as gone (back to 0)
+  const BEFORE_KEY = `dr:beforestep:${ID}`;
+  const stepKey = (n) => { const it = hist && hist.items[n - 1]; return it ? `${it.operation}:${it.instance || 0}` : null; };
+  function savedBefore() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(BEFORE_KEY)); } catch (e) {}
+    if (!s || !hist) return 0;
+    if (stepKey(s.step) === s.key) return s.step;
+    try { localStorage.removeItem(BEFORE_KEY); } catch (e) {}
+    return 0;
+  }
+  function saveBefore(n) {
+    try { if (n) localStorage.setItem(BEFORE_KEY, JSON.stringify({step: n, key: stepKey(n)})); else localStorage.removeItem(BEFORE_KEY); } catch (e) {}
+  }
+  function compareSteps() {
+    $('#cmp-step').replaceChildren(new Option('the original', 0), ...(hist ? hist.items : []).map((it) =>
+      new Option(`${it.num + 1} ${stepName(it)}${it.applied ? '' : ' (undone)'}`, it.num + 1)));
+    $('#cmp-step').value = cmp ? cmp.step : 0;
+  }
+  // the history changed under an open comparison: its steps again, the original if its step is gone
+  function compareHistory() {
+    if (!cmp) return;
+    if (cmp.step && stepKey(cmp.step) !== cmp.key) { openCompare(0); return; }
+    compareSteps();
+  }
   async function openCompare(stepNo, label) {
+    const seq = ++cmpSeq;             // a newer pick, or closing, wins over a render still on its way
     if (zoom) await setZoom(0);
     const img = $('#pv');
     const w = Math.min(2048, Math.round((img.parentElement.clientWidth || 800) * (window.devicePixelRatio || 1)));
     const r = await fetch(`/api/photo/${ID}/before.jpg?step=${stepNo}&w=${w}&h=${w}`);
-    if (r.status === 204) return;
-    if (!r.ok) { status('comparison failed: ' + (await r.text())); return; }
+    if (seq !== cmpSeq) return;
+    if (r.status === 204 || !r.ok) {
+      if (cmp) $('#cmp-step').value = cmp.step;
+      if (r.status !== 204) status('comparison failed: ' + (await r.text()));
+      return;
+    }
+    const blob = await r.blob();
+    if (seq !== cmpSeq) return;
     if (beforeUrl) URL.revokeObjectURL(beforeUrl);
-    beforeUrl = URL.createObjectURL(await r.blob());
-    cmp = {step: stepNo, split: cmp ? cmp.split : 0.5};
+    beforeUrl = URL.createObjectURL(blob);
+    cmp = {step: stepNo, key: stepKey(stepNo), split: cmp ? cmp.split : 0.5};
     $('#cmp-before').src = beforeUrl;
     $('#cmp-side-before').src = beforeUrl;
     await $('#cmp-before').decode().catch(() => {});
-    $('#cmp-label').textContent = label || `before: ${stepNo ? 'step ' + stepNo : 'the original'} · after: the current edit`;
+    compareSteps();
+    $('#cmp-label').textContent = label || 'after: the current edit';
     $('#cmp-bar').hidden = false;
     $('#compare').setAttribute('aria-pressed', true);
     $('#compare').classList.add('on');
     placeCompare();
   }
   function closeCompare() {
+    cmpSeq++;
     cmp = null;
     $('#cmpframe').hidden = $('#cmp-side').hidden = $('#cmp-bar').hidden = true;
     $('#pv').hidden = false;
@@ -4609,7 +4646,8 @@
     f.onpointerup = () => { f.onpointermove = null; };
   });
   $('#cmp-close').onclick = closeCompare;
-  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (retouch) setRetouch(false); if (area) setArea(false); if (mark) setMark(false); if (masks) setMasks(false); openCompare(0); };
+  $('#cmp-step').onchange = (e) => { saveBefore(+e.target.value); openCompare(+e.target.value); };
+  $('#compare').onclick = () => { if (cmp) return closeCompare(); if (cropping) setCropping(false); if (dust) setDust(false); if (erase) setErase(false); if (retouch) setRetouch(false); if (area) setArea(false); if (mark) setMark(false); if (masks) setMasks(false); openCompare(savedBefore()); };
 
   // ── alternatives an AI rendered for the user to pick from
   // (propose_alternatives): click one to look at it large, apply one

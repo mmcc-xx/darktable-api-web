@@ -78,7 +78,8 @@ edit panel as a sheet; swipe for the next photo, pinch to zoom).
     refer to them;
   - zoom (*fit*, *100%*, *200%*, double-click; drag to pan, the engine
     renders the region shown), *clipping* (O), *before / after* (a wipe, or
-    side by side when the crop changed).
+    side by side when the crop changed; its bar picks the "before" step,
+    kept per photo).
 - **Working with an AI:** *AI assistant* in the header (green while one is
   connected) gives the MCP config for this app's engine and library
   (Claude Desktop, Cursor, VS Code, Codex, ...) and Claude Code's

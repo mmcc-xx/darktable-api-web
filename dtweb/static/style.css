@@ -325,8 +325,9 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .cmp-side figure { margin: 0; display: flex; flex-direction: column; min-height: 0; }
 .cmp-side img { width: 100%; flex: 1; min-height: 0; object-fit: contain; display: block; }
 .cmp-side figcaption { font-size: .8rem; color: var(--dim); text-align: center; }
-.cmp-bar { font-size: .8rem; color: var(--dim); display: flex; gap: .6rem; align-items: center; margin: 0; }
+.cmp-bar { font-size: .8rem; color: var(--dim); display: flex; flex-wrap: wrap; gap: .3rem .6rem; align-items: center; margin: 0; }
 .cmp-bar button { font-size: .8rem; padding: .1rem .5rem; }
+.cmp-bar select { font-size: .8rem; max-width: min(16rem, 60vw); }
 .alts { margin: 0; padding: .4rem; border: 1px solid var(--accent); border-radius: 4px; }
 .alts-head { display: flex; justify-content: space-between; align-items: center; font-size: .85rem; margin-bottom: .3rem; }
 .alts-head button { padding: 0 .4rem; }

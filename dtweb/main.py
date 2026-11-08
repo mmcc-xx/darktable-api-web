@@ -1548,6 +1548,189 @@ async def photo_mask_remove(image_id: int, body: MaskRemoveBody):
         raise _bad(exc)
 
 
+# ── a named mask's shapes, one by one (W77): each drawn shape (members of
+# groups too) as an outline on the photo with its handles, changed in place
+# with the engine's mask_set (the formid stays, so modules sharing the mask
+# follow) or removed. Geometry as retouch's spots (_rt_outline, _rt_moved:
+# mask_list gives the same raw-space shapes).
+
+MASK_SHAPE_TYPES = ("circle", "ellipse", "gradient", "path", "brush")
+GRADIENT_HALF = 0.25          # the drawn gradient line's half length, in units of the shorter side
+
+
+def _mask_leaves(shapes: list[dict]) -> list[dict]:
+    """The shapes of a mask_list, groups opened."""
+    out = []
+    for sh in shapes:
+        if sh.get("members"):
+            out += _mask_leaves(sh["members"])
+        elif sh.get("type") in MASK_SHAPE_TYPES:
+            out.append(sh)
+    return out
+
+
+async def _mask_listed(image_id: int, instance: int) -> list[dict]:
+    r = await engine.edit(image_id, "mask_list", operation="exposure", instance=instance)
+    return _mask_leaves(r.get("shapes", []))
+
+
+def _mask_outline(s: dict, rw: int, rh: int) -> list[list[float]]:
+    if s["type"] != "gradient":
+        return _rt_outline(s, rw, rh)
+    short = min(rw, rh)
+    a = math.radians(s.get("rotation", 0.0))
+    dx, dy = GRADIENT_HALF * math.cos(a) * short / rw, GRADIENT_HALF * math.sin(a) * short / rh
+    return [[s["x"] - dx, s["y"] - dy], [s["x"] + dx, s["y"] + dy]]
+
+
+async def _mask_shapes(image_id: int, instance: int) -> dict:
+    """A named mask's shapes on the photo: outline, center, handles (size for
+    circles and ellipses, the line's end for gradients, each point of paths
+    and brushes) and feather (fraction of the shorter side; a brush: its width)."""
+    listed = await _mask_listed(image_id, instance)
+    out = []
+    if listed:
+        _, rw, rh = await _photo_to_raw(image_id, [[0.5, 0.5]])
+        g = await engine.edit(image_id, "geometry_get")
+        W, H = g["width"], g["height"]
+        rshort = min(rw, rh)
+        plan = []
+        for s in listed:
+            o = _mask_outline(s, rw, rh)
+            c = _rt_anchor(s)
+            if "points" in s:
+                hs, fe = [p["corner"] for p in s["points"]], s["points"][0]["border"][0]
+            elif s["type"] == "gradient":
+                hs, fe = [o[1]], None
+            else:
+                hs, fe = [o[0]], s.get("border", 0.0)
+            plan.append((s, o, c, hs, [[c[0] + fe * rshort / rw, c[1]]] if fe is not None else []))
+        flat = [p for s, o, c, hs, probe in plan for p in (o + [c] + hs + probe)]
+        on = iter((await engine.edit(image_id, "coords", points=flat, **{"from": "raw", "to": "image"}))["points"])
+        take = lambda n: [[round(v, 5) for v in next(on)] for _ in range(n)]
+        for s, o, c, hs, probe in plan:
+            outline = take(len(o))
+            [center] = take(1)
+            handles = take(len(hs))
+            feather = None
+            if probe:
+                [f] = take(1)
+                feather = round(math.hypot((f[0] - center[0]) * W, (f[1] - center[1]) * H) / min(W, H), 4)
+            kind = "pt" if "points" in s else "rot" if s["type"] == "gradient" else "size"
+            out.append({"formid": s["formid"], "type": s["type"], "combine": s.get("combine", "union"),
+                        "inverted": bool(s.get("inverted")), "outline": outline, "center": center,
+                        "handles": [{"kind": kind, "i": i, "x": h[0], "y": h[1]} for i, h in enumerate(handles)],
+                        "feather": feather})
+    return {"instance": instance, "shapes": out}
+
+
+@app.get("/api/photo/{image_id}/mask/shapes")
+async def photo_mask_shapes(image_id: int, instance: int):
+    try:
+        await _require_holder(image_id, instance)
+        return await _mask_shapes(image_id, instance)
+    except EngineError as exc:
+        raise _bad(exc)
+
+
+class MaskShapeBody(BaseModel):
+    instance: int
+    formid: int
+    dx: float = 0.0                # move, photo fractions
+    dy: float = 0.0
+    size: float = 1.0              # times its size (a gradient: its fade)
+    point: int | None = None       # a path's or brush's point (index) moved to `to`
+    to: list[float] | None = None  # that point, or where a gradient's line end goes (its angle)
+    feather: float | None = None   # fraction of the shorter side (a brush: its width)
+
+
+@app.post("/api/photo/{image_id}/mask/shape")
+async def photo_mask_shape(image_id: int, body: MaskShapeBody):
+    """Change one shape of a named mask in place: move, resize, a point, a gradient's angle, feather."""
+    if not await engine.supports("mask_set"):
+        raise HTTPException(501, "this engine can't change a shape in place (mask_set)")
+    try:
+        await _require_holder(image_id, body.instance)
+        s = next((x for x in await _mask_listed(image_id, body.instance) if x["formid"] == body.formid), None)
+        if s is None:
+            raise HTTPException(404, f"mask {body.instance} has no shape {body.formid}")
+        _, rw, rh = await _photo_to_raw(image_id, [[0.5, 0.5]])
+        rshort = min(rw, rh)
+        c = _rt_anchor(s)
+        at = (await engine.edit(image_id, "coords", points=[c], **{"from": "raw", "to": "image"}))["points"][0]
+        sh: dict = {}
+        if body.dx or body.dy or body.size != 1.0:
+            if not 0.05 <= body.size <= 20.0:
+                raise HTTPException(400, "size: 0.05 to 20 times")
+            raw, _, _ = await _photo_to_raw(image_id, [at, [at[0] + body.dx, at[1] + body.dy]])
+            mx, my = raw[1][0] - raw[0][0], raw[1][1] - raw[0][1]
+            if s["type"] == "gradient":
+                sh.update(x=min(max(s["x"] + mx, 0.0), 1.0), y=min(max(s["y"] + my, 0.0), 1.0))
+                if body.size != 1.0:
+                    sh["compression"] = min(max(s.get("compression", 0.5) * body.size, 0.01), 1.0)
+            else:
+                geo, _, _ = _rt_moved(s, mx, my, body.size)
+                sh.update(geo.get("shape", geo))
+        if body.point is not None or body.to is not None:
+            if body.to is None or len(body.to) != 2:
+                raise HTTPException(400, "to: [x, y] on the photo")
+            [[tx, ty]], _, _ = await _photo_to_raw(image_id, [[min(max(body.to[0], 0.0), 1.0), min(max(body.to[1], 0.0), 1.0)]])
+            if "points" in s:
+                if body.point is None or not 0 <= body.point < len(s["points"]):
+                    raise HTTPException(400, f"point: 0 to {len(s['points']) - 1}")
+                pts = [dict(p) for p in (sh.get("points") or s["points"])]
+                p = pts[body.point]
+                ddx, ddy = tx - p["corner"][0], ty - p["corner"][1]
+                for k in ("corner", "ctrl1", "ctrl2"):
+                    p[k] = [p[k][0] + ddx, p[k][1] + ddy]
+                sh["points"] = pts
+            elif s["type"] == "gradient":
+                sh["rotation"] = math.degrees(math.atan2((ty - s["y"]) * rh / rshort, (tx - s["x"]) * rw / rshort))
+            else:
+                raise HTTPException(400, f"a {s['type']} has no points: dx, dy, size")
+        if body.feather is not None:
+            if s["type"] == "gradient":
+                raise HTTPException(400, "a gradient has no feather (size changes its fade)")
+            g = await engine.edit(image_id, "geometry_get")
+            W, H = g["width"], g["height"]
+            f = min(max(body.feather, 0.0), 0.5)
+            probe, _, _ = await _photo_to_raw(image_id, [at, [at[0] + f * min(W, H) / W, at[1]]])
+            size = math.hypot((probe[1][0] - probe[0][0]) * rw, (probe[1][1] - probe[0][1]) * rh) / rshort
+            if "points" in sh:
+                for p in sh["points"]:
+                    p["border"] = [size, size]
+            else:
+                sh["width" if s["type"] == "brush" else "border"] = size
+        if not sh:
+            raise HTTPException(400, "nothing to change")
+        sh["type"] = s["type"]
+        await engine.edit(image_id, "mask_set", operation="exposure", instance=body.instance, formid=body.formid, shape=sh)
+        return {**await _masks(image_id), "shape": await _mask_shapes(image_id, body.instance)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
+class MaskShapeRemoveBody(BaseModel):
+    instance: int
+    formid: int
+
+
+@app.post("/api/photo/{image_id}/mask/shape/remove")
+async def photo_mask_shape_remove(image_id: int, body: MaskShapeRemoveBody):
+    """Remove one shape of a named mask (not its last: remove the mask then)."""
+    try:
+        await _require_holder(image_id, body.instance)
+        listed = await _mask_listed(image_id, body.instance)
+        if not any(x["formid"] == body.formid for x in listed):
+            raise HTTPException(404, f"mask {body.instance} has no shape {body.formid}")
+        if len(listed) <= 1:
+            raise HTTPException(400, "the mask's last shape: remove the mask instead")
+        await engine.edit(image_id, "mask_remove", operation="exposure", instance=body.instance, formid=body.formid)
+        return {**await _masks(image_id), "shape": await _mask_shapes(image_id, body.instance)}
+    except EngineError as exc:
+        raise _bad(exc, 502)
+
+
 # ── named markers: points and areas on the photo ("left tree"). The engine keeps
 # them in raw space; the page works in photo fractions, so the points go through
 # the session's coords method both ways.

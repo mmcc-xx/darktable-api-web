@@ -150,6 +150,7 @@
         <span id="mask-param" class="mask-param"></span>
         <span id="mask-used" class="status"></span>
       </span>
+      <span id="mask-shape" class="mask-sel" hidden><span id="mask-shape-what" class="status"></span><button id="mask-shape-smaller" class="secondary" title="make the selected shape smaller">−</button><button id="mask-shape-bigger" class="secondary" title="make the selected shape bigger">+</button><span id="mask-shape-feather-w" class="size"><label id="mask-shape-feather-l" for="mask-shape-feather" title="the selected shape's soft edge (a brush: its width), as a fraction of the shorter side">feather</label><input type="range" id="mask-shape-feather" min="0" max="0.2" step="0.005"></span><button id="mask-shape-del" class="secondary">delete shape</button><button id="mask-shape-done" class="secondary" title="leave the shape (Esc)">✓</button></span>
       <span id="mask-status" class="status" role="status"></span>
       <button id="mask-done" class="secondary" title="leave the masks tool (Esc)">done</button>
     </div>
@@ -3000,14 +3001,14 @@
   $('#mask-new').onclick = () => maskSelect(null);
   $('#mask-done').onclick = () => setMasks(false);
   function maskSelect(inst) {
-    maskSel = inst; maskSub = false;
-    maskList(); maskFields(); maskMsg(maskHelp());
+    maskSel = inst; maskSub = false; mshSel = null;
+    maskList(); maskFields(); maskMsg(maskHelp()); mshSync();
     if (masks) preview();
   }
   function masksApply(d) {
     masksData = d;
     if (maskSel !== null && !maskCur()) maskSel = null;
-    maskList(); maskFields(); masksPlace();
+    maskList(); maskFields(); masksPlace(); mshSync();
   }
   // the masks in the edit, read again whenever its history changed (as areaSync)
   async function masksSync() {
@@ -3134,7 +3135,7 @@
   // the overlay: the draft shape while dragging
   function maskShow() {
     if (!masks) return;
-    ov.set(maskDraw && maskDraw.shape ? maskDraw.shape : []);
+    ov.set([...mshItems(), ...(maskDraw && maskDraw.shape ? maskDraw.shape : [])]);
   }
   // photo fractions -> units of the shorter side
   function maskShort(dx, dy) { const a = photoAspect(), m = Math.min(1, 1 / a); return [dx / m, dy / a / m]; }
@@ -3201,12 +3202,164 @@
     if (m) maskMsg(`${was ? 'subtracted from' : 'added to'} '${m.name}' · ${m.shapes} shape${m.shapes === 1 ? '' : 's'}`);
     await refreshEdit();
   }
+  // ── a mask's shapes one by one (W77): with a mask selected its drawn shapes
+  // show as outlines (the server's GET mask/shapes: {instance, shapes: [{formid,
+  // type, combine, outline, center, handles: [{kind: size | rot | pt, i, x, y}],
+  // feather}]}). A click on one selects it (not with sky or subject, whose clicks
+  // find more); the selected shape moves with a drag, its handles resize it
+  // (size), turn a gradient (rot) or move a path's or brush's point (pt), and the
+  // toolbar makes it smaller or bigger, sets its feather or deletes it. A drag
+  // elsewhere, or on a shape not selected, still draws a new shape.
+  let msh = {instance: null, shapes: []}, mshSel = null, mshDrag = null, mshBusy = false, mshKey = null;
+  const mshCur = () => msh.shapes.find((s) => s.formid === mshSel) || null;
+  const mshKeyNow = () => (masks && maskSel !== null && maskCur() && maskCur().shapes && state
+    ? `${maskSel}:${state.history.history_end}:${state.history.items.length}` : null);
+  const mshHelp = () => 'drag the shape to move it, a handle to change it · Delete removes it';
+  async function mshSync(force) {
+    const k = mshKeyNow();
+    if (!force && k === mshKey) return;
+    mshKey = k;
+    if (k === null) { msh = {instance: null, shapes: []}; mshSel = null; maskShow(); mshFields(); return; }
+    let d = null;
+    try { const r = await api(`mask/shapes?instance=${maskSel}`); if (r.ok) d = await r.json(); } catch (e) {}
+    if (mshKey !== k) return;
+    mshApply(d || {instance: maskSel, shapes: []});
+  }
+  function mshApply(d) {
+    msh = d;
+    if (!mshCur()) mshSel = null;
+    maskShow(); mshFields();
+  }
+  function mshSelect(f) {
+    mshSel = f;
+    maskShow(); mshFields();
+    maskMsg(f === null ? maskHelp() : mshHelp());
+  }
+  function mshFields() {
+    const s = masks ? mshCur() : null;
+    $('#mask-shape').hidden = !s;
+    if (!s) return;
+    $('#mask-shape-what').textContent = s.type + (s.combine === 'difference' ? ' (subtracted)' : '');
+    $('#mask-shape-feather-w').hidden = s.feather == null;
+    $('#mask-shape-feather-l').textContent = s.type === 'brush' ? 'width' : 'feather';
+    if (s.feather != null && document.activeElement !== $('#mask-shape-feather')) $('#mask-shape-feather').value = s.feather;
+    $('#mask-shape-del').disabled = msh.shapes.length <= 1;
+    $('#mask-shape-del').title = msh.shapes.length <= 1 ? 'the mask\'s only shape: remove the mask (×) instead' : 'remove the selected shape (Delete)';
+  }
+  // distances on the photo in units of its height (so both axes count the same)
+  const mshDist = (a, b) => Math.hypot((a[0] - b[0]) * photoAspect(), a[1] - b[1]);
+  const mshFactor = (d) => Math.min(20, Math.max(0.05, mshDist(d.s.center, d.p) / (mshDist(d.s.center, [d.h.x, d.h.y]) || 1)));
+  // the overlay's items for the selected mask's shapes, a drag in progress shown on them
+  function mshItems() {
+    const items = [], d = mshDrag && mshDrag.far ? mshDrag : null;
+    for (const s of msh.shapes) {
+      const sel = s.formid === mshSel, held = d && d.s === s;
+      const mx = held && d.part === 'body' ? d.p[0] - d.p0[0] : 0, my = held && d.part === 'body' ? d.p[1] - d.p0[1] : 0;
+      let pts = s.outline.map(([x, y]) => [x + mx, y + my]);
+      if (held && d.part === 'size') { const f = mshFactor(d); pts = pts.map(([x, y]) => [s.center[0] + (x - s.center[0]) * f, s.center[1] + (y - s.center[1]) * f]); }
+      else if (held && d.part === 'rot') pts = [[2 * s.center[0] - d.p[0], 2 * s.center[1] - d.p[1]], d.p];
+      else if (held && d.part === 'pt') pts = pts.concat([d.p]);
+      items.push({id: 'msh' + s.formid, kind: 'polygon', points: pts, cls: `msh${sel ? ' sel' : ''}${s.combine === 'difference' ? ' sub' : ''}`,
+                  title: `${s.type}${s.combine === 'difference' ? ' (subtracted)' : ''}${sel ? '' : ': click to select'}`});
+      if (!sel) continue;
+      for (const h of s.handles) {
+        const at = held && d.h === h ? d.p : [h.x + mx, h.y + my];
+        items.push({id: 'mshh' + h.i, kind: 'circle', x: at[0], y: at[1], r: 0.006, cls: 'mark-handle',
+                    title: {size: 'drag: its size', rot: 'drag: its angle', pt: 'drag: this point'}[h.kind]});
+      }
+    }
+    return items;
+  }
+  // what a pointer is on: a handle of the selected shape, else the shape it is inside or on (the nearest center)
+  function mshHit(e) {
+    if (!msh.shapes.length) return null;
+    const r = imgRect(), R = shown ? shown.region : {left: 0, top: 0, right: 1, bottom: 1};
+    const kx = r.w / (R.right - R.left), ky = r.h / (R.bottom - R.top), p = erasePoint(e);
+    const px = (a, b) => Math.hypot((a[0] - b[0]) * kx, (a[1] - b[1]) * ky);
+    const slop = matchMedia('(pointer: coarse)').matches ? 24 : 12, cur = mshCur();
+    if (cur) {
+      const h = cur.handles.reduce((b, x) => (px([x.x, x.y], p) <= slop && (!b || px([x.x, x.y], p) < px([b.x, b.y], p)) ? x : b), null);
+      if (h) return {s: cur, part: h.kind, h};
+    }
+    let best = null, bd = Infinity;
+    for (const s of msh.shapes) {
+      const P = s.outline;
+      let inside = false, edge = Infinity;
+      for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+        if (P.length > 2 && (P[i][1] > p[1]) !== (P[j][1] > p[1]) && p[0] < (P[j][0] - P[i][0]) * (p[1] - P[i][1]) / (P[j][1] - P[i][1]) + P[i][0]) inside = !inside;
+        // the distance to the edge from i to j, in px
+        const ax = P[j][0] * kx, ay = P[j][1] * ky, bx = P[i][0] * kx, by = P[i][1] * ky, qx = p[0] * kx, qy = p[1] * ky;
+        const L = (bx - ax) ** 2 + (by - ay) ** 2, t = L ? Math.max(0, Math.min(1, ((qx - ax) * (bx - ax) + (qy - ay) * (by - ay)) / L)) : 0;
+        edge = Math.min(edge, Math.hypot(qx - ax - t * (bx - ax), qy - ay - t * (by - ay)));
+      }
+      const dist = px(s.center, p);
+      if ((inside || edge <= slop || dist <= slop) && dist < bd) { best = s; bd = dist; }
+    }
+    return best && {s: best, part: 'body', h: null};
+  }
+  // a pointerdown in the masks tool: true when it grabbed the selected shape (a move or a handle)
+  function mshDown(e) {
+    const hit = mshHit(e);
+    if (!hit || hit.s.formid !== mshSel || mshBusy) return false;
+    e.preventDefault();
+    const v = $('.view'), p0 = erasePoint(e);
+    v.setPointerCapture(e.pointerId);
+    const d = mshDrag = {id: e.pointerId, ...hit, p0, p: p0, c0: [e.clientX, e.clientY], far: false};
+    const move = (ev) => {
+      if (ev.pointerId !== d.id || mshDrag !== d) return;
+      if (Math.hypot(ev.clientX - d.c0[0], ev.clientY - d.c0[1]) >= 6) d.far = true;
+      d.p = erasePoint(ev);
+      if (d.far) maskShow();
+    };
+    const finish = (ev, ok) => {
+      if (ev.pointerId !== d.id) return;
+      v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
+      if (mshDrag !== d) return;
+      mshDrag = null;
+      if (!ok || !d.far || !masks) { maskShow(); return; }
+      const r5 = (q) => q.map((x) => +x.toFixed(5));
+      if (d.part === 'body') mshSend({dx: +(d.p[0] - d.p0[0]).toFixed(5), dy: +(d.p[1] - d.p0[1]).toFixed(5)}, 'moving the shape');
+      else if (d.part === 'size') mshSend({size: +mshFactor(d).toFixed(4)}, 'resizing the shape');
+      else if (d.part === 'pt') mshSend({point: d.h.i, to: r5(d.p)}, 'moving the point');
+      else mshSend({to: r5(d.p)}, 'turning the gradient');
+    };
+    const up = (ev) => finish(ev, true), cancel = (ev) => finish(ev, false);
+    v.addEventListener('pointermove', move);
+    v.addEventListener('pointerup', up); v.addEventListener('pointercancel', cancel);
+    return true;
+  }
+  async function mshSend(body, verb) {
+    if (mshBusy || maskSel === null || mshSel === null) return null;
+    mshBusy = true;
+    maskMsg(verb + '…');
+    let r, d;
+    try { r = await api(body.remove ? 'mask/shape/remove' : 'mask/shape', {instance: maskSel, formid: mshSel, ...body}); d = await r.json(); } catch (e) { r = null; }
+    mshBusy = false;
+    if (!r || !r.ok) { maskMsg('not done: ' + (d && d.detail || 'no answer')); maskShow(); return null; }
+    const {shape, ...rest} = d;
+    setDirty(true);
+    msh = shape;
+    masksApply(rest);
+    mshApply(shape);
+    maskMsg(body.remove ? `removed · ${msh.shapes.length} shape${msh.shapes.length === 1 ? '' : 's'} left` : mshHelp());
+    await refreshEdit();
+    mshKey = mshKeyNow();
+    return d;
+  }
+  $('#mask-shape-smaller').onclick = () => mshSend({size: 0.8}, 'resizing the shape');
+  $('#mask-shape-bigger').onclick = () => mshSend({size: 1.25}, 'resizing the shape');
+  $('#mask-shape-feather').onchange = () => mshSend({feather: +$('#mask-shape-feather').value}, 'setting the feather');
+  const mshDelete = () => (mshCur() && msh.shapes.length > 1 ? mshSend({remove: true}, 'removing the shape') : null);
+  $('#mask-shape-del').onclick = mshDelete;
+  $('#mask-shape-done').onclick = () => mshSelect(null);
   $('.view').addEventListener('pointerdown', (e) => {
-    if (!masks || maskBusy || e.button !== 0 || maskDraw) return;
+    if (!masks || maskBusy || e.button !== 0 || maskDraw || mshDrag) return;
+    if (mshDown(e)) return;
     e.preventDefault();
     const v = $('.view');
     v.setPointerCapture(e.pointerId);
-    const d = maskDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]], alt: e.altKey, shape: null, far: false};
+    const d = maskDraw = {id: e.pointerId, pts: [erasePoint(e)], px: [[e.clientX, e.clientY]], alt: e.altKey, shape: null, far: false,
+                          hit: maskKind === 'sky' || maskKind === 'subject' ? null : mshHit(e)};
     const move = (ev) => {
       if (ev.pointerId !== d.id || maskDraw !== d) return;
       const last = d.px[d.px.length - 1], first = d.px[0];
@@ -3222,8 +3375,11 @@
       if (ev.pointerId !== d.id) return;
       v.removeEventListener('pointerup', up); v.removeEventListener('pointercancel', cancel); v.removeEventListener('pointermove', move);
       maskDraw = null;
-      ov.set([]);
+      maskShow();
       if (!masks || !ok) return;
+      // a click: select the shape under it, or leave the selected one
+      if (!d.far && d.hit) { mshSelect(d.hit.s.formid); return; }
+      if (!d.far && mshSel !== null) { mshSelect(null); return; }
       if (maskKind === 'sky' || maskKind === 'subject') {
         if (d.far) return;
         maskAdd('mask/ai', {label: maskKind, include: [d.pts[0].map((x) => +x.toFixed(5))], combine: d.alt ? 'difference' : (maskSel !== null && maskSub ? 'difference' : 'union')});
@@ -3256,8 +3412,10 @@
     $('.view').classList.toggle('masking', on);
     ov.interactive(false);
     ov.show(on);
+    mshSel = null; mshDrag = null;
     if (on) { maskSel = null; maskSub = false; maskList(); maskFields(); maskMsg(maskHelp()); }
     else { maskDraw = null; ov.set([]); areaDraw(); }
+    mshSync();
     masksPlace();
     if (shownMask && !on) preview();
   }
@@ -4595,7 +4753,8 @@
     if (retouch && rtSel !== null && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); rtDelete(); return; }
     if (erase && erasePending && e.key === 'Enter') { e.preventDefault(); eraseFillPending(); return; }
     if (area && e.key === 'Escape') { e.preventDefault(); setArea(false); return; }
-    if (masks && e.key === 'Escape') { e.preventDefault(); if (maskDraw) { maskDraw = null; ov.set([]); } else if (maskSel !== null) maskSelect(null); else setMasks(false); return; }
+    if (masks && e.key === 'Escape') { e.preventDefault(); if (maskDraw) { maskDraw = null; maskShow(); } else if (mshSel !== null) mshSelect(null); else if (maskSel !== null) maskSelect(null); else setMasks(false); return; }
+    if (masks && mshSel !== null && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); mshDelete(); return; }
     if (mark && e.key === 'Escape') { e.preventDefault(); if (markDraft || markSel) markClear(); else setMark(false); return; }
     if (mark && markSel && !markDraft && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); markDelete(); return; }
     if (!$('#toolbar-crop').hidden && e.key === 'Escape') { e.preventDefault(); setCropping(false); return; }

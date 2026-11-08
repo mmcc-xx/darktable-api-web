@@ -358,6 +358,10 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
 .photo-ov .rt-fill { stroke: #ff6fae; }
 .photo-ov .rt-spot.sel { stroke-width: 3; }
 .photo-ov .rt-spot.other { stroke-opacity: .4; stroke-dasharray: 3 3; }
+.photo-ov .msh { fill: none; stroke: #ffe14a; stroke-width: 1.5; stroke-opacity: .8; vector-effect: non-scaling-stroke; }
+.photo-ov .msh.sub { stroke-dasharray: 4 3; }
+.photo-ov .msh.sel { stroke-width: 3; stroke-opacity: 1; }
+#mask-shape[hidden] { display: none; }
 .photo-ov .rt-source { fill: none; stroke: #fff; stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
 .rt-row { display: contents; }
 .rt-opts { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }

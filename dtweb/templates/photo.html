@@ -3885,6 +3885,8 @@
   $('#aspect').onchange = () => { $('#aspect').dataset.portrait = ''; aspectChanged(); };
   $('#aspect-swap').onclick = () => { $('#aspect').dataset.portrait = $('#aspect').dataset.portrait ? '' : '1'; aspectChanged(); };
   addEventListener('resize', drawBox);
+  // the toolbar's height changes the view's (the lines bar on the phone)
+  new ResizeObserver(() => drawBox()).observe($('.view'));
   $('#pv').addEventListener('load', drawBox);
 
   // ── perspective from drawn lines (W72) ─────────────────────────────────

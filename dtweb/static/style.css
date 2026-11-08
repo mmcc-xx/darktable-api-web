@@ -241,6 +241,10 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   .toolbar-bar .angle input { width: 6rem; }
   /* drawing lines (W72): only the lines controls, so the photo keeps its room */
   #toolbar-crop.persp-on #geo > :not(#persp) { display: none; }
+  #toolbar-crop.persp-on { gap: .3rem .4rem; }
+  /* the bar's controls flow with lines, cancel and done (two rows, not four); the hint is a thin row above */
+  #toolbar-crop.persp-on #persp-bar { display: contents; }
+  #toolbar-crop.persp-on #persp-n { order: -1; flex-basis: 100%; font-size: .85em; line-height: 1.2; }
   .status { flex: none; }
 
   .panel { flex: none; max-height: 32vh; max-height: 32dvh; overflow-y: auto; border-left: none; border-top: 1px solid var(--line); }

@@ -245,6 +245,11 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   /* the bar's controls flow with lines, cancel and done (two rows, not four); the hint is a thin row above */
   #toolbar-crop.persp-on #persp-bar { display: contents; }
   #toolbar-crop.persp-on #persp-n { order: -1; flex-basis: 100%; font-size: .85em; line-height: 1.2; }
+  /* a selected mask shape (W77): only its controls, status and done, so the photo stays there to drag it on */
+  #toolbar-masks.shape-on > :not(#mask-shape):not(#mask-status):not(#mask-done) { display: none; }
+  #toolbar-masks.shape-on { gap: .3rem .4rem; }
+  #toolbar-masks.shape-on #mask-shape { display: contents; }
+  #toolbar-masks.shape-on #mask-status { order: -1; flex-basis: 100%; font-size: .85em; line-height: 1.2; }
   .status { flex: none; }
 
   .panel { flex: none; max-height: 32vh; max-height: 32dvh; overflow-y: auto; border-left: none; border-top: 1px solid var(--line); }

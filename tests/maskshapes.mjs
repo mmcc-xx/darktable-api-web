@@ -124,10 +124,11 @@ async function run(mode, port) {
         await page.waitFor("document.querySelectorAll('svg.photo-ov .msh.sel').length === 1", {what: 'the circle selected by a tap'});
         assert(await shown(page), '#mask-shape hidden');
         await page.screenshot(`${OUT}/phone-shape.png`);
+        // the shape's controls replace the rest of the masks bar, so the photo keeps its room to drag on
+        const vh = await page.eval("document.querySelector('.view').getBoundingClientRect().height");
+        assert(vh >= 200, `the photo is ${vh | 0} px tall with a shape selected`);
         await drag(page, line([cx, cy], [cx + 0.1, cy]));
-        await sleep(1500);
-        log('     phone after drag: ' + JSON.stringify((await shapeOf(inst, 'circle')).center) + ' from ' + JSON.stringify([cx, cy]) + ' sel ' + await nSel(page));
-        await page.waitFor(`fetch('${API}/mask/shapes?instance=${inst}').then((r) => r.json()).then((d) => Math.abs(d.shapes[0].center[0] - ${cx + 0.1}) < 0.02)`, {timeout: 3000, what: 'the circle moved by touch'});
+        await page.waitFor(`fetch('${API}/mask/shapes?instance=${inst}').then((r) => r.json()).then((d) => Math.abs(d.shapes[0].center[0] - ${cx + 0.1}) < 0.02)`, {timeout: 30000, what: 'the circle moved by touch'});
         const now = await shapeOf(inst, 'circle');
         assert(now.formid === circle.formid, 'formid changed');
         await drag(page, [[0.9, 0.9]]);

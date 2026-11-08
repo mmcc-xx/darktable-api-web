@@ -3238,6 +3238,7 @@
   function mshFields() {
     const s = masks ? mshCur() : null;
     $('#mask-shape').hidden = !s;
+    $('#toolbar-masks').classList.toggle('shape-on', !!s);
     if (!s) return;
     $('#mask-shape-what').textContent = s.type + (s.combine === 'difference' ? ' (subtracted)' : '');
     $('#mask-shape-feather-w').hidden = s.feather == null;

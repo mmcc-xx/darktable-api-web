@@ -92,11 +92,10 @@ edit panel as a sheet; swipe for the next photo, pinch to zoom).
   `$(FILE_FOLDER)/darktable_exported/`), a download link, a zip for
   several photos; unsaved changes are saved first, after asking.
 - **Sharing the library with darktable:** darktable and the engine can't
-  have one library open at the same time. darktable's window from the same
-  fork serves the library itself (see below). For a darktable started
-  without it, the header releases the library to it, and has *take back*
-  and *quit darktable and take back* (asks darktable to quit the normal
-  way; never kills it).
+  have one library open at the same time. *release to darktable* in the
+  header closes the library here (photos with unsaved edits are listed
+  first: save them all, or cancel); then open it in stock master darktable.
+  *take back* gets it back, and it comes back by itself when darktable quits.
 
 Features that need the `darktable-api` branch (AI fill, AI masks,
 markers) are greyed out on an engine without them.
@@ -149,17 +148,6 @@ assistant and the browser work on the same photos at the same time:
   AI's changes land in the same history, and whoever saves saves both;
 - the page updates live when the AI (or another browser on another web app
   instance) edits the photo shown, rates it or changes its labels;
-- **darktable's own window can serve the library too**, so you can edit in
-  darktable, the browser and with the AI at the same time. Start darktable
-  (built from the same fork) with `--api-socket` pointing at the same socket:
-
-      /path/to/darktable/build/bin/darktable --configdir library-copy/config \
-          --cachedir library-copy/cache --api-socket library-copy/darktable-api.sock
-
-  It takes over from a running engine automatically (unsaved edits
-  included); the photo open in its darkroom is shared live with the browser
-  (sliders move in both directions); when darktable quits, the apps go back
-  to the engine. The header then says "served by darktable's window";
 - the engine keeps up to 3 photos open (`DTAPI_MAX_SESSIONS`) and stops 10
   minutes after the last app disconnected (`DTAPI_IDLE_EXIT`), unless
   something is unsaved.
@@ -182,7 +170,6 @@ photos are only read. `--source` and `--dest` choose other folders.
 | `DTAPI_VARIANTS_DIR` | `~/.cache/darktable-api-mcp/variants` | where an AI's alternatives (propose_alternatives) are rendered; must match the MCP server's |
 | `DTWEB_BACKLOG_DIR` | this project's author's backlog folder | the backlog page's folder (QUEUE.md, FEATURES.md, BUGS.md, DONE.md) |
 | `DTWEB_PANORAMA_DIR` | beside the first frame | where *panorama…* writes the stitched TIFF |
-| `DTAPI_GUI_BIN` | `darktable` next to `DTAPI_BIN` | the only darktable *quit darktable and take back* may quit |
 
 **No authentication.** Anyone who can reach the app can browse this
 computer's folders (the import dialog) and add files to it. Keep it on 127.0.0.1, or put it behind something that
@@ -213,8 +200,7 @@ the folder's repo. Nothing is pushed.
 | `make_library_copy.py` | makes the library copy |
 
 Tested on macOS (desktop and phone browsers); the Quick start's weekly
-run also starts it on Ubuntu 24.04. On Linux, *quit darktable and take back* uses darktable's
-D-Bus `Quit` method (untested).
+run also starts it on Ubuntu 24.04.
 
 ## License
 

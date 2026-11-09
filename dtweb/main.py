@@ -3324,14 +3324,12 @@ async def library_status():
 
 
 @app.post("/api/library/{action}")
-async def library_action(action: str):
-    """release: hand the library to darktable's own window (the engine takes
-    it back by itself when that window quits); acquire: take back a library
-    released to darktable's GUI; takeover: quit that GUI the normal way, then
-    take it back."""
-    calls = {"release": lambda: engine.library("library_release"),
-             "acquire": lambda: engine.library("library_acquire"),
-             "takeover": engine.takeover}
+async def library_action(action: str, save: bool = False):
+    """release: close the library so darktable can open it (the engine takes
+    it back by itself when darktable quits), refused while a photo has unsaved
+    edits unless save, which saves them all first; acquire: take it back."""
+    calls = {"release": lambda: engine.library("library_release", save=save),
+             "acquire": lambda: engine.library("library_acquire")}
     if action not in calls:
         raise HTTPException(404, f"no library action '{action}'")
     try:

@@ -13,21 +13,18 @@
     <a href="/" class="brand" id="brand">darktable-api</a>
     {% block top %}{% endblock %}
     <a href="/backlog" title="the darktable-api backlog: queue, features, bugs">backlog</a>
-    {% if lib.server == 'gui' %}<a id="darkroom" href="{{ '/photo/%d' % lib.darkroom_imgid if lib.darkroom_imgid else '#' }}"{% if not lib.darkroom_imgid %} hidden{% endif %} title="the photo open in darktable's darkroom">darkroom: photo {{ lib.darkroom_imgid }}</a>{% endif %}
     <button class="claude-btn" id="claude-btn" title="edit these photos by asking an AI assistant"><span class="light" id="claude-light" hidden></span>AI assistant</button>
     <span class="lib" id="lib" data-state="{{ lib.state }}">
       <span id="lib-text">
-        {% if lib.state == 'owned' and lib.server == 'gui' %}library served by darktable's window: {{ lib.library }}
-        {% elif lib.state == 'owned' %}library: {{ lib.library }}
-        {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% else %}: start darktable on it{% endif %}{% if lib.auto_acquire %}; taken back when darktable quits{% endif %}
+        {% if lib.state == 'owned' %}library: {{ lib.library }}
+        {% elif lib.state == 'released' %}library released{% if lib.holder_pid %} to darktable (process {{ lib.holder_pid }}){% else %}: open it in stock master darktable{% endif %}{% if lib.auto_acquire %}; taken back when darktable quits{% endif %}
         {% else %}{{ lib.detail }}{% endif %}
       </span>
-      {% if lib.state == 'owned' and lib.server != 'gui' %}
-        <button data-lib="release" title="hand the library to darktable's own window; unsaved edits are kept and come back after">release to darktable</button>
+      {% if lib.state == 'owned' %}
+        <button data-lib="release" title="close the library here so stock master darktable can open it; unsaved edits have to be saved first">release to darktable</button>
       {% endif %}
       {% if lib.state == 'released' %}
         <button data-lib="acquire">take back</button>
-        {% if lib.holder_pid %}<button data-lib="takeover" title="quit darktable the normal way, then take the library back">quit darktable and take back</button>{% endif %}
       {% endif %}
     </span>
   </header>
@@ -57,8 +54,6 @@
   </dialog>
   <script>
     try { const q = sessionStorage.getItem('lib:query'); if (q !== null) document.getElementById('brand').href = '/?' + q; } catch (e) {}
-    // follow the photo open in darktable's darkroom
-    const dr = document.getElementById('darkroom');
     // the "AI assistant connected" light
     const light = document.getElementById('claude-light');
     const cbtn = document.getElementById('claude-btn');
@@ -86,7 +81,7 @@
         if (s.state !== libEl.dataset.state && ['owned', 'released'].includes(s.state)) { location.reload(); return; }
         if (s.state === 'released')
           document.getElementById('lib-text').textContent = 'library released' +
-            (s.holder_pid ? ` to darktable (process ${s.holder_pid})` : ': start darktable on it') +
+            (s.holder_pid ? ` to darktable (process ${s.holder_pid})` : ': open it in stock master darktable') +
             (s.auto_acquire ? '; taken back when darktable quits' : '');
       } catch (e) {}
     }
@@ -96,10 +91,6 @@
         const ev = JSON.parse(m.data);
         if (['clients', 'library_acquired', 'library_released'].includes(ev.type)) refreshClients();
         if (['library_acquired', 'library_released'].includes(ev.type)) checkLib();
-        if (!dr || ev.type !== 'darkroom') return;
-        dr.hidden = !ev.imgid;
-        dr.href = ev.imgid ? '/photo/' + ev.imgid : '#';
-        dr.textContent = 'darkroom: photo ' + ev.imgid;
       };
     } catch (e) {}
     const cd = document.getElementById('connect');
@@ -110,13 +101,32 @@
       catch (e) { getSelection().selectAllChildren(b.previousElementSibling); b.textContent = 'press ⌘C'; }
       setTimeout(() => { b.textContent = 'copy'; }, 1500);
     });
+    // the photos with unsaved edits, whichever client made them
+    const unsavedPhotos = async () => ((await (await fetch('/api/library')).json()).sessions || [])
+      .filter((s) => s.unsaved).map((s) => s.imgid).sort((a, b) => a - b);
+    // Release asks with the list of unsaved photos; a list that changed while
+    // the question was up is asked again, so nothing unseen gets saved.
+    // null: cancelled, else the unsaved photos to save
+    async function askRelease() {
+      let listed = await unsavedPhotos();
+      for (;;) {
+        const n = listed.length;
+        const ok = await ask(n
+          ? `Unsaved edits in photo${n > 1 ? 's' : ''} ${listed.join(', ')}. Save ${n > 1 ? 'them all' : 'it'} and release the library? Then open it in stock master darktable.`
+          : 'Release the library? Then open it in stock master darktable.', {ok: n ? 'save all and release' : 'release'});
+        if (!ok) return null;
+        const now = await unsavedPhotos();
+        if (now.join() === listed.join()) return listed;
+        listed = now;
+      }
+    }
     document.querySelectorAll('[data-lib]').forEach((b) => b.onclick = async () => {
       const action = b.dataset.lib;
-      if (action === 'takeover' && !await ask('Quit darktable (it saves its edits), then take the library back?', {ok: 'quit and take back'})) return;
-      if (action === 'release' && !await ask('Release the library to darktable? Start darktable on it next; unsaved edits are kept and come back when it quits.', {ok: 'release'})) return;
+      const toSave = action === 'release' ? await askRelease() : [];
+      if (toSave === null) return;
       b.disabled = true;
-      document.getElementById('lib-text').textContent = action === 'takeover' ? 'asking darktable to quit…' : '…';
-      const r = await fetch(`/api/library/${action}`, {method: 'POST'});
+      document.getElementById('lib-text').textContent = '…';
+      const r = await fetch(`/api/library/${action}${toSave.length ? '?save=true' : ''}`, {method: 'POST'});
       const s = await r.json();
       if (!r.ok) { document.getElementById('lib-text').textContent = s.detail; b.disabled = false; return; }
       if (s.drafts && s.drafts.length)

@@ -208,8 +208,6 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
              box-shadow: 0 4px 12px rgba(0, 0, 0, .5); z-index: 3; }
 .menu-list button { padding: .35rem .5rem; border-radius: 3px; }
 .menu-list button:hover { background: var(--line); }
-#darkroom { font-size: .8rem; border: 1px solid var(--accent); border-radius: 4px; padding: .15rem .5rem; }
-#darkroom:hover { background: var(--accent); color: var(--bg); }
 
 /* phone-only parts: hidden on the desktop layout */
 .sheet-handle, #alts-open, #alts-dismiss, #more-discard { display: none; }
@@ -224,7 +222,7 @@ button.on { background: #3a2f1c; border-color: var(--accent); color: #f0bd70; }
   .views button { min-height: 44px; }
   body.darkroom-page { --bar-h: 58px; height: 100vh; height: 100dvh; padding-bottom: calc(var(--bar-h) + env(safe-area-inset-bottom, 0px)); overflow: hidden; }
   body.darkroom-page .top { flex: none; position: static; flex-wrap: nowrap; gap: .5rem; padding: .25rem .5rem; overflow: hidden; white-space: nowrap; }
-  body.darkroom-page .top .brand, body.darkroom-page .top .name, body.darkroom-page #lib, body.darkroom-page #darkroom { display: none; }
+  body.darkroom-page .top .brand, body.darkroom-page .top .name, body.darkroom-page #lib { display: none; }
   body.darkroom-page .photo-nav { flex-wrap: nowrap; gap: .6rem; }
   body.darkroom-page .photo-nav a { display: inline-flex; align-items: center; min-height: 36px; }
   .darkroom { flex-direction: column; height: 100%; }

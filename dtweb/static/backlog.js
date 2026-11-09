@@ -190,7 +190,7 @@
     document.getElementById('bl-cap-info').textContent =
       (st.override != null ? `set for ${st.date} (from the weekly reset: ${st.week_cap}%)` : `day ${st.day} of the week`) +
       (st.week != null ? `; week ${pct(st.week)} used` : '') +
-      (st.held ? `; a change applies to runs started after this one${st.run_cap != null ? ` (it runs with ${st.run_cap}%)` : ''}` : '');
+      (st.held ? `; a change applies from the run's next item${st.run_cap != null ? ` (this one runs with ${st.run_cap}%)` : ''}` : '');
     const go = runBar.querySelector('[data-act="run-now"]');
     go.disabled = st.held || !st.open;
     go.title = st.held ? 'a night run is going' : !st.open ? 'the queue has no open item' : `start the night run now (${st.item} first)`;
@@ -231,6 +231,7 @@
     const cell = (label, value, sub) => `<div><small>${label}</small><b>${value}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
     const of = (v, c) => (v == null ? '?' : `${v}%`) + (c != null ? ` of ${c}%` : '');
     el.innerHTML = `<div class="main"><b class="state ${cls}">${esc(DASH_STATES[d.state] || d.state)}</b>${why ? ' ' + why : ''}</div>` +
+      (d.activity && d.state === 'running' ? `<div class="main"><small>the session</small><b>${esc(d.activity)}</b>${d.activity_age != null ? `, for ${ago(d.activity_age)}` : ''}</div>` : '') +
       cell('item', d.item ? esc(d.item) : '–') +
       cell('week used', of(d.week, d.week_cap), d.week_reset ? 'resets ' + esc(clock(d.week_reset)) : '') +
       cell('session used', of(d.session, d.session_cap), d.session_reset ? 'resets ' + esc(clock(d.session_reset)) : '') +
@@ -261,7 +262,7 @@
     const j = await postRun('cap', {cap});
     if (!j) return;
     try { sessionStorage.setItem('bl-toast', (cap == null ? `cap for ${j.date}: back to ${j.cap}%` : `cap for ${j.date}: ${j.cap}%`) +
-      (j.held ? ' (applies to the runs started after this one)' : '')); } catch (e) {}
+      (j.held ? " (applies from the run's next item)" : '')); } catch (e) {}
     location.reload();                                     // the capacity line and the cut follow the cap
   }
   if (runEl) {

@@ -160,13 +160,13 @@ async function run(mode, port) {
       assert(await page.eval(`document.querySelector('[data-act="run-now"]').disabled`), 'run now enabled while running');
       const s = await text('#bl-run-status'), st = await status();
       assert(s.includes(`running ${st.item}`) && s.includes(`pid ${pid}`), 'status: ' + s);
-      assert((await text('#bl-cap-info')).includes('applies to runs started after'), 'info: ' + await text('#bl-cap-info'));
+      assert((await text('#bl-cap-info')).includes("applies from the run's next item"), 'info: ' + await text('#bl-cap-info'));
       const r = await fetch(`${URL_}/api/backlog/run`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
       assert(r.status === 409 && kicks() === 1, `server: ${r.status}, kicks ${kicks()}`);
       await setCap(70);
       await reloadBy(() => press('[data-act="cap-save"]'));
       assert(capFile() === '70', 'cap file: ' + capFile());
-      assert((await text('#bl-toast')).includes('applies to the runs started after'), 'toast: ' + await text('#bl-toast'));
+      assert((await text('#bl-toast')).includes("applies from the run's next item"), 'toast: ' + await text('#bl-toast'));
       unlock();
       rmSync(CAP, {force: true});
     });

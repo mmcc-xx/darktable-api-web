@@ -1053,17 +1053,20 @@ def run_dashboard(held: bool) -> dict | None:
     """launchd/.run-status.json, which the run scripts write at each usage read
     and while waiting (W73), with its age in seconds. A going state whose run
     no longer holds the lock became "stopped" (killed, or a restart); one not
-    rewritten for five minutes is flagged late."""
+    rewritten for five minutes is flagged late. activity: what the session said
+    it is waiting on (run-note.sh, #176), activity_age its seconds so far."""
     try:
         d = json.loads((backlog_dir() / "launchd/.run-status.json").read_text(encoding="utf-8"))
         age = max(0, int(time.time() - d["time"]))
         state = d["state"]
+        since = d.get("activity_since")
+        activity_age = max(0, int(time.time() - since)) if since else None
     except (OSError, ValueError, KeyError, TypeError):
         return None
     live = state in STATUS_LIVE
     if live and not held:
         d.update(state="stopped", last_state=state)
-    return {**d, "age": age, "late": live and held and age > STATUS_LATE}
+    return {**d, "age": age, "activity_age": activity_age, "late": live and held and age > STATUS_LATE}
 
 
 def run_status() -> dict:
@@ -1118,8 +1121,8 @@ def backlog_run_status():
 @router.post("/api/backlog/cap")
 def backlog_cap(body: CapBody):
     """Write (or, with cap null, remove) launchd/.cap-<today>. Not refused while
-    a run is going: daily-run.sh reads it when it starts, so it applies to the
-    runs started after."""
+    a run is going: daily-run.sh rereads it before each item (#176), so it applies
+    from the run's next item."""
     if body.cap is not None and not 1 <= body.cap <= 100:
         return JSONResponse({"error": "the cap is a week % from 1 to 100"}, status_code=400)
     p = cap_file(datetime.date.today())

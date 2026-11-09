@@ -11,7 +11,7 @@
 //     [--url http://127.0.0.1:8030] [--only desktop|phone] [--out /tmp/w73] [--brief]
 
 import {chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
-import {spawn} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {startChrome, openPage} from './cdp.mjs';
 
 const args = process.argv.slice(2);
@@ -34,11 +34,13 @@ const assert = (c, m) => { if (!c) throw new Error(m); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const HERE = `${DIR}/launchd`, STUB = `${DIR}/stub`, QUEUE = `${DIR}/QUEUE.md`, STATUS = `${HERE}/.run-status.json`, LOCK = `${HERE}/.daily-run.lock`;
+const ACTIVITY = `${STATUS}.activity`, CAPFILE = `${HERE}/.cap-${new Date().toLocaleDateString('en-CA')}`, RUNLOG = `${DIR}/night.log`;
+const runNote = (...a) => { const r = spawnSync('/bin/zsh', [`${HERE}/run-note.sh`, ...a]); assert(r.status === 0, 'run-note: ' + r.stderr); };
 const stub = (path, text) => { writeFileSync(path, text); chmodSync(path, 0o755); };
 
 function setup() {
   mkdirSync(HERE, {recursive: true}); mkdirSync(STUB, {recursive: true}); mkdirSync(`${DIR}/forecast`, {recursive: true});
-  for (const f of ['daily-run.sh', 'night-run.sh', 'usage.zsh', 'run-status.zsh', 'night-run-prompt.md']) {
+  for (const f of ['daily-run.sh', 'night-run.sh', 'usage.zsh', 'run-status.zsh', 'run-note.sh', 'night-run-prompt.md']) {
     const t = readFileSync(`${SRC}/${f}`, 'utf8').replaceAll('/Users/clark/darktableluamcp/darktable-api', DIR)
       .replaceAll('$HOME/Library/Logs/darktable-night-run.log', `${DIR}/night.log`);
     assert(!/\$HOME\/Library|darktableluamcp\/darktable-api/.test(t), `${f} still has a real path`);
@@ -73,7 +75,7 @@ const flag = (name, on) => { if (on) writeFileSync(`${STUB}/${name}`, ''); else 
 let proc = null;
 function start(cap) {
   proc = spawn('/bin/zsh', [`${HERE}/daily-run.sh`], {detached: true, stdio: 'ignore',
-    env: {...process.env, PATH: `${STUB}:${process.env.PATH}`, CAP: String(cap), EVERY: '1', SESSION_STOP: '90', SESSION_MAX: '97',
+    env: {...process.env, PATH: `${STUB}:${process.env.PATH}`, ...(cap == null ? {} : {CAP: String(cap)}), EVERY: '1', SESSION_STOP: '90', SESSION_MAX: '97',
           NOTE: `${DIR}/night-run-dry.md`, QUEUE}});   // not a night run's own NOTE and QUEUE, when one started this test
   const p = proc;
   p.ended = new Promise((r) => p.on('exit', r));
@@ -86,7 +88,7 @@ const killRun = async () => {
 };
 const reset = async () => {
   await killRun();
-  rmSync(LOCK, {recursive: true, force: true}); rmSync(STATUS, {force: true});
+  rmSync(LOCK, {recursive: true, force: true}); rmSync(STATUS, {force: true}); rmSync(ACTIVITY, {force: true}); rmSync(CAPFILE, {force: true});
   flag('go', false); flag('end-go', false);
 };
 
@@ -138,6 +140,26 @@ async function run(mode, port) {
       assert(over <= 0, 'overflow: ' + over);
     });
 
+    await c('run-note: the activity shows with its age, then clears', async () => {
+      const t0 = Date.now();
+      runNote('waiting on "GitHub" run <12>');
+      assert(readFileSync(RUNLOG, 'utf8').includes('daily run: activity: waiting on "GitHub" run <12>'), 'no log line');
+      await until((d) => d.activity === 'waiting on "GitHub" run <12>' && d.activity_since >= Math.floor(t0 / 1000) - 1, 'the activity');
+      await sleep(2100);
+      await until((d) => d.activity_age >= 2, 'its age');
+      await load();
+      await dashHas('waiting on "GitHub" run <12>');
+      assert(/the session\s*waiting on "GitHub" run <12>, for \d+ s/.test(await dash()), 'dash: ' + await dash());
+      await page.screenshot(`${OUT}/${mode}-activity.png`);
+      runNote();
+      assert(!existsSync(ACTIVITY), 'the file stayed');
+      assert(/daily run: activity over after 0 min: waiting on "GitHub" run <12>/.test(readFileSync(RUNLOG, 'utf8')), 'no end line');
+      await until((d) => d.activity === '' && d.activity_since === null, 'cleared');
+      await load();
+      await dashHas('Running');
+      assert(!(await dash()).includes('the session'), 'still shown: ' + await dash());
+    });
+
     await c('wrapping up shows in the why', async () => {
       usage(92, 50);
       await until((d) => d.state === 'running' && /wrapping up/.test(d.why), 'wrapping up');
@@ -185,6 +207,31 @@ async function run(mode, port) {
       await dashHas('Not running: queue empty');
       assert((await dash()).includes('–'), 'an item is still shown: ' + await dash());
       await proc.ended; proc = null;
+    });
+
+    await c('run-note does nothing with no run going', async () => {
+      assert(!existsSync(LOCK), 'a run holds the lock');
+      runNote('stray');
+      assert(!existsSync(ACTIVITY), 'wrote the file');
+    });
+
+    await c('a cap raised mid-run reaches the next item; a note left behind is cleared', async () => {
+      flag('go', false); flag('end-go', true);
+      items('#904', '#905');
+      writeFileSync(CAPFILE, '52\n');
+      usage(10, 50);
+      start(null);
+      await until((d, st) => d.state === 'running' && d.item === '#904' && d.week_cap === 52 && st.held, 'running at cap 52');
+      runNote('left behind');
+      writeFileSync(CAPFILE, '60\n');
+      usage(10, 55);             // past 52: only the new cap lets #905 start
+      flag('go', true);
+      const st = await until((d, s) => ['empty', 'cap'].includes(d.state) && !s.held, 'the run to end');
+      assert(st.dash.state === 'empty' && st.dash.week_cap === 60, 'ended: ' + JSON.stringify(st.dash));
+      assert(st.dash.activity === '' && !existsSync(ACTIVITY), 'activity left: ' + st.dash.activity);
+      assert(readFileSync(`${DIR}/night-run-dry.md`, 'utf8').includes("the day's cap changed: 52% to 60%"), 'not in the note');
+      await proc.ended; proc = null;
+      rmSync(CAPFILE, {force: true});
     });
 
     await c('a killed run shows as stopped', async () => {
